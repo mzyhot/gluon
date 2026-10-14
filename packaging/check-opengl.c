@@ -87,13 +87,15 @@ static int probe(const char *name, CGLPixelFormatAttribute profile)
     result = CGLChoosePixelFormat(attributes, &format, &count);
     if (result != kCGLNoError || !format) {
         printf("  CGLChoosePixelFormat: %s\n", CGLErrorString(result));
-        return 1;
+        puts("GLUON_PROBE_UNAVAILABLE: CGL context creation");
+        return 77;
     }
     result = CGLCreateContext(format, NULL, &context);
     CGLReleasePixelFormat(format);
     if (result != kCGLNoError || !context) {
         printf("  CGLCreateContext: %s\n", CGLErrorString(result));
-        return 1;
+        puts("GLUON_PROBE_UNAVAILABLE: CGL context creation");
+        return 77;
     }
     result = CGLSetCurrentContext(context);
     if (result != kCGLNoError) {
@@ -157,7 +159,7 @@ static int probe(const char *name, CGLPixelFormatAttribute profile)
 
 int main(void)
 {
-    int failed = 0;
+    int legacy, core;
 #if defined(__aarch64__)
     puts("architecture=arm64");
 #elif defined(__x86_64__)
@@ -165,7 +167,9 @@ int main(void)
 #else
     puts("architecture=unknown");
 #endif
-    failed |= probe("legacy", (CGLPixelFormatAttribute)kCGLOGLPVersion_Legacy);
-    failed |= probe("3.2-core", (CGLPixelFormatAttribute)kCGLOGLPVersion_3_2_Core);
-    return failed;
+    legacy = probe("legacy", (CGLPixelFormatAttribute)kCGLOGLPVersion_Legacy);
+    core = probe("3.2-core", (CGLPixelFormatAttribute)kCGLOGLPVersion_3_2_Core);
+    if (legacy == 1 || core == 1) return 1;
+    if (legacy == 77 || core == 77) return 77;
+    return 0;
 }

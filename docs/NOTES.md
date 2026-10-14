@@ -415,7 +415,10 @@ Its configure/build fixes were preserved. Branch `codex/graphics-cloud` adds Lin
 source validation plus macOS compilation, bounded complete-runtime probes and
 uploaded text evidence. Each Wine probe has a deadline and an isolated CI prefix;
 cleanup stops its server. A missing hosted-runner GPU is recorded as a skip,
-never a passed rendering check. New cloud results are pending dispatch.
+never a passed rendering check. Linux source checks passed on commit `a483e56`
+(run 38498349195). The first macOS graphics build was dispatched as run
+38498386464; complete-runtime results are pending. Follow-up review tightened
+server cleanup and requires an explicit unavailable exit code for GPU skips.
 
 ## Open items
 

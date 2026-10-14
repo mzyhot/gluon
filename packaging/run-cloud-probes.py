@@ -38,7 +38,7 @@ def main():
                DXVK_LOG_PATH=str(probes), DXVK_STATE_CACHE_PATH=str(probes))
     results = []
 
-    def run(name, command, seconds=30, unavailable=(), cleanup=False):
+    def run(name, command, seconds=30, allow_unavailable=False, cleanup=False):
         path = probes / (name + ".log")
         started = time.monotonic()
         with path.open("w") as output:
@@ -56,7 +56,7 @@ def main():
         item = dict(name=name, status=status, exit_code=code,
                     elapsed_seconds=round(time.monotonic() - started, 1), log=path.name)
         contents = path.read_text(errors="replace")
-        if status == "failed" and any(text in contents for text in unavailable):
+        if allow_unavailable and code == 77 and "GLUON_PROBE_UNAVAILABLE:" in contents:
             item["status"] = "skipped"
             item["reason"] = "Hosted runner lacks the required native graphics capability."
         results.append(item)
@@ -70,12 +70,11 @@ def main():
     exit_code = 0
     try:
         native_gl, _ = run("native-opengl", [str(probes / "opengl-native")],
-                           unavailable=("invalid CoreGraphics connection",
-                                        "invalid pixel format", "invalid renderer"))
+                           allow_unavailable=True)
         native_vk, _ = run("native-vulkan-device",
                                [str(probes / "vulkan-native"),
                                 str(runtime / "lib/libMoltenVK.dylib"), "--device"],
-                           unavailable=("Metal is not available",))
+                           allow_unavailable=True)
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
         for arch in ("x86_64", "i686"):
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])
@@ -97,8 +96,15 @@ def main():
         # The server may daemonize outside the probe's process group. Stop only
         # this CI prefix, including on failed/timed-out Wine initialization.
         if prefix.exists():
-            stopped, _ = run("wine-stop", [server, "-k"], seconds=10, cleanup=True)
-            if stopped["status"] == "timed_out":
+            try:
+                stopped, _ = run("wine-stop", [server, "-k"], seconds=10, cleanup=True)
+                if stopped["status"] != "passed":
+                    exit_code = 1
+                waited, _ = run("wine-wait", [server, "-w"], seconds=10, cleanup=True)
+                if waited["status"] != "passed":
+                    exit_code = 1
+            except OSError as error:
+                results.append(dict(name="wine-cleanup", status="failed", error=str(error)))
                 exit_code = 1
         (probes / "results.json").write_text(json.dumps(results, indent=2) + "\n")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")

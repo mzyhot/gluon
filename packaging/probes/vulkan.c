@@ -43,6 +43,11 @@ static int check_device(PFN_vkGetInstanceProcAddr get)
     if (!create || (result = create(&instance_info, NULL, &instance)) != VK_SUCCESS)
     {
         fprintf(stderr, "vkCreateInstance failed: %d\n", create ? result : VK_ERROR_INITIALIZATION_FAILED);
+        if (create && result == VK_ERROR_INCOMPATIBLE_DRIVER)
+        {
+            fputs("GLUON_PROBE_UNAVAILABLE: Vulkan driver has no usable Metal device\n", stderr);
+            return 77;
+        }
         return 1;
     }
 #define INSTANCE_PROC(type, variable, name) \
@@ -57,7 +62,14 @@ static int check_device(PFN_vkGetInstanceProcAddr get)
     INSTANCE_PROC(PFN_vkGetDeviceProcAddr, device_get, "vkGetDeviceProcAddr")
 #undef INSTANCE_PROC
     result = enumerate(instance, &count, NULL);
-    if (result != VK_SUCCESS || !count || !(devices = calloc(count, sizeof(*devices)))) goto done;
+    if (result != VK_SUCCESS) goto done;
+    if (!count)
+    {
+        fputs("GLUON_PROBE_UNAVAILABLE: Vulkan reports no physical device\n", stderr);
+        status = 77;
+        goto done;
+    }
+    if (!(devices = calloc(count, sizeof(*devices)))) goto done;
     if ((result = enumerate(instance, &count, devices)) != VK_SUCCESS || !count) goto done;
 
     VkPhysicalDeviceProperties props;
@@ -97,7 +109,7 @@ static int check_device(PFN_vkGetInstanceProcAddr get)
     puts("Vulkan device creation and wait passed");
     status = 0;
 done:
-    if (status) fprintf(stderr, "Vulkan device probe failed (last VkResult %d)\n", result);
+    if (status == 1) fprintf(stderr, "Vulkan device probe failed (last VkResult %d)\n", result);
     /* A missing mandatory driver function is an unrecoverable probe failure. */
     if (destroy_instance) destroy_instance(instance, NULL);
     free(families);
