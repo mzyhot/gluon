@@ -1,6 +1,6 @@
-![Gluon slogan](gluon-slogan.svg)
 # Gluon
 Steam Play; for MacOS.
+![Gluon slogan](gluon-slogan.svg)
 ## Layout
 
     gluon/            Python package (stdlib only)
