@@ -106,6 +106,8 @@ fi
 
 if [ ! -x "$OUT/bin/wine" ]; then
     log "Configuring Wine"
+    # OpenGL is left to auto-detection: on macOS it comes from winemac.drv and the system
+    # framework, and asking for it explicitly makes the (Linux-oriented) EGL check fatal.
     mkdir -p "$WORK/wine-build"
     cd "$WORK/wine-build"
     CFLAGS="-O2" CROSSCFLAGS="-O2" \
@@ -114,7 +116,7 @@ if [ ! -x "$OUT/bin/wine" ]; then
     FREETYPE_CFLAGS="-I$DEPS/include/freetype2" FREETYPE_LIBS="-L$DEPS/lib -lfreetype" \
     "$SRC/wine/configure" "${ARCH_FLAGS[@]}" --prefix="$OUT" \
         --enable-archs=i386,x86_64 --disable-tests \
-        --with-mingw --with-freetype --with-vulkan --with-coreaudio --with-opengl \
+        --with-mingw --with-freetype --with-vulkan --with-coreaudio \
         --without-x --without-wayland --without-alsa --without-pulse --without-oss \
         --without-dbus --without-udev --without-usb --without-v4l2 --without-sane \
         --without-gphoto --without-capi --without-netapi --without-krb5 --without-gssapi \
