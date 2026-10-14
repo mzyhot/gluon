@@ -1,0 +1,279 @@
+#!/bin/sh
+# Gluon launcher - the program Steam starts in place of a Windows game's executable.
+#
+#   gluon <verb> <windows executable> [arguments...]
+#
+# Verbs follow the Steam Play tool convention: "run" starts the program,
+# "waitforexitandrun" first waits for a previous session in the same prefix to end.
+# The same command line works from a Steam launch option:  "<this file>" run %command%
+#
+# Two kinds of runtime are supported, picked by what the runtime folder contains:
+#   proton   a Steam Play tool laid out like Proton (proton, files/bin/wine); it is
+#            handed the same STEAM_COMPAT_* environment Steam gives such a tool
+#   wine     a plain Wine tree (bin/wine)
+#
+# Environment:
+#   GLUON_HOME        Gluon's data folder (default ~/Library/Application Support/Gluon)
+#   GLUON_RUNTIME     runtime folder to use; default is $GLUON_HOME/runtime/current
+#   GLUON_EXTRA_ARGS  extra arguments appended to the game's command line
+#   GLUON_DRY_RUN     if set, log what would be started and exit 0
+#
+# Per-game settings: $GLUON_HOME/games/<appid>.env, one NAME=value per line, applied as
+# environment before anything else is decided (e.g. GLUON_RUNTIME=wine-stable,
+# PROTON_NO_MSYNC=1, PROTON_MAC_GFX=wined3d).
+
+GLUON_HOME="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
+appid="${SteamAppId:-${SteamGameId:-${STEAM_COMPAT_APP_ID:-0}}}"
+LOG_DIR="$GLUON_HOME/logs"
+LOG="$LOG_DIR/launch-$appid.log"
+WINE_LOG="$LOG_DIR/wine-$appid.log"
+mkdir -p "$LOG_DIR"
+
+log() {
+    printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$*" >> "$LOG"
+}
+
+fail() {
+    log "ERROR: $*"
+    printf 'gluon: %s\n' "$*" >&2
+    exit 1
+}
+
+log "---- invoked: $0"
+n=0
+for a in "$@"; do
+    n=$((n + 1))
+    log "  argv[$n] = $a"
+done
+log "  cwd = $(pwd)"
+env | grep -E '^(Steam|STEAM_|SteamApp|SteamGame|GLUON_|WINE|PROTON_)' | sort | while IFS= read -r line; do
+    log "  env $line"
+done
+
+settings="$GLUON_HOME/games/$appid.env"
+if [ -f "$settings" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            '' | '#'*) ;;
+            [A-Za-z_]*=*)
+                export "$line"
+                log "  setting $line"
+                ;;
+        esac
+    done < "$settings"
+fi
+
+# Rosetta settings every Windows runtime here benefits from (both are documented
+# switches; set a variable to 0 in the per-game settings to turn it off).
+[ "${ROSETTA_ADVERTISE_AVX-1}" = 0 ] && unset ROSETTA_ADVERTISE_AVX || export ROSETTA_ADVERTISE_AVX=1
+export DOTNET_EnableWriteXorExecute="${DOTNET_EnableWriteXorExecute:-0}"
+
+# Steam adds its overlay library for native games to what it launches. It is built for
+# Mac programs and must not be carried into the Windows runtime.
+unset DYLD_INSERT_LIBRARIES
+
+verb="$1"
+[ $# -gt 0 ] && shift
+case "$verb" in
+    run | waitforexitandrun) ;;
+    *) fail "unsupported verb '$verb' (expected run or waitforexitandrun)" ;;
+esac
+[ $# -gt 0 ] || fail "no executable given"
+exe="$1"
+shift
+
+runtime=""
+kind=""
+for candidate in "$GLUON_RUNTIME" "$GLUON_HOME/runtime/$GLUON_RUNTIME" "$GLUON_WINE_ROOT" "$GLUON_HOME/runtime/current"; do
+    [ -n "$candidate" ] && [ "$candidate" != "$GLUON_HOME/runtime/" ] || continue
+    if [ -x "$candidate/proton" ] && [ -x "$candidate/files/bin/wineserver" ]; then
+        runtime="$candidate" kind=proton wineserver="$candidate/files/bin/wineserver"
+        break
+    elif [ -x "$candidate/bin/wine" ]; then
+        runtime="$candidate" kind=wine wineserver="$candidate/bin/wineserver"
+        break
+    fi
+done
+[ -n "$runtime" ] || fail "no runtime found (looked in \$GLUON_RUNTIME and $GLUON_HOME/runtime/current)"
+
+# One prefix per game, laid out the way Steam Play does it: <library>/steamapps/compatdata/<appid>/pfx
+install_dir=""
+case "$exe" in
+    */steamapps/common/*)
+        library="${exe%%/steamapps/common/*}"
+        rest="${exe#*/steamapps/common/}"
+        install_dir="$library/steamapps/common/${rest%%/*}"
+        compat="$library/steamapps/compatdata/$appid"
+        ;;
+    *) compat="$GLUON_HOME/compatdata/$appid" ;;
+esac
+[ -n "$STEAM_COMPAT_DATA_PATH" ] && compat="$STEAM_COMPAT_DATA_PATH"
+mkdir -p "$compat" || fail "cannot create $compat"
+
+# A Steam Play tool insists on <compat>/pfx and fills it with its own files, so a plain
+# Wine runtime gets a prefix of its own rather than sharing that one.
+if [ "$kind" = proton ]; then
+    export WINEPREFIX="$compat/pfx"
+else
+    export WINEPREFIX="$compat/pfx-wine"
+fi
+export WINEDEBUG="${WINEDEBUG:-fixme-all}"
+# keep Wine from writing launchers/file associations into the user's macOS account
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}winemenubuilder.exe=d"
+
+log "  runtime   = $runtime ($kind)"
+log "  prefix    = $WINEPREFIX"
+log "  program   = $exe"
+
+if [ "$kind" = proton ]; then
+    # The contract Steam gives a Steam Play tool. The client folder is where the tool
+    # finds the running client's steamclient.dylib for the Steam API.
+    if [ -n "$STEAM_CLIENT_CONFIG_FILE" ]; then
+        client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
+    else
+        client_dir="$HOME/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS"
+    fi
+    export STEAM_COMPAT_DATA_PATH="$compat"
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$client_dir}"
+    export STEAM_COMPAT_APP_ID="$appid"
+    [ -n "$install_dir" ] && export STEAM_COMPAT_INSTALL_PATH="${STEAM_COMPAT_INSTALL_PATH:-$install_dir}"
+    export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+    log "  client    = $STEAM_COMPAT_CLIENT_INSTALL_PATH"
+fi
+
+# Chromium-based games (Electron, CEF) draw from a separate GPU process; the Direct3D
+# layers here cannot present into another process's window, which leaves a blank
+# window. Keeping the GPU work inside the window's own process avoids that.
+exe_dir="$(dirname "$exe")"
+if [ -z "$GLUON_NO_AUTO_ARGS" ] && { [ -f "$exe_dir/chrome_100_percent.pak" ] || [ -f "$exe_dir/resources/app.asar" ] || [ -f "$exe_dir/LICENSES.chromium.html" ]; }; then
+    log "  Chromium-based app detected: adding --in-process-gpu"
+    set -- "$@" --in-process-gpu
+fi
+if [ -n "$GLUON_EXTRA_ARGS" ]; then
+    log "  extra arguments: $GLUON_EXTRA_ARGS"
+    # shellcheck disable=SC2086  # word splitting is intended: one argument per word
+    set -- "$@" $GLUON_EXTRA_ARGS
+fi
+
+# Steam API bridge: when the runtime carries it, the game is started through its helper
+# so that the game's steam_api finds the running Mac Steam client.
+steam_bridge=""
+if [ "$kind" = wine ] && [ -f "$runtime/lib/wine/x86_64-windows/lsteamclient.dll" ] \
+    && [ -f "$runtime/lib/wine/x86_64-windows/steam.exe" ] && [ -z "$GLUON_NO_STEAM_BRIDGE" ]; then
+    steam_bridge=1
+    if [ -n "$STEAM_CLIENT_CONFIG_FILE" ]; then
+        client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
+    else
+        client_dir="$HOME/Library/Application Support/Steam/Steam.AppBundle/Steam/Contents/MacOS"
+    fi
+    export STEAM_COMPAT_CLIENT_INSTALL_PATH="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$client_dir}"
+    export STEAM_COMPAT_DATA_PATH="$compat" STEAM_COMPAT_APP_ID="$appid"
+    [ -n "$install_dir" ] && export STEAM_COMPAT_INSTALL_PATH="${STEAM_COMPAT_INSTALL_PATH:-$install_dir}"
+    export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;steam.exe=b"
+    log "  steam bridge: on (client $STEAM_COMPAT_CLIENT_INSTALL_PATH)"
+fi
+
+if [ -n "$GLUON_DRY_RUN" ]; then
+    log "  dry run: not starting the runtime"
+    exit 0
+fi
+
+case "$exe" in
+    */*) cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")" ;;
+esac
+
+# Steam treats this process as the game: playtime, the Stop button and the cloud sync
+# on exit all follow it. Stay around until the session is over, and take the prefix
+# down if Steam asks us to stop.
+stop_session() {
+    log "  stop requested, ending the session"
+    "$wineserver" -k >> "$WINE_LOG" 2>&1
+    exit 143
+}
+trap stop_session TERM INT HUP
+
+printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
+started=$(date +%s)
+log_start=$(wc -l < "$WINE_LOG")
+
+if [ "$kind" = proton ]; then
+    # The tool creates the prefix, waits for an earlier session and returns when the game exits.
+    if [ ! -d "$runtime/files/share/default_pfx" ] || [ ! -f "$WINEPREFIX/system.reg" ]; then
+        # Prefix setup is about to run (the tool's template, this game's prefix, or both).
+        # A runtime without bundled Mono/Gecko would stop on a download prompt there.
+        log "  first run: add-on download prompts switched off for this launch"
+        export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;mscoree,mshtml="
+    fi
+    log "  starting the tool (output in $WINE_LOG)"
+    "$runtime/proton" waitforexitandrun "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+    wait $!
+    status=$?
+else
+    if [ ! -f "$WINEPREFIX/system.reg" ]; then
+        # First run for this game: create the prefix up front.
+        log "  creating prefix"
+        setup_overrides="$WINEDLLOVERRIDES"
+        if [ ! -d "$runtime/share/wine/mono" ]; then
+            # No bundled add-ons: without this, setup stops on a download prompt.
+            setup_overrides="$setup_overrides;mscoree,mshtml="
+        fi
+        WINEDLLOVERRIDES="$setup_overrides" "$runtime/bin/wine" wineboot --init >> "$WINE_LOG" 2>&1 \
+            || log "  wineboot exited with status $?"
+        "$wineserver" -w >> "$WINE_LOG" 2>&1
+    elif [ "$verb" = waitforexitandrun ]; then
+        "$wineserver" -w >> "$WINE_LOG" 2>&1
+    fi
+    if [ -n "$steam_bridge" ]; then
+        # The helper and the bridge DLL have to exist inside the prefix; a prefix made
+        # before the runtime carried them does not have them yet.
+        for pair in "x86_64-windows:system32" "i386-windows:syswow64"; do
+            src="$runtime/lib/wine/${pair%%:*}"
+            dst="$WINEPREFIX/drive_c/windows/${pair##*:}"
+            [ -d "$dst" ] || continue
+            for f in steam.exe lsteamclient.dll; do
+                [ -f "$src/$f" ] && [ ! -f "$dst/$f" ] && cp "$src/$f" "$dst/$f"
+            done
+        done
+        # The helper keeps its files where a Windows Steam install would be.
+        mkdir -p "$WINEPREFIX/drive_c/Program Files (x86)/Steam"
+        if [ ! -f "$compat/.gluon-steam-bridge" ]; then
+            # Tell steam_api where the client library is: the bridge DLL.
+            for value in SteamClientDll SteamClientDll64; do
+                "$runtime/bin/wine" reg add 'HKCU\Software\Valve\Steam\ActiveProcess' /v "$value" /t REG_SZ \
+                    /d 'C:\windows\system32\lsteamclient.dll' /f >> "$WINE_LOG" 2>&1
+            done
+            "$wineserver" -w >> "$WINE_LOG" 2>&1
+            : > "$compat/.gluon-steam-bridge"
+            log "  steam bridge: registry entries written"
+        fi
+        log "  starting Wine through the Steam helper (output in $WINE_LOG)"
+        "$runtime/bin/wine" 'c:\windows\system32\steam.exe' "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+    else
+        log "  starting Wine (output in $WINE_LOG)"
+        "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+    fi
+    wait $!
+    status=$?
+    # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
+    "$wineserver" -w >> "$WINE_LOG" 2>&1 &
+    wait $!
+fi
+elapsed=$(( $(date +%s) - started ))
+log "  session ended (exit status $status, ${elapsed}s)"
+
+# A game that dies right after starting would otherwise just vanish. Say so, with the
+# most telling line from this session's output and where the full log is.
+if [ "$status" -ne 0 ] && [ "$elapsed" -lt 90 ]; then
+    reason="$(tail -n +"$((log_start + 1))" "$WINE_LOG" \
+        | grep -a -E 'err:|error|assert|Unhandled|fatal' \
+        | grep -a -v -E 'try_map_free_area|winediag|winebth|xalia|vrclient|Error while copying' \
+        | tail -1 | cut -c1-160)"
+    log "  reported to the user: ${reason:-no error line found}"
+    /usr/bin/osascript - "$(basename "$exe" .exe) stopped after ${elapsed}s" \
+        "${reason:-No error message was logged.} Log: $WINE_LOG" >/dev/null 2>&1 <<'NOTE'
+on run argv
+    display notification (item 2 of argv) with title "Gluon" subtitle (item 1 of argv)
+end run
+NOTE
+fi
+exit "$status"

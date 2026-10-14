@@ -1,0 +1,80 @@
+name: Build
+
+# Builds the Windows runtime from published open-source code on an Apple Silicon runner
+# (see packaging/build-runtime.sh), then the installer package. A manual run uploads the
+# package as a workflow artifact; pushing a tag vX.Y.Z also publishes a release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version for the package name (e.g. 0.3.0-dev)
+        required: true
+        default: 0.0.0-dev
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then v="${GITHUB_REF_NAME#v}"; else v="${{ inputs.version }}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Rosetta 2
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Build tools
+        run: brew install bison flex autoconf automake libtool pkgconf
+
+      - name: Cache downloads
+        uses: actions/cache@v4
+        with:
+          path: build/downloads
+          key: downloads-${{ hashFiles('packaging/build-runtime.sh') }}
+
+      - name: Steam bridge input
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p build/inputs
+          gh release download runtime-inputs-1 -R "$GITHUB_REPOSITORY" -p 'steam-bridge-*.tar.gz*' -D build/inputs || echo "no Steam bridge input published"
+          if ls build/inputs/*.sha256 >/dev/null 2>&1; then (cd build/inputs && shasum -a 256 -c ./*.sha256); fi
+
+      - name: Build runtime
+        run: packaging/build-runtime.sh
+
+      - name: Build logs on failure
+        if: failure()
+        run: |
+          for f in build/wine-build/config.log build/src/freetype/builds/unix/config.log; do
+            [ -f "$f" ] && { echo "::group::$f (tail)"; tail -n 150 "$f"; echo "::endgroup::"; }
+          done
+
+      - name: Package
+        run: |
+          GLUON_PKG_RUNTIME="$PWD/build/gluon-wine" packaging/build-pkg.sh "${{ steps.version.outputs.version }}"
+          (cd dist && shasum -a 256 Gluon-*.pkg > "Gluon-${{ steps.version.outputs.version }}.pkg.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gluon-${{ steps.version.outputs.version }}
+          path: dist/Gluon-*.pkg*
+          if-no-files-found: error
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/Gluon-*.pkg dist/Gluon-*.pkg.sha256 \
+            --title "Gluon ${{ steps.version.outputs.version }}" --generate-notes --prerelease

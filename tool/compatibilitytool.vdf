@@ -1,0 +1,13 @@
+"compatibilitytools"
+{
+	"compat_tools"
+	{
+		"gluon"
+		{
+			"install_path"		"."
+			"display_name"		"Gluon"
+			"from_oslist"		"windows"
+			"to_oslist"		"macos"
+		}
+	}
+}

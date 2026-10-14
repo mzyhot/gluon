@@ -1,0 +1,18 @@
+#!/bin/sh
+# Remove Gluon. Restores the original Steam metadata and launch options for every game
+# Gluon enabled, stops the background helper and deletes the installed program files.
+# Game prefixes (steamapps/compatdata), logs, backups and state are left in place.
+set -e
+gluon="$(cd "$(dirname "$0")/.." && pwd)"
+plist="$HOME/Library/LaunchAgents/com.gluon.agent.plist"
+
+if pgrep -x steam_osx >/dev/null; then
+    echo "Quit Steam first, then run this again." >&2
+    exit 1
+fi
+launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null || true
+rm -f "$plist"
+PYTHONPATH="$gluon/lib" /usr/bin/python3 -m gluon disable --all
+rm -rf "$gluon/bin" "$gluon/lib" "$gluon/runtime"
+pkgutil --forget com.gluon.pkg --volume "$HOME" >/dev/null 2>&1 || true
+echo "Gluon removed. Left in place: $gluon (logs, backups, state)"

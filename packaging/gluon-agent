@@ -1,0 +1,6 @@
+#!/bin/sh
+# Background helper started by launchd (com.gluon.agent). Each run makes sure every
+# Windows-only game in the Steam library is installable and routed through Gluon.
+# It does nothing while Steam is running, because Steam rewrites its files on exit.
+here="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$here/lib" exec /usr/bin/python3 -m gluon sync --log

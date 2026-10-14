@@ -1,0 +1,33 @@
+#!/bin/sh
+# Runs as the installing user. Registers the background helper for this user and starts it.
+home="$HOME"
+gluon="$home/Library/Application Support/Gluon"
+plist="$home/Library/LaunchAgents/com.gluon.agent.plist"
+
+mkdir -p "$home/Library/LaunchAgents" "$gluon/logs"
+cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gluon.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$gluon/bin/gluon-agent</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardErrorPath</key>
+    <string>$gluon/logs/agent-stderr.log</string>
+</dict>
+</plist>
+PLIST
+
+launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null
+launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null
+exit 0
