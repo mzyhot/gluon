@@ -13,7 +13,7 @@ PROBES="$4"
 mkdir -p "$PROBES"
 MVK="$RUNTIME/lib/libMoltenVK.dylib"
 [ -f "$MVK" ] || { echo "Missing bundled MoltenVK: $MVK" >&2; exit 1; }
-lipo -verify_arch x86_64 "$MVK"
+lipo "$MVK" -verify_arch x86_64
 clang -arch x86_64 -O2 -Wall -Wextra -Werror -Wno-ignored-attributes \
     -DWINE_UNIX_LIB -I"$WINE_SOURCE/include" "$ROOT/packaging/probes/vulkan.c" \
     -o "$PROBES/vulkan-native"

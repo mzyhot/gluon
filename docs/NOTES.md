@@ -50,7 +50,8 @@ built or installed.
 - Per-entry binary SHA-1 = SHA-1 of the stored blob (verified for 412/412 entries).
 - Per-entry text SHA-1 is only reproduced by our formatter for 77/412 entries. It is
   left untouched when an entry is edited and Steam accepts the entry.
-- Steam reads the cache at startup and writes it back on exit, so edits must be made
+- Steam reads the cache at startup and writes it on exit and after metadata refreshes
+  (the October 14 refresh was persisted within five seconds), so edits must be made
   while Steam is closed. Edited entries survived three restarts.
 
 ## Launcher behaviour
@@ -417,22 +418,132 @@ uploaded text evidence. Each Wine probe has a deadline and an isolated CI prefix
 cleanup stops its server. A missing hosted-runner GPU is recorded as a skip,
 never a passed rendering check. Linux source checks passed on commit `a483e56`
 (run 38498349195). The first macOS graphics build was dispatched as run
-38498386464; complete-runtime results are pending. Follow-up review tightened
+38498386464. Wine and both Direct3D 9 DLLs built; the job then failed because a
+`lipo -verify_arch` check put the dylib path after its variadic architecture list.
+The filename is now before that option. Complete-runtime results remain pending.
+Follow-up review tightened
 server cleanup and requires an explicit unavailable exit code for GPU skips.
+
+## Installation recovery and notifications (2026-10-14)
+
+Happy Wheels (4705510) had a missing installation directory, but its manifest still
+claimed fully installed (`StateFlags=4`, `SizeOnDisk=0`, empty `InstalledDepots`).
+The client had refreshed its metadata to `windows,linux` at 10:13:37, removing depot
+4705511 from the selected depots. Verification at 10:23:41 selected no target depots
+and Steam committed deletion of 426 files. This is direct evidence of the metadata
+refresh hazard, in addition to the owner's manual removal of the game folder.
+
+Steam was closed through its own `-shutdown` command. Gluon sync restored the
+refreshed entries and the stale Happy Wheels manifest was moved, without deletion,
+to `backups/install-4705510-20261014-103947/appmanifest_4705510.acf`. After reopening
+Steam, its library index no longer listed Happy Wheels as installed; the owner
+confirmed the Install button was enabled. No saves or compatibility prefixes were
+removed and the game was not launched.
+
+`gluon/install.py` now recovers the same state for managed games during offline
+sync: it preserves a fully installed manifest under a unique sibling filename when
+the installation directory is confirmed absent. Existing folders, dangling links,
+pending downloads, inaccessible or unmounted libraries and ambiguous manifests
+are left alone. Steam process-inspection errors now prevent file edits.
+
+`gluon/metadata.py` adds a persistent update preference for installed managed games:
+Steam's ordinary update-on-launch setting (`AutoUpdateBehavior=1`). The current
+client's `steamui/sp.js` module 71670 maps its update-on-launch label to enum value 1;
+Valve describes the setting in its [download and update documentation](https://help.steampowered.com/en/faqs/view/71AB-698D-57EB-178C).
+The manifest is backed up, original preferences are recorded, and disabling Gluon
+restores the preference only if the owner has not since changed it. This defers
+background updates; it cannot prevent manual Verify or a launch-time update from
+reconciling depots after a live metadata refresh. New installations receive this
+guard on the next offline sync; in-progress downloads are never rewritten.
+
+The background helper now checks a changed on-disk cache while Steam runs and warns
+once per changed drift set. It never edits Steam's files while the client runs.
+The incident's `appinfo_log.txt` records a successful refresh write at 10:13:42,
+so this incident is detectable from disk. Detection follows the helper's minute
+interval; immediate detection of an in-memory-only change is not established.
+Hardcoding a future change number or locking the shared cache is not used: those
+would not reliably prevent an in-memory replacement and could affect native games.
+
+Gluon's launcher clears Steam's native overlay library before Wine. The Steam API
+bridge stores achievements: local caches decode 14 Happy Wheels unlocks and 17
+People Playground unlocks. A custom cache watcher and AppKit banner prototype was
+installed and detected the real achievement an unlock, but the owner
+heard its sound without seeing its fullscreen panel. A window-ordering fix was
+previewed once. The owner rejected this substitute and requires Steam's actual
+achievement notifications and overlay. The custom helper and its package/launcher
+integration were removed; previous installed files were preserved under
+`backups/removed-custom-notifications-20261014-110905`. No active custom helper
+remained at removal. Do not restore this prototype or show another custom banner.
+Real Steam overlay support remains unresolved.
+
+The installation/metadata/process fixtures passed as part of the earlier 63-test
+suite; that count included the removed banner prototype. No Wine, game, OpenGL or
+Vulkan process was started by those fixture tests. Game sessions above were the
+owner's own tests. Source and packaging changes remain uncommitted.
+
+The owner stopped REA after it selected the configured Hopper provider. The
+Hopper query failed with Apple-events authorization denied and unconfirmed target
+cleanup; it was not retried. All research agents were interrupted. The subsequent
+process check showed no running Hopper or Ghidra/Java analysis process. Future REA
+native analysis must explicitly use Ghidra, never Hopper; do not resume the stopped
+analysis without the owner's instruction.
+
+The owner subsequently resumed the investigation and explicitly requested REA's
+command-line tools. The connected MCP instance lacked `GHIDRA_INSTALL_DIR`; the
+installed CLI was used with the existing `a local Ghidra 12.1.4 installation`, explicit
+`--provider ghidra`, a 512 MB headless heap, one available CPU and reduced priority.
+Every native invocation had a 60-second external deadline and a 45-second startup
+deadline. REA evidence confirms Ghidra 12.1.4; Hopper was not used after resumption.
+No Ghidra installation or native build was required: its Mac arm64 decompiler was
+already present in `Ghidra/Features/Decompiler/build/os/mac_arm_64/decompile`.
+
+The official Steam overlay's x86_64 slice was analyzed statically, without executing
+it. Its initializer reads `SteamGameId` and `SteamOverlayGameId` and creates native
+per-PID overlay streams/events. Its NSApplication category initializes native Metal
+hooks for CAMetalLayer nextDrawable and the actual command-buffer class's present,
+commit and scheduled-handler methods. Those are the native methods reached by
+DXMT and MoltenVK, so rejecting the Mac overlay merely because the guest is Windows
+was not supported by the evidence. Runtime compatibility still needs validation.
+See `docs/graphics-steam-overlay.md` for the artifact identity and REA evidence.
+
+`gluon/overlay.py` validates Steam's supplied insertion list against the actual
+client directory and x86_64 Mach-O dylib headers. The launcher clears insertions
+before its helpers, then restores the validated list only on the final direct
+plain-Wine launch. Steam IDs are preserved. The Proton wrapper path is unchanged;
+its own shell/Python boundary needs separate integration. Wine may implicitly
+spawn server/child processes inheriting the final native environment; explicit
+setup, registry and server commands remain clear. This uses Valve's actual overlay,
+with no custom banner, sound or achievement modifications, and no redistributed
+Valve binary. The reviewed helper and launcher are installed for the owner's next
+Play test. Real fullscreen popup/sound success is not yet established.
+
+The updated local suite ran 53 tests in 0.048 seconds: 50 passed and three Linux-only
+shell-routing fixtures were skipped because macOS SIP purges DYLD variables from
+shell interpreters. Header validation accepted the actual installed Valve library
+pair without loading native code. Linux CI must run the routing fixtures.
+
+The owner requires the original Steam game page and Play button. The alternative
+of Gluon-owned installations with local Steam shortcuts was declined. No shortcuts
+or separate content store were created. Update-on-launch plus refresh detection is
+a mitigation, not a guarantee against Steam replacing its in-memory app metadata.
 
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
    moves on the server. The app then reverts to Windows-only and Steam would remove its
    depots at the next update. `gluon sync` (run by the packaged agent) re-applies it
-   whenever Steam is closed. Still open: the window while Steam stays running after a
-   refresh (look at `AutoUpdateBehavior` as a guard).
+   whenever Steam is closed. Managed installed games now defer background updates
+   until launch, and a disk-cache refresh produces a restart notification. Manual
+   verification or launch-time reconciliation after a refresh remains a limitation.
 2. **Library UI.** Tested through `app_install` and `steam://rungameid`. The Install
-   button and platform icons in the library page have not been looked at.
+   button was confirmed enabled by the owner after Happy Wheels installation recovery.
+   Platform icons and the remaining library flows are untested.
 3. **Steam's Stop button.** `app_stop` and `SteamClient.Apps.TerminateApp` did not
    signal the launcher. Find out how the Mac client stops a game.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
-   "init error gone" with one game; achievements, Workshop and DRM-wrapped titles untested.
+   "init error gone" with one game; local achievement caches confirm persisted unlocks.
+   Valve's real overlay popup/sound through the restored native loading path,
+   Workshop and DRM-wrapped titles are untested.
 5. **Install scripts.** Steam logs `RunningInstallScript` but the Windows steps
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.

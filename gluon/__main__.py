@@ -24,7 +24,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
     rows = enable.status()
     print("Enabled apps :", len(rows))
     for r in rows:
-        state = "in effect" if r["in_effect"] else "REPLACED BY STEAM - run enable again"
+        state = "in effect" if r["in_effect"] else "REFRESHED BY STEAM - restart Steam so Gluon can restore compatibility"
         print("  %-8d %-32s %s (change %s)" % (r["appid"], r["name"], state, r["cache_change"]))
     return 0
 
@@ -80,7 +80,7 @@ def main() -> int:
     s.add_argument("appid", type=int, nargs="*")
     s.add_argument("--all", action="store_true", help="every app Gluon enabled")
     s.set_defaults(fn=cmd_disable)
-    s = sub.add_parser("sync", help="enable every Windows-only library game and re-apply refreshed entries (no-op while Steam runs)")
+    s = sub.add_parser("sync", help="restore and protect managed games while Steam is closed; warn about refreshed metadata while it runs")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--log", action="store_true", help="append results to logs/agent.log instead of printing")
     s.set_defaults(fn=cmd_sync)
@@ -92,7 +92,7 @@ def main() -> int:
     args = p.parse_args()
     try:
         return args.fn(args)
-    except (enable.EnableError, cef.BridgeError) as e:
+    except (enable.EnableError, cef.BridgeError, steam.SteamError) as e:
         print("gluon: %s" % e, file=sys.stderr)
         return 1
 

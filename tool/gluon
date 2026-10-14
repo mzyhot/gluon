@@ -22,6 +22,10 @@
 # environment before anything else is decided (e.g. GLUON_RUNTIME=wine-stable,
 # PROTON_NO_MSYNC=1, PROTON_MAC_GFX=wined3d).
 
+# Steam preserves its intended list separately in STEAM_DYLD_INSERT_LIBRARIES.
+# Keep the launcher's first helper commands free of native insertions as well.
+unset DYLD_INSERT_LIBRARIES
+
 GLUON_HOME="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
 appid="${SteamAppId:-${SteamGameId:-${STEAM_COMPAT_APP_ID:-0}}}"
 LOG_DIR="$GLUON_HOME/logs"
@@ -68,8 +72,8 @@ fi
 [ "${ROSETTA_ADVERTISE_AVX-1}" = 0 ] && unset ROSETTA_ADVERTISE_AVX || export ROSETTA_ADVERTISE_AVX=1
 export DOTNET_EnableWriteXorExecute="${DOTNET_EnableWriteXorExecute:-0}"
 
-# Steam adds its overlay library for native games to what it launches. It is built for
-# Mac programs and must not be carried into the Windows runtime.
+# Keep native dyld insertions away from prefix setup, Python and server commands.
+# Only the final plain-Wine game launch receives Steam's validated overlay below.
 unset DYLD_INSERT_LIBRARIES
 
 verb="$1"
@@ -178,6 +182,8 @@ if [ -n "$GLUON_DRY_RUN" ]; then
     exit 0
 fi
 
+overlay_source_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+
 case "$exe" in
     */*) cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")" ;;
 esac
@@ -186,10 +192,12 @@ esac
 # on exit all follow it. Stay around until the session is over, and take the prefix
 # down if Steam asks us to stop.
 stop_session() {
+    trap '' TERM INT HUP
     log "  stop requested, ending the session"
     "$wineserver" -k >> "$WINE_LOG" 2>&1
     exit 143
 }
+
 trap stop_session TERM INT HUP
 
 printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
@@ -223,6 +231,21 @@ else
     elif [ "$verb" = waitforexitandrun ]; then
         "$wineserver" -w >> "$WINE_LOG" 2>&1
     fi
+    overlay_insert=""
+    if [ "${SteamClientLaunch:-}" = 1 ] && [ -n "${STEAM_DYLD_INSERT_LIBRARIES:-}" ]; then
+        overlay_lib="$GLUON_HOME/lib"
+        [ -f "$overlay_lib/gluon/overlay.py" ] || overlay_lib="$overlay_source_root"
+        if [ -f "$overlay_lib/gluon/overlay.py" ]; then
+            if [ -n "${STEAM_CLIENT_CONFIG_FILE:-}" ]; then
+                overlay_client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
+            else
+                overlay_client_dir="${STEAM_ROOT:-$HOME/Library/Application Support/Steam}/Steam.AppBundle/Steam/Contents/MacOS"
+            fi
+            overlay_insert="$(PYTHONPATH="$overlay_lib" PYTHONDONTWRITEBYTECODE=1 \
+                /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.overlay \
+                --client-dir "$overlay_client_dir" 2>> "$LOG")" || overlay_insert=""
+        fi
+    fi
     if [ -n "$steam_bridge" ]; then
         # The helper and the bridge DLL have to exist inside the prefix; a prefix made
         # before the runtime carried them does not have them yet.
@@ -247,10 +270,21 @@ else
             log "  steam bridge: registry entries written"
         fi
         log "  starting Wine through the Steam helper (output in $WINE_LOG)"
-        "$runtime/bin/wine" 'c:\windows\system32\steam.exe' "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+        if [ -n "$overlay_insert" ]; then
+            log "  passing Steam's native overlay libraries to the Wine game host"
+            DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" \
+                'c:\windows\system32\steam.exe' "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+        else
+            "$runtime/bin/wine" 'c:\windows\system32\steam.exe' "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+        fi
     else
         log "  starting Wine (output in $WINE_LOG)"
-        "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+        if [ -n "$overlay_insert" ]; then
+            log "  passing Steam's native overlay libraries to the Wine game host"
+            DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+        else
+            "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+        fi
     fi
     wait $!
     status=$?

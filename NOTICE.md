@@ -24,6 +24,9 @@ installed as `licenses/Gluon-Wine-OpenGL.patch`. They resolve Khronos-defined
 `GL_EXT_gpu_shader4` aliases when the active context supports that extension.
 ANGLE and MGL were evaluated from their public source and are not shipped.
 
+Steam's native overlay is loaded, when Steam supplies it, from the user's installed
+Mac Steam client. No Valve overlay library is copied into or distributed with Gluon.
+
 No binary from any commercial product is included, and nothing from Apple's Game Porting
 Toolkit.
 

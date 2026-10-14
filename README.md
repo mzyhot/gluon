@@ -8,6 +8,9 @@ Steam Play; for MacOS.
       appinfo.py      read/rewrite Steam's app metadata cache
       enable.py       make an app installable + route its Play button to the launcher
       steam.py        Steam paths, running check
+      install.py      preserve stale installation records when game folders are missing
+      metadata.py     managed-game update protection and metadata refresh detection
+      overlay.py      restore Steam's own native overlay at the Wine launch boundary
       cef.py          Steam console over the client's debug bridge (development aid)
     tool/             what gets installed into Steam's compatibilitytools.d/gluon
       gluon           launcher Steam starts in place of the game's .exe
@@ -37,3 +40,11 @@ in the library installable and routed through Gluon. See docs/NOTES.md, "Package
 The launcher uses the runtime at `~/Library/Application Support/Gluon/runtime/current`
 (or `$GLUON_RUNTIME`): either a plain Wine tree or a Proton-layout Steam Play tool.
 It logs to `~/Library/Application Support/Gluon/logs/`.
+
+Gluon restores refreshed compatibility metadata while Steam is closed and protects
+managed games with Steam's update-on-launch policy. If Steam refreshes an entry
+mid-session, Gluon asks for a restart before updating or verifying that game.
+Missing installation folders are recovered without removing saves or Wine prefixes.
+
+The plain-Wine launcher preserves Steam's supplied native overlay for the game
+host. The overlay comes from the user's installed Steam client.
