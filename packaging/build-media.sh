@@ -37,6 +37,10 @@ fetch https://github.com/PhilipHazel/pcre2/releases/download/pcre2-10.42/pcre2-1
     8d36cd8cb6ea2a4c2bb358ff6411b0c788633a2a45dabbf1aeb4b701d1b5e840 pcre2-10.42.tar.bz2
 fetch https://codeload.github.com/frida/proxy-libintl/tar.gz/refs/tags/0.4 \
     13ef3eea0a3bc0df55293be368dfbcff5a8dd5f4759280f28e030d1494a5dffb proxy-libintl-0.4.tar.gz
+# Match GLib 2.78.0's gvdb.wrap; the published archive leaves this submodule empty.
+GVDB_REV=0854af0fdb6d527a8d1999835ac2c5059976c210
+fetch "https://gitlab.gnome.org/GNOME/gvdb/-/archive/$GVDB_REV/gvdb-$GVDB_REV.tar.gz" \
+    08352e54e8216d9001820c627c62858585465b51dc557cc22f0f4770ed182ebd "gvdb-$GVDB_REV.tar.gz"
 fetch https://ffmpeg.org/releases/ffmpeg-6.1.6.tar.xz \
     d4fcb164028dd3beee5d92c0ac72e46aac6973c75ea12dc14de07bf8f407370a ffmpeg-6.1.6.tar.xz
 fetch https://github.com/mesonbuild/meson/releases/download/1.12.1/meson-1.12.1.tar.gz \
@@ -88,6 +92,15 @@ unpack SDL2-2.32.10.tar.gz sdl2
 unpack libffi-3.4.6.tar.gz libffi
 unpack pcre2-10.42.tar.bz2 pcre2
 unpack ffmpeg-6.1.6.tar.xz ffmpeg
+grep -qx "revision=$GVDB_REV" "$SRC/glib/subprojects/gvdb.wrap" || {
+    echo 'GLib GVDB revision differs from the pinned source' >&2; exit 1;
+}
+unpack "gvdb-$GVDB_REV.tar.gz" glib/subprojects/gvdb
+for file in meson.build COPYING gvdb/gvdb-builder.c gvdb/gvdb-builder.h gvdb/gvdb-reader.c gvdb/gvdb-reader.h gvdb/gvdb-format.h; do
+    [ -s "$SRC/glib/subprojects/gvdb/$file" ] || {
+        echo "Missing GVDB source: $file" >&2; exit 1;
+    }
+done
 # GLib's archived wrap points at mutable Git branches. Supply the pinned source
 # directory instead; Meson is forbidden to download any fallback.
 mkdir -p "$SRC/glib/subprojects/proxy-libintl"
@@ -176,6 +189,7 @@ cp "$SRC/libffi/LICENSE" "$NOTICES/libffi-LICENSE.txt"
 cp "$SRC/pcre2/LICENCE" "$NOTICES/PCRE2-LICENSE.txt"
 cp "$SRC/glib/COPYING" "$NOTICES/GLib-COPYING.txt"
 cp -R "$SRC/glib/LICENSES" "$NOTICES/GLib-LICENSES"
+cp "$SRC/glib/subprojects/gvdb/COPYING" "$NOTICES/GVDB-COPYING.txt"
 cp "$SRC/glib/subprojects/proxy-libintl/COPYING" "$NOTICES/proxy-libintl-COPYING.txt"
 cp "$SRC/gstreamer/LICENSE" "$NOTICES/GStreamer-LICENSE.txt"
 for component in gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav; do
@@ -190,6 +204,9 @@ cat > "$NOTICES/SOURCES.txt" <<'EOF'
 GLib 2.78.0 and GStreamer 1.24.4 (core, base/good/bad/ugly/libav):
 https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz
 SHA-256 ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872
+GVDB, GLib 2.78.0's pinned submodule commit 0854af0fdb6d527a8d1999835ac2c5059976c210:
+https://gitlab.gnome.org/GNOME/gvdb/-/archive/0854af0fdb6d527a8d1999835ac2c5059976c210/gvdb-0854af0fdb6d527a8d1999835ac2c5059976c210.tar.gz
+SHA-256 08352e54e8216d9001820c627c62858585465b51dc557cc22f0f4770ed182ebd
 SDL2 2.32.10: https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10
 SHA-256 5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165
 libffi 3.4.6: https://github.com/libffi/libffi/releases/tag/v3.4.6
@@ -203,6 +220,7 @@ FFmpeg 6.1.6: https://ffmpeg.org/releases/ffmpeg-6.1.6.tar.xz
 SHA-256 d4fcb164028dd3beee5d92c0ac72e46aac6973c75ea12dc14de07bf8f407370a
 FFmpeg uses LGPL configuration, without GPL/nonfree/version3 or external codecs.
 libffi and PCRE2 are linked into GLib; proxy-libintl is a shared NLS stub library.
+GVDB reader/builder sources are compiled into GLib and its resource/schema tools.
 All native code is compiled from these sources for x86_64, -O2, on macOS Actions.
 No native components are copied from a commercial application or Homebrew.
 See the accompanying build helpers for exact plugin options and transformations.

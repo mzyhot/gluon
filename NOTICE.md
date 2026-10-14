@@ -18,6 +18,7 @@ installed with it under `runtime/<name>/licenses/`.
 | GnuTLS 3.8.13 | LGPL-2.1-or-later for the library, with included dependency notices | compiled from the pinned official source release |
 | GMP 6.3.0, Nettle/Hogweed 4.0 | LGPL-3.0-or-later / GPL-2.0-or-later alternatives | compiled from published GMP source and the pinned GNU Nettle release; notices under licenses/tls |
 | GLib 2.78.0 and GStreamer 1.24.4 libraries/plugins | LGPL-2.1-or-later and included component notices | compiled from the published source archive with an explicit plugin set |
+| GVDB (GLib 2.78.0's pinned submodule) | LGPL-2.1-or-later | reader/builder sources from upstream commit 0854af0fdb6d527a8d1999835ac2c5059976c210; license and source pin under licenses/media |
 | SDL2 2.32.10 | Zlib | compiled from its pinned official source release |
 | FFmpeg 6.1.6 | LGPL-2.1-or-later configuration | compiled without GPL, nonfree, version3 or autodetected external codecs |
 | libffi 3.4.6, PCRE2 10.42, proxy-libintl 0.4 | MIT-style/libffi, BSD-style/PCRE2, LGPL-2.1/proxy-libintl | pinned public sources used by the GLib build; notices under licenses/media |
