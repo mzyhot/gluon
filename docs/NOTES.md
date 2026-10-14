@@ -527,6 +527,40 @@ of Gluon-owned installations with local Steam shortcuts was declined. No shortcu
 or separate content store were created. Update-on-launch plus refresh detection is
 a mitigation, not a guarantee against Steam replacing its in-memory app metadata.
 
+The owner's restored-overlay Play test did not show Shift+Tab. A later passive
+file inventory showed the Valve renderer as an open file, not mapped executable
+code, while DXMT was mapped in the main Happy Wheels process. REA CLI signature
+inspection found that both development Wine executables are signed with Hardened
+Runtime but lack the DYLD environment entitlement. Library-validation permission
+alone does not enable DYLD insertion. The source-built Actions runtime should be
+verified and selected for Happy Wheels on its next Play, retaining the old runtime
+and original prefix. No Steam binary, system protection or vendor signature has
+been changed. See the overlay investigation for exact hashes and evidence IDs.
+
+The verified Actions package and its archive match their published SHA-256s.
+Its complete runtime and Steam bridge were staged as `runtime/gluon-wine-186bfc4`.
+REA signature inspection confirms both native Wine executables are unsigned;
+they do not have the development runtime's Hardened Runtime signing gate.
+Happy Wheels' per-game settings select this runtime on the next normal Play.
+The default runtime link and original prefix were left intact, and the selection
+is reversible from `backups/happy-runtime-20261014-153843`. No installer script,
+Wine executable or game was started by this deployment. Owner overlay test pending.
+
+The build now checks the signing policy of all present native Wine host paths
+before runtime probes. Static inspection accepts the staged runtime and rejects
+the old development loader. All 62 local fixtures completed in 0.078 seconds:
+59 passed and three Linux-only launcher fixtures skipped. No Wine or graphics
+code is loaded by the new signature/path tests.
+
+The build for commit `186bfc4` is green:
+https://github.com/mzyhot/gluon/actions/runs/38600823639 . Source checks
+https://github.com/mzyhot/gluon/actions/runs/38600824537 passed all 53 tests,
+including the three launcher fixtures skipped locally. Cloud runtime checks
+passed Vulkan device/loader checks, Wine prefix setup and D3D9 rendering in both
+ABIs. The runner could not create native OpenGL, so OpenGL rendering and WGL alias
+rendering were explicitly skipped. The package was built and uploaded. These
+results do not establish Primordialis rendering or Steam overlay support.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
@@ -547,7 +581,7 @@ a mitigation, not a guarantee against Steam replacing its in-memory app metadata
 5. **Install scripts.** Steam logs `RunningInstallScript` but the Windows steps
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.
-6. **Runtime.** Get the CI build green and test it against the same games; then add the
+6. **Runtime.** CI build `186bfc4` is green; test its runtime against the same games, then add the
    missing pieces listed under Distribution, and enable and test msync.
 7. **Swarm Queen first launch** stops at Steam's EULA dialog, which the user has to
    answer.

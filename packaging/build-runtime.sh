@@ -211,6 +211,7 @@ See licenses/SOURCES.txt.
 EOF
 
 log "Checking the result"
+python3 "$ROOT/packaging/check-overlay-policy.py" "$OUT"
 "$ROOT/packaging/check-vulkan.sh" "$OUT" "$SRC/wine" "$WORK/llvm-mingw" "$WORK/graphics-probes"
 file "$OUT/bin/wine" | sed "s#$OUT/##"
 "$OUT/bin/wine" --version

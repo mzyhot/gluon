@@ -158,3 +158,63 @@ Any eventual validation must use one short, bounded game session, stop on
 failure, and clean up only its own prefix. It must demonstrate Valve's actual
 popup and sound, including fullscreen behavior, without artificially unlocking
 or resetting achievements. Until then, real Steam overlay support remains open.
+
+## Failed Play test and the signing gate
+
+The owner reported that Shift+Tab did not show an overlay after the restored
+insertion request. The launcher logged the validated insertion list, but this
+was not a native-load success. A read-only `lsof -Fpcftn` inventory of the owner's
+subsequent Happy Wheels session showed DXMT's `winemetal.so`, `dxgi.dll` and
+`d3d11.dll` as mapped executable files. The Valve renderer appeared only as
+ordinary descriptor 140, including in child processes; neither Valve insertion
+library appeared in the mapped executable inventory. An open file is not a
+loaded dylib. No debugger was attached and the game was not launched by the agent.
+
+REA CLI signature inspection established a concrete launch-policy blocker:
+
+| Executable | REA evidence | Signing policy |
+|---|---|---|
+| Development `bin/wineloader` (`[hash removed]`) | `[evidence ID removed]` | Hardened Runtime enabled; no DYLD environment entitlement. |
+| Development `lib/wine/x86_64-unix/wine` (`[hash removed]`) | `[evidence ID removed]` | Same restriction on the actual game host. |
+
+Both have `com.apple.security.cs.disable-library-validation`, but lack
+`com.apple.security.cs.allow-dyld-environment-variables`. Apple documents that
+the latter permits Hardened Runtime executables to read `DYLD_` variables,
+including insertion requests. See
+[Apple's entitlement documentation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.allow-dyld-environment-variables).
+Thus restoring the environment in the shell does not suffice for this signed
+development runtime. This policy accounts for the absent native mapping; native
+rendering and IPC still require validation after using a compatible runtime.
+Steam, its libraries and system protection settings are not to be modified.
+
+The verified Actions runtime has unsigned native Wine executables, so it has no
+Hardened Runtime signing gate. REA evidence
+`[evidence ID removed]`
+and `[evidence ID removed]`
+cover its initial loader and actual native host respectively. Its Steam bridge
+and licenses were verified before staging the complete runtime as
+`~/Library/Application Support/Gluon/runtime/gluon-wine-186bfc4`.
+
+Happy Wheels now selects that runtime through its per-game settings on the next
+normal Steam Play. The old runtime, default runtime link and original game prefix
+remain intact; no running game's loader paths were switched. The selection's
+rollback record is in `backups/happy-runtime-20261014-153843`. The new runtime
+omits Mono/Gecko and several multimedia dependencies, so other games have not
+been switched. The owner was asked to try the real fullscreen overlay once on
+the new runtime; that result remains pending.
+
+`packaging/check-overlay-policy.py` now audits the actual native Wine host
+signatures before the build's runtime checks. A hardened executable must have
+both DYLD environment and library-validation exceptions; unsigned or unhardened
+hosts pass. The static check passes for both new runtime hosts and rejects the
+old development loader for its missing entitlement. Nine failure-path fixtures
+cover the signing gate and ambiguous inspection results. This prevents packaging
+the observed incompatible policy; it does not prove a rendered overlay.
+
+Ghidra analysis of logging function [address removed], evidence
+`[evidence ID removed]`,
+also established why missing logs alone were inconclusive: native logging is
+off unless `STEAM_OVERLAY_LOGGING`, `STEAM_OVERLAY_LOGGING_FLUSH` or frame-time
+logging is present. Enabled logs are written to
+`/tmp/gameoverlayrenderer.<native-pid>.log`. Ordinary logging may be enabled
+for a single diagnostic game session; frame-time logging is unnecessary.
