@@ -1,17 +1,1 @@
-<svg xmlns="http://w3.org" viewBox="0 0 1750 480">
-  <g transform="translate(60 210) rotate(-3.5)"
-     font-family="Arial, Helvetica, sans-serif"
-     font-size="76"
-     font-weight="800">
-    <text x="0" y="0" fill="#FFFFFF">
-      <tspan fill="#F9D949">Download</tspan>
-      <tspan> Gluon and experience a world without</tspan>
-    </text>
-    <text x="0" y="100" fill="#FFFFFF">CrossOver &#40;and Windows&#41;.</text>
-  </g>
-  <text x="60" y="440"
-        font-family="Arial, Helvetica, sans-serif"
-        font-size="18"
-        font-weight="400"
-        fill="#929292">Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product.</text>
-</svg>
+   Download Gluon and experience a world without  CrossOver (and Windows).  Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product. 
