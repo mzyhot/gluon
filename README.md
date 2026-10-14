@@ -1,6 +1,6 @@
 # Gluon
 Steam Play; for MacOS.
-<img src="gluon-slogan.svg" alt="Gluon slogan" width="600">
+<img src="gluon-slogan.svg" alt="Gluon slogan" width="1200">
 ## Layout
 
     gluon/            Python package (stdlib only)
