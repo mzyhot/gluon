@@ -12,8 +12,7 @@
 #   DXMT          3Shain/dxmt release (LGPL-2.1) - Direct3D 10/11 on Metal
 #   Steam bridge  optional input: build/inputs/steam-bridge-*.tar.gz
 #
-# Runs on an Apple Silicon Mac with Rosetta 2, Xcode's command line tools, and Homebrew
-# bison, flex, autoconf, automake, libtool, pkgconf.
+# Runs on an Apple Silicon Mac with Rosetta 2, Xcode, CMake, and Homebrew bison and flex.
 #
 # Usage: packaging/build-runtime.sh
 # Env:   WORK  build folder (default <repo>/build)
@@ -79,13 +78,17 @@ export DYLD_FALLBACK_LIBRARY_PATH="$DEPS/lib:/usr/local/lib:/usr/lib"
 
 if [ ! -f "$DEPS/lib/libfreetype.6.dylib" ]; then
     log "Building FreeType"
-    cd "$SRC/freetype"
-    [ -f builds/unix/configure ] || ./autogen.sh
-    ./configure "${ARCH_FLAGS[@]}" --prefix="$DEPS" --enable-shared --disable-static \
-        --with-zlib=yes --with-bzip2=no --with-png=no --with-harfbuzz=no --with-brotli=no
-    make -j"$JOBS"
-    make install
-    install_name_tool -id @rpath/libfreetype.6.dylib "$DEPS/lib/libfreetype.6.dylib"
+    # CMake build: the autotools entry point wants a git submodule the archive lacks.
+    cmake -S "$SRC/freetype" -B "$WORK/freetype-build" \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+        -DCMAKE_INSTALL_PREFIX="$DEPS" -DCMAKE_INSTALL_NAME_DIR=@rpath \
+        -DBUILD_SHARED_LIBS=ON -DFT_REQUIRE_ZLIB=ON \
+        -DFT_DISABLE_HARFBUZZ=ON -DFT_DISABLE_PNG=ON -DFT_DISABLE_BZIP2=ON -DFT_DISABLE_BROTLI=ON
+    cmake --build "$WORK/freetype-build" -j"$JOBS"
+    cmake --install "$WORK/freetype-build"
+    [ -f "$DEPS/lib/libfreetype.6.dylib" ] || { echo "FreeType did not produce libfreetype.6.dylib" >&2; ls "$DEPS/lib" >&2; exit 1; }
+    otool -D "$DEPS/lib/libfreetype.6.dylib" | tail -1
 fi
 
 if [ ! -f "$DEPS/lib/libMoltenVK.dylib" ]; then
@@ -122,7 +125,7 @@ if [ ! -x "$OUT/bin/wine" ]; then
 fi
 
 log "Adding support libraries and graphics layers"
-cp -f "$DEPS/lib/libfreetype.6.dylib" "$DEPS/lib/libMoltenVK.dylib" "$OUT/lib/"
+cp -fL "$DEPS/lib/libfreetype.6.dylib" "$DEPS/lib/libMoltenVK.dylib" "$OUT/lib/"
 
 dxmt="$WORK/dxmt"
 rm -rf "$dxmt" && mkdir -p "$dxmt"
