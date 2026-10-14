@@ -1,0 +1,17 @@
+--- a/src/d3d9/d3d9_include.h
++++ b/src/d3d9/d3d9_include.h
+@@ -77,13 +77,8 @@
+ #define D3DPRESENT_FORCEIMMEDIATE              0x00000100L
+ #endif
+ 
+-// MinGW headers are broken. Who'dve guessed?
++// Gluon: the pinned MinGW-w64 headers provide D3DDEVINFO_RESOURCEMANAGER.
+ #ifndef _MSC_VER
+-typedef struct _D3DDEVINFO_RESOURCEMANAGER
+-{
+-  char dummy;
+-} D3DDEVINFO_RESOURCEMANAGER, * LPD3DDEVINFO_RESOURCEMANAGER;
+-
+ #ifndef __WINE__
+ extern "C" WINUSERAPI WINBOOL WINAPI SetProcessDPIAware(VOID);
+ #endif

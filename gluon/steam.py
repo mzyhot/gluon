@@ -20,8 +20,18 @@ LAUNCHERS = (INSTALLED_LAUNCHER, DEV_LAUNCHER)
 LAUNCHER = INSTALLED_LAUNCHER if os.access(INSTALLED_LAUNCHER, os.X_OK) else DEV_LAUNCHER
 
 
+class SteamError(RuntimeError):
+    pass
+
+
 def is_running() -> bool:
-    return subprocess.run(["pgrep", "-x", "steam_osx"], capture_output=True).returncode == 0
+    try:
+        result = subprocess.run(["pgrep", "-x", "steam_osx"], capture_output=True)
+    except OSError as exc:
+        raise SteamError("cannot check whether Steam is running; its files were left alone") from exc
+    if result.returncode not in (0, 1):
+        raise SteamError("cannot check whether Steam is running; its files were left alone")
+    return result.returncode == 0
 
 
 def user_config_dirs() -> List[str]:

@@ -50,7 +50,8 @@ built or installed.
 - Per-entry binary SHA-1 = SHA-1 of the stored blob (verified for 412/412 entries).
 - Per-entry text SHA-1 is only reproduced by our formatter for 77/412 entries. It is
   left untouched when an entry is edited and Steam accepts the entry.
-- Steam reads the cache at startup and writes it back on exit, so edits must be made
+- Steam reads the cache at startup and writes it on exit and after metadata refreshes
+  (the October 14 refresh was persisted within five seconds), so edits must be made
   while Steam is closed. Edited entries survived three restarts.
 
 ## Launcher behaviour
@@ -333,23 +334,297 @@ Not yet in the CI-built runtime (present in the local development copy): DXVK fo
 Direct3D 9, wine-mono and Gecko, GnuTLS (so no HTTPS from inside games), GStreamer
 (video playback), SDL (controllers through SDL).
 
+## Graphics development and execution policy (2026-10-13)
+
+The owner stopped local graphics testing after reporting severe MacBook heating.
+All matching Wine/graphics test processes were terminated; the stop check found
+zero remaining processes. Do not repeat the failed native-module experiments or
+start parallel local probes. Compilation stays on GitHub Actions. The owner later
+authorized one short local test at a time, with reduced workload/priority, a hard
+timeout, immediate stop on failure, and prefix-specific cleanup. Temperature
+polling was explicitly withdrawn; do not start a temperature polling loop.
+
+The first `smctemp` invocation failed inside the tool sandbox with IOKit
+`kIOReturnNotPermitted` (`e00002e2`); its `0.0` was invalid. A later sensor-only
+invocation outside the sandbox returned valid readings. No graphics
+test was started by either temperature command.
+
+Build/probe helpers now reject ordinary local invocation, default to four build
+workers, and run on GitHub infrastructure. The optional Linux Codespaces setup
+supports source review and validation; it cannot reproduce macOS/Metal/CGL.
+Use macOS Actions for the complete runtime. See `docs/CLOUD-DEVELOPMENT.md`.
+
+### OpenGL
+
+Primordialis was reproduced from a copied game and copied prefix. Its trace calls
+only `wglCreateContext`; no attributes/core context request precedes the failure.
+macdrv supplies `2.1 Metal - 91.7`; its separate core probe finds `4.1`. The legacy
+context advertises `GL_EXT_gpu_shader4`, yet Wine rejects the unsuffixed
+`glVertexAttribIPointer` because the generated requirement is OpenGL 3.0.
+
+A source-built Windows baseline probe confirmed the EXT entry point exists and
+sets integer-array state (`integer_array=1`, `GL_error=0`). The Wine source patch
+adds all 34 exact Khronos-defined core/EXT aliases in that extension. Capability
+checks now precede the shared function-pointer cache so a pointer obtained on a
+core context cannot bypass a later legacy context's capability checks.
+
+All alias metadata, signatures and source entries passed validation against the
+SHA-256-pinned Khronos registry. Missing aliases, changed signatures and a cache
+bypass were rejected by negative checks. The native Wine OpenGL module compiled,
+but substituting that module alone in a development-runtime copy failed during
+DLL attachment before WGL ran. This is not a passed runtime test. Validate the
+complete source-built runtime in Actions; do not repeat that partial substitution.
+
+ANGLE's Metal backend supplies ES 2/3, and rejects the desktop EGL API. MGL's
+current source has incomplete integer attributes, enumeration, context ownership
+and legacy support. Neither was shipped or used to claim full desktop OpenGL
+compatibility. Primordialis rendering remains unresolved; an alias fix does not
+add modern GLSL or every desktop API. Evidence: `docs/graphics-opengl-backends.md`.
+
+### Vulkan and Direct3D 9
+
+Wine configure is explicitly bound to the bundled
+`@rpath/libMoltenVK.dylib`, preventing an unrelated Vulkan SDK on a runner from
+silently selecting the shipped backend. Native loading/instance-extension checks
+passed, and both Windows ABI probes compiled. Initial sandboxed GPU/device and
+Wine executions were unavailable and were not retried in that environment.
+See `docs/graphics-vulkan.md`.
+
+Direct3D 9 now builds from `sources/dxvk` in the existing SHA-256-pinned
+CodeWeavers archive, for both x86_64 and i386. Three labelled source patches adapt
+modern headers and negotiate the optional geometry/cull/fill Vulkan features;
+the latter is based on the pinned Sikarugir d9vk source. The unmodified feature
+requests reproduced `vkCreateDevice` failure on MoltenVK. Both patched source
+DLLs passed PE machine/export/import checks. Their Wine builtin marker makes
+runtime-folder loading work; the original DLLs remain `d3d9.dll.wined3d`.
+
+Historical local logs, before the stop instruction, show both source DLLs passing
+the tiny clear/triangle GPU readback on MoltenVK 1.4.2: pixels `0xff123456` and
+`0xff3366aa` matched. Installation fixtures preserved the original bytes and
+included the license/source notices. These results are not full CI-runtime,
+Steam game, presentation, performance or installer validation. See
+`docs/graphics-d3d9.md` and `NOTICE.md`.
+
+A later, lower-priority single-test attempt with a 20-second deadline stopped
+before spawning Wine: the temporary test runtimes no longer existed. No graphics
+process was launched. Use a fresh CI-built runtime for the next authorized test.
+
+### Cloud validation
+
+Existing Wine build run 38489527625 (commit `52c59e8`) completed successfully.
+Its configure/build fixes were preserved. Branch `codex/graphics-cloud` adds Linux
+source validation plus macOS compilation, bounded complete-runtime probes and
+uploaded text evidence. Each Wine probe has a deadline and an isolated CI prefix;
+cleanup stops its server. A missing hosted-runner GPU is recorded as a skip,
+never a passed rendering check. Linux source checks passed on commit `a483e56`
+(run 38498349195). The first macOS graphics build was dispatched as run
+38498386464. Wine and both Direct3D 9 DLLs built; the job then failed because a
+`lipo -verify_arch` check put the dylib path after its variadic architecture list.
+The filename is now before that option. Complete-runtime results remain pending.
+Follow-up review tightened
+server cleanup and requires an explicit unavailable exit code for GPU skips.
+
+## Installation recovery and notifications (2026-10-14)
+
+Happy Wheels (4705510) had a missing installation directory, but its manifest still
+claimed fully installed (`StateFlags=4`, `SizeOnDisk=0`, empty `InstalledDepots`).
+The client had refreshed its metadata to `windows,linux` at 10:13:37, removing depot
+4705511 from the selected depots. Verification at 10:23:41 selected no target depots
+and Steam committed deletion of 426 files. This is direct evidence of the metadata
+refresh hazard, in addition to the owner's manual removal of the game folder.
+
+Steam was closed through its own `-shutdown` command. Gluon sync restored the
+refreshed entries and the stale Happy Wheels manifest was moved, without deletion,
+to `backups/install-4705510-20261014-103947/appmanifest_4705510.acf`. After reopening
+Steam, its library index no longer listed Happy Wheels as installed; the owner
+confirmed the Install button was enabled. No saves or compatibility prefixes were
+removed and the game was not launched.
+
+`gluon/install.py` now recovers the same state for managed games during offline
+sync: it preserves a fully installed manifest under a unique sibling filename when
+the installation directory is confirmed absent. Existing folders, dangling links,
+pending downloads, inaccessible or unmounted libraries and ambiguous manifests
+are left alone. Steam process-inspection errors now prevent file edits.
+
+`gluon/metadata.py` adds a persistent update preference for installed managed games:
+Steam's ordinary update-on-launch setting (`AutoUpdateBehavior=1`). The current
+client's `steamui/sp.js` module 71670 maps its update-on-launch label to enum value 1;
+Valve describes the setting in its [download and update documentation](https://help.steampowered.com/en/faqs/view/71AB-698D-57EB-178C).
+The manifest is backed up, original preferences are recorded, and disabling Gluon
+restores the preference only if the owner has not since changed it. This defers
+background updates; it cannot prevent manual Verify or a launch-time update from
+reconciling depots after a live metadata refresh. New installations receive this
+guard on the next offline sync; in-progress downloads are never rewritten.
+
+The background helper now checks a changed on-disk cache while Steam runs and warns
+once per changed drift set. It never edits Steam's files while the client runs.
+The incident's `appinfo_log.txt` records a successful refresh write at 10:13:42,
+so this incident is detectable from disk. Detection follows the helper's minute
+interval; immediate detection of an in-memory-only change is not established.
+Hardcoding a future change number or locking the shared cache is not used: those
+would not reliably prevent an in-memory replacement and could affect native games.
+
+Gluon's launcher clears Steam's native overlay library before Wine. The Steam API
+bridge stores achievements: local caches decode 14 Happy Wheels unlocks and 17
+People Playground unlocks. A custom cache watcher and AppKit banner prototype was
+installed and detected the real achievement an unlock, but the owner
+heard its sound without seeing its fullscreen panel. A window-ordering fix was
+previewed once. The owner rejected this substitute and requires Steam's actual
+achievement notifications and overlay. The custom helper and its package/launcher
+integration were removed; previous installed files were preserved under
+`backups/removed-custom-notifications-20261014-110905`. No active custom helper
+remained at removal. Do not restore this prototype or show another custom banner.
+Real Steam overlay support remains unresolved.
+
+The installation/metadata/process fixtures passed as part of the earlier 63-test
+suite; that count included the removed banner prototype. No Wine, game, OpenGL or
+Vulkan process was started by those fixture tests. Game sessions above were the
+owner's own tests. Source and packaging changes remain uncommitted.
+
+The owner stopped REA after it selected the configured Hopper provider. The
+Hopper query failed with Apple-events authorization denied and unconfirmed target
+cleanup; it was not retried. All research agents were interrupted. The subsequent
+process check showed no running Hopper or Ghidra/Java analysis process. Future REA
+native analysis must explicitly use Ghidra, never Hopper; do not resume the stopped
+analysis without the owner's instruction.
+
+The owner subsequently resumed the investigation and explicitly requested REA's
+command-line tools. The connected MCP instance lacked `GHIDRA_INSTALL_DIR`; the
+installed CLI was used with the existing `a local Ghidra 12.1.4 installation`, explicit
+`--provider ghidra`, a 512 MB headless heap, one available CPU and reduced priority.
+Every native invocation had a 60-second external deadline and a 45-second startup
+deadline. REA evidence confirms Ghidra 12.1.4; Hopper was not used after resumption.
+No Ghidra installation or native build was required: its Mac arm64 decompiler was
+already present in `Ghidra/Features/Decompiler/build/os/mac_arm_64/decompile`.
+
+The official Steam overlay's x86_64 slice was analyzed statically, without executing
+it. Its initializer reads `SteamGameId` and `SteamOverlayGameId` and creates native
+per-PID overlay streams/events. Its NSApplication category initializes native Metal
+hooks for CAMetalLayer nextDrawable and the actual command-buffer class's present,
+commit and scheduled-handler methods. Those are the native methods reached by
+DXMT and MoltenVK, so rejecting the Mac overlay merely because the guest is Windows
+was not supported by the evidence. Runtime compatibility still needs validation.
+See `docs/graphics-steam-overlay.md` for the artifact identity and REA evidence.
+
+`gluon/overlay.py` validates Steam's supplied insertion list against the actual
+client directory and x86_64 Mach-O dylib headers. The launcher clears insertions
+before its helpers, then restores the validated list only on the final direct
+plain-Wine launch. Steam IDs are preserved. The Proton wrapper path is unchanged;
+its own shell/Python boundary needs separate integration. Wine may implicitly
+spawn server/child processes inheriting the final native environment; explicit
+setup, registry and server commands remain clear. This uses Valve's actual overlay,
+with no custom banner, sound or achievement modifications, and no redistributed
+Valve binary. The reviewed helper and launcher are installed for the owner's next
+Play test. Real fullscreen popup/sound success is not yet established.
+
+The updated local suite ran 53 tests in 0.048 seconds: 50 passed and three Linux-only
+shell-routing fixtures were skipped because macOS SIP purges DYLD variables from
+shell interpreters. Header validation accepted the actual installed Valve library
+pair without loading native code. Linux CI must run the routing fixtures.
+
+The owner requires the original Steam game page and Play button. The alternative
+of Gluon-owned installations with local Steam shortcuts was declined. No shortcuts
+or separate content store were created. Update-on-launch plus refresh detection is
+a mitigation, not a guarantee against Steam replacing its in-memory app metadata.
+
+The owner's restored-overlay Play test did not show Shift+Tab. A later passive
+file inventory showed the Valve renderer as an open file, not mapped executable
+code, while DXMT was mapped in the main Happy Wheels process. REA CLI signature
+inspection found that both development Wine executables are signed with Hardened
+Runtime but lack the DYLD environment entitlement. Library-validation permission
+alone does not enable DYLD insertion. The source-built Actions runtime should be
+verified and selected for Happy Wheels on its next Play, retaining the old runtime
+and original prefix. No Steam binary, system protection or vendor signature has
+been changed. See the overlay investigation for exact hashes and evidence IDs.
+
+The verified Actions package and its archive match their published SHA-256s.
+Its complete runtime and Steam bridge were staged as `runtime/gluon-wine-186bfc4`.
+REA signature inspection confirms both native Wine executables are unsigned;
+they do not have the development runtime's Hardened Runtime signing gate.
+Happy Wheels' per-game settings select this runtime on the next normal Play.
+The default runtime link and original prefix were left intact, and the selection
+is reversible from `backups/happy-runtime-20261014-153843`. No installer script,
+Wine executable or game was started by this deployment. The owner subsequently
+confirmed that Steam's actual overlay and achievement popup both appear during
+the requested Happy Wheels fullscreen test. Launch logs confirm the source-built
+runtime, original executable/prefix, original Steam IDs and native overlay request;
+user sessions at 16:09:55 and 16:10:54 ended successfully after 52 and 109 seconds.
+The visible result is owner-confirmed, not inferred from those logs. No custom
+banner or artificial achievement changes were used. The signing-policy correction
+and native insertion restoration resolve this Happy Wheels notification failure.
+Other games and OpenGL/Vulkan overlay paths have not been tested.
+
+The build now checks the signing policy of all present native Wine host paths
+before runtime probes. Static inspection accepts the staged runtime and rejects
+the old development loader. All 62 local fixtures completed in 0.078 seconds:
+59 passed and three Linux-only launcher fixtures skipped. No Wine or graphics
+code is loaded by the new signature/path tests.
+
+The build for commit `186bfc4` is green:
+https://github.com/mzyhot/gluon/actions/runs/38600823639 . Source checks
+https://github.com/mzyhot/gluon/actions/runs/38600824537 passed all 53 tests,
+including the three launcher fixtures skipped locally. Cloud runtime checks
+passed Vulkan device/loader checks, Wine prefix setup and D3D9 rendering in both
+ABIs. The runner could not create native OpenGL, so OpenGL rendering and WGL alias
+rendering were explicitly skipped. The package was built and uploaded. These
+results do not establish Primordialis rendering or Steam overlay support.
+
+## Graphics runtime update (2026-10-14)
+
+The owner requested the OpenGL and Vulkan translation fixes after confirming
+Happy Wheels' real Steam overlay. The installed `gluon-wine-186bfc4` contains
+the OpenGL aliases and bundled MoltenVK/D3D9 changes, but the shared default
+still selects the older development runtime. No local graphics test was launched.
+
+Source review found a native Vulkan requirement missing from Wine: the host
+advertises `VK_KHR_portability_subset`, but Wine's filtered device-extension
+table omitted it. The new native-only patch detects host support, queries the
+15 supported portability feature bits and preserves the original feature chain
+when enabling the required extension. Vulkan 1.0 callers receive the host's
+properties2 query prerequisite when supported. Generated Windows declarations
+and shared driver ABI stay intact. The exact private layout and structure type
+are checked against pinned Khronos XML, with five negative fixtures. The next
+Actions run must compile it and verify API 1.0 device creation plus native-enabled
+extension logs and D3D9 readback in both ABIs. See `graphics-vulkan.md`.
+
+The older Actions build omitted dependencies present in the development runtime.
+Before replacing the shared runtime, the builder now restores source-built TLS,
+GStreamer and SDL plus pinned official shared Wine Mono/Gecko releases. TLS and
+media dependency closures are relocated and checked; no commercial-product
+binaries are copied. New Windows provider/module checks cover both ABIs, with
+no network or rendering in those checks. Source build and real runtime results
+for this update remain pending. The earlier green artifact remains intact.
+
+Packages now use an Actions-run/attempt-specific runtime directory and stage a
+pending selection instead of overwriting `runtime/current`. Offline sync defers
+while Steam or Wine is active, then atomically replaces the default symlink with
+an exact previous-target backup. Old runtime directories and game prefixes are
+preserved. Ten fixtures cover idle installation, activity/inspection failures,
+late Steam startup, dry runs and invalid requests. The complete local fixture
+suite passed 72 tests (three platform skips); no native code was executed.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
    moves on the server. The app then reverts to Windows-only and Steam would remove its
    depots at the next update. `gluon sync` (run by the packaged agent) re-applies it
-   whenever Steam is closed. Still open: the window while Steam stays running after a
-   refresh (look at `AutoUpdateBehavior` as a guard).
+   whenever Steam is closed. Managed installed games now defer background updates
+   until launch, and a disk-cache refresh produces a restart notification. Manual
+   verification or launch-time reconciliation after a refresh remains a limitation.
 2. **Library UI.** Tested through `app_install` and `steam://rungameid`. The Install
-   button and platform icons in the library page have not been looked at.
+   button was confirmed enabled by the owner after Happy Wheels installation recovery.
+   Platform icons and the remaining library flows are untested.
 3. **Steam's Stop button.** `app_stop` and `SteamClient.Apps.TerminateApp` did not
    signal the launcher. Find out how the Mac client stops a game.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
-   "init error gone" with one game; achievements, Workshop and DRM-wrapped titles untested.
+   "init error gone" with People Playground; local achievement caches confirm persisted
+   unlocks. The owner confirmed Valve's real overlay and achievement popup in Happy
+   Wheels fullscreen with the source-built runtime. Other game/backend overlay paths,
+   sound level, Workshop and DRM-wrapped titles remain untested.
 5. **Install scripts.** Steam logs `RunningInstallScript` but the Windows steps
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.
-6. **Runtime.** Get the CI build green and test it against the same games; then add the
+6. **Runtime.** CI build `186bfc4` is green; test its runtime against the same games, then add the
    missing pieces listed under Distribution, and enable and test msync.
 7. **Swarm Queen first launch** stops at Steam's EULA dialog, which the user has to
    answer.

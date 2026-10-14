@@ -1,0 +1,30 @@
+--- a/src/d3d9/d3d9_device.cpp
++++ b/src/d3d9/d3d9_device.cpp
+@@ -3914,8 +3914,10 @@
+     DxvkDeviceFeatures supported = adapter->features();
+     DxvkDeviceFeatures enabled = {};
+ 
+-    // Geometry shaders are used for some meta ops
+-    enabled.core.features.geometryShader = VK_TRUE;
++    // Gluon: negotiate optional Metal features as in Sikarugir's d9vk fork.
++    // MoltenVK's vertex-layer extension supports geometry-free meta copy/blit.
++    // Do not request Vulkan features that the adapter does not advertise.
++    enabled.core.features.geometryShader = supported.core.features.geometryShader;
+     enabled.core.features.robustBufferAccess = VK_TRUE;
+     enabled.extRobustness2.robustBufferAccess2 = supported.extRobustness2.robustBufferAccess2;
+ 
+@@ -3940,13 +3942,13 @@
+     // SM1 level hardware
+     enabled.core.features.depthClamp = VK_TRUE;
+     enabled.core.features.depthBiasClamp = VK_TRUE;
+-    enabled.core.features.fillModeNonSolid = VK_TRUE;
++    enabled.core.features.fillModeNonSolid = supported.core.features.fillModeNonSolid;
+     enabled.core.features.pipelineStatisticsQuery = supported.core.features.pipelineStatisticsQuery;
+     enabled.core.features.sampleRateShading = VK_TRUE;
+     enabled.core.features.samplerAnisotropy = supported.core.features.samplerAnisotropy;
+     enabled.core.features.shaderClipDistance = VK_TRUE;
+-    enabled.core.features.shaderCullDistance = VK_TRUE;
++    enabled.core.features.shaderCullDistance = supported.core.features.shaderCullDistance;
+ 
+     // Ensure we support real BC formats and unofficial vendor ones.
+     enabled.core.features.textureCompressionBC = VK_TRUE;

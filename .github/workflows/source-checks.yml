@@ -1,0 +1,49 @@
+name: Source checks
+
+# Source and text checks only. This job never builds or runs Wine or graphics probes.
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: ["main", "codex/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GLUON_CLOUD_ONLY: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check installation recovery and metadata protection
+        run: timeout 30s python3 -m unittest discover -s tests -v
+
+      - name: Cache verified source downloads
+        uses: actions/cache@v4
+        with:
+          path: build/downloads
+          key: source-downloads-${{ hashFiles('packaging/build-runtime.sh', 'packaging/check-opengl-aliases.sh') }}
+
+      - name: Check syntax, source patches, and alias signatures
+        shell: bash
+        run: |
+          mkdir -p build/source-checks
+          timeout 19m bash packaging/check-sources.sh 2>&1 | tee build/source-checks/result.log
+
+      - name: Source check evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-checks-${{ github.run_id }}
+          path: build/source-checks/result.log
+          if-no-files-found: ignore
+          retention-days: 7

@@ -231,6 +231,8 @@ def enable(appids: List[int]) -> List[str]:
         save_state(state)  # before the cache, so a recorded original always exists
         cache.save()
     notes += _edit_launch_options([a for a in appids if str(a) in state], install=True)
+    from . import metadata
+    notes += metadata.guard_updates([a for a in appids if str(a) in state])
     return notes
 
 
@@ -257,6 +259,8 @@ def disable(appids: List[int]) -> List[str]:
         notes.append("cache backup: " + _backup_cache())
         cache.save()
     notes += _edit_launch_options([a for a in appids if str(a) not in state], install=False)
+    from . import metadata
+    notes += metadata.restore_updates(appids)
     save_state(state)
     return notes
 
@@ -304,13 +308,19 @@ def candidates() -> List[Tuple[int, str]]:
 
 def sync(dry_run: bool = False) -> List[str]:
     """What the background helper runs: enable every Windows-only game in the library and
-    re-apply any entry Steam has refreshed. Does nothing while Steam is running."""
+    re-apply refreshed entries and recover stale missing installs. While Steam runs,
+    read changed metadata and warn; Steam's files are never edited then."""
     if steam.is_running():
-        return []
+        if dry_run:
+            return []
+        from . import metadata
+        return metadata.watch_refresh(load_state(), planned_changes)
     wanted = sorted({a for a, _ in candidates()} | {int(k) for k in load_state()})
     pending = [r["appid"] for r in status() if not r["in_effect"]]
     todo = sorted({a for a, _ in candidates()} | set(pending))
     if dry_run:
         return ["would enable %d apps, re-apply %d" % (len(todo) - len(pending), len(pending))]
     notes = enable(wanted) if wanted else []
-    return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n]
+    from . import install
+    recovered = install.recover_missing_installs([int(k) for k in load_state()])
+    return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n or ": deferred background updates" in n] + recovered
