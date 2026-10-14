@@ -4,4 +4,4 @@
 # Steam's files are only edited while it is closed. While Steam runs, the helper
 # reads a changed metadata cache and warns if managed entries need a restart.
 here="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHONPATH="$here/lib" exec /usr/bin/python3 -m gluon sync --log
+PYTHONPATH="$here/lib" exec /usr/bin/arch -arm64 /usr/bin/python3 -m gluon sync --log

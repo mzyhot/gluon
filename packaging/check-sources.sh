@@ -65,6 +65,8 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/opengl32/unix_wgl.c \
     sources/wine/dlls/opengl32/thunks.c \
     sources/wine/dlls/opengl32/unix_thunks.c \
+    sources/wine/dlls/win32u/vulkan.c \
+    sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
     sources/dxvk/src/d3d9/d3d9_include.h \
     sources/dxvk/src/d3d9/d3d9_device.cpp
@@ -73,6 +75,7 @@ echo "Applying Wine source patch and checking repeat application"
 bash "$GLUON_SOURCE_ROOT/packaging/apply-wine-patches.sh" "$GLUON_SOURCE_TEMP/wine"
 bash "$GLUON_SOURCE_ROOT/packaging/apply-wine-patches.sh" "$GLUON_SOURCE_TEMP/wine"
 bash "$GLUON_SOURCE_ROOT/packaging/check-opengl-aliases.sh" "$GLUON_SOURCE_TEMP/wine" "$GLUON_SOURCE_DOWNLOADS"
+bash "$GLUON_SOURCE_ROOT/packaging/check-vulkan-portability.sh" "$GLUON_SOURCE_TEMP/wine" "$GLUON_SOURCE_DOWNLOADS"
 
 echo "Checking DXVK patch applicability against the pinned source"
 for patch_name in dxvk-explicit-algorithm dxvk-mingw-resource-manager dxvk-supported-metal-features; do

@@ -64,12 +64,20 @@ if [ ! -f "$SRC/dxvk/meson.build" ]; then
     tar -xzf "$DL/crossover-sources.tar.gz" -C "$SRC" --strip-components 1 sources/dxvk
 fi
 
-log "Applying Wine OpenGL dispatch changes"
+log "Applying Wine OpenGL and Vulkan changes"
 "$ROOT/packaging/apply-wine-patches.sh" "$SRC/wine"
 "$ROOT/packaging/check-opengl-aliases.sh" "$SRC/wine" "$DL"
-WINE_PATCH_SHA="$(shasum -a 256 "$ROOT/packaging/patches/wine-opengl-promoted-aliases.patch" | cut -d' ' -f1)"
+"$ROOT/packaging/check-vulkan-portability.sh" "$SRC/wine" "$DL"
+WINE_PATCH_SHA="$("$ROOT/packaging/apply-wine-patches.sh" --hash)"
+RUNTIME_BUILD_KEY="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py; do
+    printf '%s %s\n' "$helper" "$(shasum -a 256 "$ROOT/packaging/$helper" | cut -d' ' -f1)"
+done | shasum -a 256 | cut -d' ' -f1)"
 if [ -x "$OUT/bin/wine" ] && { [ ! -f "$OUT/.gluon-wine-patches" ] || [ "$(cat "$OUT/.gluon-wine-patches")" != "$WINE_PATCH_SHA" ]; }; then
     echo "Existing runtime predates the Wine patches. Build with a new WORK/OUT directory." >&2
+    exit 1
+fi
+if [ -x "$OUT/bin/wine" ] && { [ ! -f "$OUT/.gluon-runtime-build-key" ] || [ "$(cat "$OUT/.gluon-runtime-build-key")" != "$RUNTIME_BUILD_KEY" ]; }; then
+    echo "Existing runtime has different dependency/configuration inputs. Build with a new WORK/OUT directory." >&2
     exit 1
 fi
 if [ ! -d "$WORK/llvm-mingw" ]; then
@@ -119,12 +127,21 @@ if [ ! -f "$DEPS/lib/libMoltenVK.dylib" ]; then
     cp "$(find "$WORK/moltenvk" -maxdepth 2 -name LICENSE | head -1)" "$DEPS/MoltenVK-LICENSE.txt"
 fi
 
+log "Building native TLS, media and controller dependencies"
+WORK="$WORK" JOBS="$JOBS" "$ROOT/packaging/build-tls.sh" "$DL/crossover-sources.tar.gz" "$DEPS" "$OUT"
+WORK="$WORK" JOBS="$JOBS" "$ROOT/packaging/build-media.sh" "$DL/crossover-sources.tar.gz" "$DEPS" "$OUT"
+WORK="$WORK" "$ROOT/packaging/build-addons.sh" "$SRC/wine" "$OUT"
+export PKG_CONFIG_LIBDIR="$DEPS/lib/pkgconfig:$DEPS/share/pkgconfig"
+export PKG_CONFIG_PATH=''
+
 if [ ! -x "$OUT/bin/wine" ]; then
     log "Configuring Wine"
     # Select the bundled implementation even if the runner has a Vulkan SDK installed.
     # Wine's cache variables accept the relocatable name used by its native bridge.
     export ac_cv_lib_soname_vulkan=''
     export ac_cv_lib_soname_MoltenVK='@rpath/libMoltenVK.dylib'
+    export ac_cv_lib_soname_gnutls='@rpath/libgnutls.30.dylib'
+    export ac_cv_lib_soname_SDL2='@rpath/libSDL2-2.0.0.dylib'
     # OpenGL is left to auto-detection: on macOS it comes from winemac.drv and the system
     # framework, and asking for it explicitly makes the (Linux-oriented) EGL check fatal.
     mkdir -p "$WORK/wine-build"
@@ -133,19 +150,22 @@ if [ ! -x "$OUT/bin/wine" ]; then
     CPPFLAGS="-I$DEPS/include" \
     LDFLAGS="-L$DEPS/lib -Wl,-rpath,@loader_path/../../" \
     FREETYPE_CFLAGS="-I$DEPS/include/freetype2" FREETYPE_LIBS="-L$DEPS/lib -lfreetype" \
+    GNUTLS_CFLAGS="-I$DEPS/include" GNUTLS_LIBS="-L$DEPS/lib -lgnutls" \
     "$SRC/wine/configure" "${ARCH_FLAGS[@]}" --prefix="$OUT" \
         --enable-archs=i386,x86_64 --disable-tests \
         --with-mingw --with-freetype --with-vulkan --with-coreaudio \
+        --with-gnutls --with-gstreamer --with-sdl \
         --without-x --without-wayland --without-alsa --without-pulse --without-oss \
         --without-dbus --without-udev --without-usb --without-v4l2 --without-sane \
         --without-gphoto --without-capi --without-netapi --without-krb5 --without-gssapi \
         --without-fontconfig --without-gettextpo --without-inotify \
-        --without-gnutls --without-gstreamer --without-sdl --without-cups --without-pcap
+        --without-cups --without-pcap
     log "Building Wine"
     make -j"$JOBS"
     log "Installing Wine"
     make install
     printf '%s\n' "$WINE_PATCH_SHA" > "$OUT/.gluon-wine-patches"
+    printf '%s\n' "$RUNTIME_BUILD_KEY" > "$OUT/.gluon-runtime-build-key"
 fi
 
 log "Adding support libraries and graphics layers"
@@ -180,6 +200,7 @@ log "Writing license texts and the component list"
 L="$OUT/licenses"
 mkdir -p "$L"
 cp "$ROOT/packaging/patches/wine-opengl-promoted-aliases.patch" "$L/Gluon-Wine-OpenGL.patch"
+cp "$ROOT/packaging/patches/wine-vulkan-portability.patch" "$L/Gluon-Wine-Vulkan.patch"
 cp "$SRC/wine/COPYING.LIB" "$L/Wine-COPYING.LIB.txt"
 cp "$SRC/wine/LICENSE" "$L/Wine-LICENSE.txt"
 cp "$SRC/freetype/LICENSE.TXT" "$L/FreeType-LICENSE.txt" 2>/dev/null || cp "$SRC/freetype/docs/FTL.TXT" "$L/FreeType-LICENSE.txt"
@@ -192,12 +213,16 @@ Wine 11.0 with CodeWeavers' changes - compiled by Gluon's build from
   $CX_SRC_URL
   sha256 $CX_SRC_SHA
   Gluon modifications: licenses/Gluon-Wine-OpenGL.patch (LGPL-2.1-or-later)
+  Native portability: licenses/Gluon-Wine-Vulkan.patch (LGPL-2.1-or-later)
 FreeType - compiled by Gluon's build from the same archive
 DXVK 1.10.3 (Direct3D 9 only) - compiled by Gluon's build from sources/dxvk
   in the same archive; Wine builtin marker added, see licenses/DXVK-BUILD.txt
 MoltenVK - $MOLTENVK_URL
 DXMT - $DXMT_URL  (source: https://github.com/3Shain/dxmt, tag v0.80)
 Steam API bridge, when present - see licenses/steam-bridge/
+TLS dependencies - see licenses/tls/
+Media and SDL dependencies - see licenses/media/
+Wine Mono and Gecko - see licenses/wine-addons/
 Build script: packaging/build-runtime.sh in the Gluon repository
 EOF
 cat > "$OUT/GLUON-COMPONENTS.txt" <<EOF
@@ -206,7 +231,10 @@ Compiled from source: Wine 11.0 with CodeWeavers' open-source changes, FreeType,
 DXVK 1.10.3 for Direct3D 9 on Vulkan (x86_64 and i386; d3d9.dll.wined3d preserved).
 From upstream releases: MoltenVK v1.4.2, DXMT v0.80 (installed over d3d11, dxgi, d3d10core;
 Wine's originals kept as *.wined3d).
-Not included: wine-mono and Gecko, GnuTLS, GStreamer, SDL.
+Source-built TLS, GStreamer media and SDL controller dependencies are included;
+see licenses/tls/ and licenses/media/ for complete source pins and licenses.
+Wine Mono 10.4.1 and Gecko 2.47.4 are pinned official shared runtime releases;
+see licenses/wine-addons/ for licenses and origins.
 See licenses/SOURCES.txt.
 EOF
 

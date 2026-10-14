@@ -5,7 +5,7 @@ import argparse
 import os
 import sys
 
-from . import cef, enable, steam
+from . import cef, enable, runtime, steam
 
 
 def cmd_status(_args: argparse.Namespace) -> int:
@@ -43,7 +43,8 @@ def cmd_disable(args: argparse.Namespace) -> int:
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
-    lines = enable.sync(dry_run=args.dry_run)
+    lines = runtime.activate_pending(dry_run=args.dry_run)
+    lines += enable.sync(dry_run=args.dry_run)
     if args.log and lines:
         import time
         path = os.path.join(steam.GLUON_HOME, "logs", "agent.log")
@@ -92,7 +93,7 @@ def main() -> int:
     args = p.parse_args()
     try:
         return args.fn(args)
-    except (enable.EnableError, cef.BridgeError, steam.SteamError) as e:
+    except (enable.EnableError, cef.BridgeError, runtime.RuntimeSelectionError, steam.SteamError) as e:
         print("gluon: %s" % e, file=sys.stderr)
         return 1
 

@@ -11,6 +11,7 @@ Steam Play; for MacOS.
       install.py      preserve stale installation records when game folders are missing
       metadata.py     managed-game update protection and metadata refresh detection
       overlay.py      restore Steam's own native overlay at the Wine launch boundary
+      runtime.py      select complete runtime updates while Steam and Wine are idle
       cef.py          Steam console over the client's debug bridge (development aid)
     tool/             what gets installed into Steam's compatibilitytools.d/gluon
       gluon           launcher Steam starts in place of the game's .exe
@@ -48,3 +49,9 @@ Missing installation folders are recovered without removing saves or Wine prefix
 
 The plain-Wine launcher preserves Steam's supplied native overlay for the game
 host. The overlay comes from the user's installed Steam client.
+
+Runtime builds include extension-checked OpenGL aliases and native Vulkan
+portability negotiation through MoltenVK. Packages stage each complete runtime in
+a unique directory; the background helper switches the default only while Steam
+and Wine are idle, preserving the previous selection for rollback. Game prefixes
+stay in place. See the graphics documents for tested capabilities and limitations.

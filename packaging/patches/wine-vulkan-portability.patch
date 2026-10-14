@@ -1,0 +1,157 @@
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -61,6 +61,34 @@
+ 
+ #define ROUND_SIZE(size, mask) ((((SIZE_T)(size) + (mask)) & ~(SIZE_T)(mask)))
+ 
++/* Native-only layout from Khronos Vulkan-Headers v1.4.335 vk.xml,
++ * commit 2fa203425eb4af9dfc6b03f97ef72b0b5bcb8350. Wine's generated Windows
++ * Vulkan API filters this provisional extension. Keep the host requirement
++ * private instead of advertising additional Windows extensions or features. */
++#define NATIVE_PORTABILITY_SUBSET_FEATURES_STYPE ((VkStructureType)1000163000)
++static const char native_portability_subset_extension[] = "VK_KHR_portability_subset";
++
++struct native_portability_subset_features
++{
++    VkStructureType sType;
++    void *pNext;
++    VkBool32 constantAlphaColorBlendFactors;
++    VkBool32 events;
++    VkBool32 imageViewFormatReinterpretation;
++    VkBool32 imageViewFormatSwizzle;
++    VkBool32 imageView2DOn3DImage;
++    VkBool32 multisampleArrayImage;
++    VkBool32 mutableComparisonSamplers;
++    VkBool32 pointPolygons;
++    VkBool32 samplerMipLodBias;
++    VkBool32 separateStencilMaskRef;
++    VkBool32 shaderSampleRateInterpolationFunctions;
++    VkBool32 tessellationIsolines;
++    VkBool32 tessellationPointMode;
++    VkBool32 triangleFans;
++    VkBool32 vertexAttributeAccessBeyondStride;
++};
++
+ static BOOL use_external_memory(void)
+ {
+     return zero_bits != 0;
+@@ -453,6 +481,11 @@
+         instance->obj.extensions.has_VK_KHR_get_physical_device_properties2 = 1;
+         instance->obj.extensions.has_VK_KHR_external_memory_capabilities = 1;
+     }
++
++    /* A portability device requires the native features2 query even when a
++     * Windows Vulkan 1.0 caller did not request the instance extension. */
++    if (vulkan_funcs.host_extensions.has_VK_KHR_get_physical_device_properties2)
++        instance->obj.extensions.has_VK_KHR_get_physical_device_properties2 = 1;
+ 
+     /* VK_KHR_win32_keyed_mutex only requires external memory extensions, but we will use
+      * external semaphore fds to implement it, so we enable the instance extensions too */
+@@ -668,12 +701,81 @@
+     free( instance );
+ }
+ 
++static VkResult get_native_portability_subset_features( struct vulkan_physical_device *physical_device,
++        struct mempool *pool, struct native_portability_subset_features **portability )
++{
++    struct vulkan_instance *instance = physical_device->instance;
++    PFN_vkGetPhysicalDeviceFeatures2 get_features;
++    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
++    VkExtensionProperties *properties = NULL;
++    uint32_t count = 0, i, attempt;
++    VkResult res;
++
++    *portability = NULL;
++    /* The extension set can change between the count and data calls. Bound
++     * enumeration retries and fail rather than create a non-compliant device. */
++    for (attempt = 0; attempt < 3; attempt++)
++    {
++        free( properties );
++        properties = NULL;
++        if ((res = instance->p_vkEnumerateDeviceExtensionProperties( physical_device->host.physical_device,
++                                                                    NULL, &count, NULL ))) goto done;
++        if (!count) goto done;
++        if (count > SIZE_MAX / sizeof(*properties) || !(properties = calloc( count, sizeof(*properties) )))
++        {
++            res = VK_ERROR_OUT_OF_HOST_MEMORY;
++            goto done;
++        }
++        res = instance->p_vkEnumerateDeviceExtensionProperties( physical_device->host.physical_device,
++                                                               NULL, &count, properties );
++        if (res != VK_INCOMPLETE) break;
++    }
++    if (res == VK_INCOMPLETE)
++    {
++        ERR( "Host device extension enumeration remained incomplete\n" );
++        res = VK_ERROR_INITIALIZATION_FAILED;
++    }
++    if (res) goto done;
++    for (i = 0; i < count; i++)
++        if (!strcmp( properties[i].extensionName, native_portability_subset_extension )) break;
++    if (i == count) goto done;
++
++    get_features = instance->p_vkGetPhysicalDeviceFeatures2;
++    if (!get_features) get_features = (PFN_vkGetPhysicalDeviceFeatures2)instance->p_vkGetPhysicalDeviceFeatures2KHR;
++    if (!get_features)
++    {
++        ERR( "Host portability subset requires a features2 query\n" );
++        res = VK_ERROR_INITIALIZATION_FAILED;
++        goto done;
++    }
++    if (!(*portability = mem_alloc( pool, sizeof(**portability) )))
++    {
++        res = VK_ERROR_OUT_OF_HOST_MEMORY;
++        goto done;
++    }
++    memset( *portability, 0, sizeof(**portability) );
++    (*portability)->sType = NATIVE_PORTABILITY_SUBSET_FEATURES_STYPE;
++    features.pNext = *portability;
++    /* These host-returned bits are the supported subset. Never force a feature
++     * unavailable in Metal, or modify the caller's requested core features. */
++    get_features( physical_device->host.physical_device, &features );
++    TRACE( "Native portability subset: triangleFans %u, pointPolygons %u, tessellationIsolines %u, tessellationPointMode %u\n",
++           (*portability)->triangleFans, (*portability)->pointPolygons,
++           (*portability)->tessellationIsolines, (*portability)->tessellationPointMode );
++
++done:
++    free( properties );
++    return res;
++}
++
+ static VkResult convert_device_create_info( struct vulkan_physical_device *physical_device, VkDeviceCreateInfo *info,
+                                             struct mempool *pool, struct vulkan_device *device )
+ {
+     struct vulkan_instance *instance = physical_device->instance;
++    struct native_portability_subset_features *portability;
+     const char **extensions;
+-    uint32_t count = 0;
++    uint32_t count = 0, i;
++    VkResult res;
+ 
+     /* Should be filtered out by loader as ICDs don't support layers. */
+     info->enabledLayerCount = 0;
+@@ -721,10 +823,23 @@
+         physical_device->extensions.has_VK_EXT_swapchain_maintenance1)
+         device->extensions.has_VK_EXT_swapchain_maintenance1 = 1;
+ 
+-    if (!(extensions = mem_alloc( pool, sizeof(device->extensions) * 8 * sizeof(*extensions) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
++    if ((res = get_native_portability_subset_features( physical_device, pool, &portability ))) return res;
++    if (portability)
++    {
++        portability->pNext = (void *)info->pNext;
++        info->pNext = portability;
++    }
++
++    if (!(extensions = mem_alloc( pool, (sizeof(device->extensions) * 8 + 1) * sizeof(*extensions) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+ #define USE_VK_EXT(x) if (device->extensions.has_ ## x) extensions[count++] = #x;
+     ALL_VK_DEVICE_EXTS
+ #undef USE_VK_EXT
++    if (portability)
++    {
++        for (i = 0; i < count; i++)
++            if (!strcmp( extensions[i], native_portability_subset_extension )) break;
++        if (i == count) extensions[count++] = native_portability_subset_extension;
++    }
+ 
+     TRACE( "Enabling %u host device extensions\n", count );
+     for (const char **extension = extensions, **end = extension + count; extension < end; extension++)

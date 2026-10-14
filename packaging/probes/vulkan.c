@@ -23,7 +23,7 @@ static int has_extension(const VkExtensionProperties *properties, uint32_t count
     return 0;
 }
 
-static int check_device(PFN_vkGetInstanceProcAddr get)
+static int check_device(PFN_vkGetInstanceProcAddr get, int api_1_0)
 {
     VkInstance instance = NULL;
     VkPhysicalDevice *devices = NULL;
@@ -36,7 +36,8 @@ static int check_device(PFN_vkGetInstanceProcAddr get)
     float priority = 1.0f;
     int status = 1;
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                            .pApplicationName = "Gluon Vulkan probe", .apiVersion = VK_API_VERSION_1_1};
+                            .pApplicationName = "Gluon Vulkan probe",
+                            .apiVersion = api_1_0 ? VK_API_VERSION_1_0 : VK_API_VERSION_1_1};
     VkInstanceCreateInfo instance_info = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                          .pApplicationInfo = &app};
     PFN_vkCreateInstance create = (PFN_vkCreateInstance)get(NULL, "vkCreateInstance");
@@ -126,19 +127,21 @@ int main(int argc, char **argv)
     VkExtensionProperties *extensions = NULL;
     VkResult result;
     uint32_t count = 0, api = VK_API_VERSION_1_0;
-    int device_check = 0, status = 1;
+    int device_check = 0, api_1_0 = 0, status = 1;
 #ifdef WINE_UNIX_LIB
-    if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "--device"))) return 2;
+    if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "--device") && strcmp(argv[2], "--device-1.0"))) return 2;
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!library) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 1; }
     get = (PFN_vkGetInstanceProcAddr)dlsym(library, "vkGetInstanceProcAddr");
     device_check = argc == 3;
+    api_1_0 = argc == 3 && !strcmp(argv[2], "--device-1.0");
 #else
-    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--device"))) return 2;
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--device") && strcmp(argv[1], "--device-1.0"))) return 2;
     HMODULE library = LoadLibraryA("vulkan-1.dll");
     if (!library) { fprintf(stderr, "LoadLibrary(vulkan-1.dll): %lu\n", (unsigned long)GetLastError()); return 1; }
     get = (PFN_vkGetInstanceProcAddr)GetProcAddress(library, "vkGetInstanceProcAddr");
     device_check = argc == 2;
+    api_1_0 = argc == 2 && !strcmp(argv[1], "--device-1.0");
 #endif
     if (!get) { fputs("Missing vkGetInstanceProcAddr\n", stderr); goto done; }
     enumerate = (PFN_vkEnumerateInstanceExtensionProperties)get(NULL, "vkEnumerateInstanceExtensionProperties");
@@ -168,7 +171,7 @@ int main(int argc, char **argv)
 #endif
     printf("Vulkan %u.%u.%u: %u instance extensions, required surface extensions present\n",
            VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api), VK_VERSION_PATCH(api), count);
-    status = device_check ? check_device(get) : 0;
+    status = device_check ? check_device(get, api_1_0) : 0;
 done:
     if (status) fputs("Vulkan probe failed\n", stderr);
     free(extensions);

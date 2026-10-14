@@ -8,6 +8,7 @@ check uses one disposable CI prefix and is followed by a bounded server stop.
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -36,13 +37,16 @@ def main():
     env.update(WINEPREFIX=str(prefix), WINEDEBUG="fixme-all",
                WINEDLLOVERRIDES="mscoree,mshtml,winemenubuilder.exe=d",
                DXVK_LOG_PATH=str(probes), DXVK_STATE_CACHE_PATH=str(probes))
+    env.update(GST_PLUGIN_SYSTEM_PATH_1_0=str(runtime / "lib/gstreamer-1.0"),
+               GST_PLUGIN_SCANNER_1_0=str(runtime / "libexec/gstreamer-1.0/gst-plugin-scanner"),
+               GST_REGISTRY_1_0=str(probes / "gstreamer-registry.bin"))
     results = []
 
-    def run(name, command, seconds=30, allow_unavailable=False, cleanup=False):
+    def run(name, command, seconds=30, allow_unavailable=False, cleanup=False, overrides=None):
         path = probes / (name + ".log")
         started = time.monotonic()
         with path.open("w") as output:
-            process = subprocess.Popen(command, env=env, cwd=probes,
+            process = subprocess.Popen(command, env=dict(env, **(overrides or {})), cwd=probes,
                                        stdout=output, stderr=subprocess.STDOUT,
                                        start_new_session=True)
             try:
@@ -65,6 +69,15 @@ def main():
             raise ProbeFailed(name)
         return item, contents
 
+    def require_native_portability(item, contents):
+        # Check the enabled-device block rather than MoltenVK's earlier list
+        # of every supported extension, which also contains this name.
+        blocks = re.findall(r"\[mvk-info\] Created VkDevice[^\n]*extensions enabled:\n((?:\t[^\n]*\n)+)", contents)
+        if not blocks or any("\tVK_KHR_portability_subset " not in block for block in blocks):
+            item["status"] = "failed"
+            item["reason"] = "Native MoltenVK device did not enable its portability subset."
+            raise ProbeFailed(item["name"])
+
     wine = str(runtime / "bin/wine")
     server = str(runtime / "bin/wineserver")
     exit_code = 0
@@ -77,6 +90,7 @@ def main():
                            allow_unavailable=True)
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
         for arch in ("x86_64", "i686"):
+            run(f"runtime-dependencies-{arch}", [wine, str(probes / f"dependencies-{arch}.exe")])
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])
             run(f"vulkan-loader-{arch}", [wine, str(probes / f"vulkan-{arch}.exe")])
             if native_gl["status"] == "passed":
@@ -85,8 +99,16 @@ def main():
                 results.append(dict(name=f"wgl-alias-{arch}", status="skipped",
                                     reason="Native CGL prerequisite did not pass."))
             if native_vk["status"] == "passed":
-                run(f"d3d9-render-{arch}", [wine, str(probes / f"d3d9-{arch}.exe")])
+                device, contents = run(f"vulkan-device-1.0-{arch}",
+                                       [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.0"],
+                                       overrides={"WINEDEBUG": "fixme-all,+vulkan", "MVK_CONFIG_LOG_LEVEL": "3"})
+                require_native_portability(device, contents)
+                rendered, contents = run(f"d3d9-render-{arch}", [wine, str(probes / f"d3d9-{arch}.exe")],
+                                         overrides={"MVK_CONFIG_LOG_LEVEL": "3"})
+                require_native_portability(rendered, contents)
             else:
+                results.append(dict(name=f"vulkan-device-1.0-{arch}", status="skipped",
+                                    reason="Native Metal device prerequisite did not pass."))
                 results.append(dict(name=f"d3d9-render-{arch}", status="skipped",
                                     reason="Native Metal device prerequisite did not pass."))
     except (ProbeFailed, OSError) as error:

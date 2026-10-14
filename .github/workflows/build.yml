@@ -40,7 +40,7 @@ jobs:
         run: softwareupdate --install-rosetta --agree-to-license || true
 
       - name: Build tools
-        run: brew install bison flex
+        run: brew install bison flex cmake pkg-config
 
       - name: Cache downloads
         uses: actions/cache@v4
@@ -72,6 +72,9 @@ jobs:
             "build/llvm-mingw/bin/$arch-w64-mingw32-clang" -O2 -Wall -Wextra -Werror \
               tools/d3d9_probe.c -lgdi32 -luser32 \
               -o "build/graphics-probes/d3d9-$arch.exe"
+            "build/llvm-mingw/bin/$arch-w64-mingw32-clang" -O2 -Wall -Wextra -Werror \
+              packaging/probes/runtime-dependencies.c -lsecur32 \
+              -o "build/graphics-probes/dependencies-$arch.exe"
           done
 
       - name: Check complete runtime on GitHub macOS
@@ -107,6 +110,10 @@ jobs:
             build/graphics-probes/*.exe
             build/d3d9/*/pe-inspection.txt
             build/d3d9/*/meson-logs/meson-log.txt
+            build/tls-build/*/config.log
+            build/tls-build/smoke.log
+            build/media-build/*/meson-logs/meson-log.txt
+            build/media-build/ffmpeg/ffbuild/config.log
           if-no-files-found: ignore
           retention-days: 7
 

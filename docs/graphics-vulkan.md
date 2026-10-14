@@ -2,9 +2,11 @@
 
 Gluon's Vulkan path is the Windows `vulkan-1.dll` loader shim, Wine's
 `winevulkan`/`win32u` translation, `winemac.drv` window surfaces, and MoltenVK on Metal.
-MoltenVK v1.4.2 is the existing pinned, open-source Khronos release. This work adds
-deterministic runtime selection and source-built packaging probes; it does not claim
-to fix a reproduced Vulkan game failure or improve frame rates.
+MoltenVK v1.4.2 is the existing pinned, open-source Khronos release. The verified
+Actions runtime at `186bfc4` includes deterministic runtime selection and source-built
+packaging probes. A subsequent native portability-subset patch corrects a source/log
+confirmed host API requirement; it has only source validation so far. Neither change
+is evidence of a newly fixed Vulkan game or improved frame rates.
 
 ## Source findings
 
@@ -53,6 +55,67 @@ The
 already enable Metal argument buffers and command pooling. Semaphore style `1`
 deliberately has a Rosetta fallback. These defaults remain in effect; no unmeasured
 performance or synchronization overrides were added.
+
+## Native portability-subset correction (2026-10-14)
+
+The successful D3D9 logs from Actions run
+[38600823639](https://github.com/mzyhot/gluon/actions/runs/38600823639) list 16 and 18
+enabled native device extensions for x86_64 and i386, respectively, without
+`VK_KHR_portability_subset`. The same run's direct native probe explicitly enables
+that extension. MoltenVK advertises it, but Wine's generator filters this provisional
+platform extension; `win32u` rebuilt the native device extension list solely from
+Wine's generated list. The macOS driver's device-extension mapper adds nothing.
+
+This differs from
+[Khronos requirement 04451](https://docs.vulkan.org/refpages/latest/refpages/source/VkDeviceCreateInfo.html#VUID-VkDeviceCreateInfo-pProperties-04451):
+the device creation list must include the portability subset when host device
+enumeration advertises it. The tested driver accepted the omission. These logs
+establish a host contract mismatch, while still recording successful D3D9 rendering.
+
+`packaging/patches/wine-vulkan-portability.patch` changes only Wine's native
+`dlls/win32u/vulkan.c`. Before native device creation it enumerates the actual host
+device's extensions, and only on a positive match does it query and enable the
+supported portability features and append the required native extension. It bounds
+`VK_INCOMPLETE` enumeration retries to three, checks allocation size, releases the
+temporary extension buffer on every exit, and propagates host errors. An unstable
+extension list or missing features2 entry point fails initialization.
+
+Wine's filtered Windows Vulkan declarations and shared driver ABI are unchanged.
+The private native structure has the exact 15 Boolean fields and native structure
+type `1000163000` from
+[Vulkan-Headers v1.4.335](https://github.com/KhronosGroup/Vulkan-Headers/blob/2fa203425eb4af9dfc6b03f97ef72b0b5bcb8350/registry/vk.xml),
+matching Wine's header version. The registry input is pinned by immutable commit
+and SHA-256 `7cf3d7ec74371f4395d221c05aa23d994a5e03d0ccfb6269c60399d333551bcd`.
+
+The feature structure starts with all bits false; the native
+`vkGetPhysicalDeviceFeatures2` or KHR equivalent populates supported bits. No
+unsupported bit is forced true. The patch preserves the application's requested
+core features and existing `pNext` chain. Its appended structure stays in Wine's
+memory pool until the synchronous native `vkCreateDevice` call returns.
+
+For Vulkan 1.0 callers, the native instance enables
+`VK_KHR_get_physical_device_properties2` only when the host advertises it, so the
+portability query's dependency is available. The Windows instance's original
+requested-extension object and Windows extension enumeration are unchanged.
+Wine delegates most procedure-availability lookups to its native implementation,
+so the real KHR query procedure can become obtainable even if a Windows caller
+omitted the request; Wine already has this behavior for its WoW64 prerequisites.
+This does not add a Windows core version or fabricate feature support. The native
+portability extension itself remains filtered from Windows callers.
+
+`packaging/check-vulkan-portability.py` checks the private structure and type
+against pinned `vk.xml`, checks the native query/chain/error conditions in source,
+and rejects five deliberately invalid source fixtures. Its checks passed against
+the patch applied in memory to the published Wine source. They establish declaration
+and source consistency, not compiled ABI or runtime behavior. No Wine, compiler,
+graphics library, or GPU probe was run locally for this correction.
+
+Cloud validation must rebuild the complete Wine runtime, run the existing D3D9
+readback checks through both Windows ABIs, and inspect their MoltenVK device-created
+logs for the newly enabled `VK_KHR_portability_subset`. A Vulkan 1.0 device-creation
+probe should additionally cover the native instance prerequisite. Source validation
+and a green older runtime do not establish that this new patch has passed those
+checks. No new per-game setting is involved.
 
 ## Packaging checks
 
@@ -110,3 +173,17 @@ or game compatibility.
 - The helper itself passed end to end against a test runtime layout pointing to
   that upstream MoltenVK release. The CI-built runtime, installer, Vulkan
   presentation, and games still require validation on a suitable Mac.
+
+## Existing cloud evidence (2026-10-14)
+
+The downloaded `results.json` and text logs for Actions run `38600823639`, commit
+`186bfc4`, record native Vulkan device creation and idle wait on an Apple Paravirtual
+device, Windows Vulkan loader/extension checks in both ABIs, and exact D3D9
+clear/triangle readback in both ABIs. Native OpenGL and WGL alias rendering were
+explicitly skipped. These results precede the native portability-subset patch.
+
+Static comparison found no file differences between the expanded Actions runtime
+payload and staged `runtime/gluon-wine-186bfc4`. The staged `win32u.so` contains the
+intended `@rpath/libMoltenVK.dylib` binding. Package SHA-256
+`ceb899f8b562334479c3da37e3623ad962b72c22a5d65358c870b920575a0251` matches its published
+checksum. These were file reads and hashes; no runtime or graphics code was loaded.

@@ -122,6 +122,11 @@ else
     export WINEPREFIX="$compat/pfx-wine"
 fi
 export WINEDEBUG="${WINEDEBUG:-fixme-all}"
+if [ -d "$runtime/lib/gstreamer-1.0" ]; then
+    export GST_PLUGIN_SYSTEM_PATH_1_0="$runtime/lib/gstreamer-1.0"
+    export GST_PLUGIN_SCANNER_1_0="$runtime/libexec/gstreamer-1.0/gst-plugin-scanner"
+    export GST_REGISTRY_1_0="$WINEPREFIX/.gluon-gstreamer-registry.bin"
+fi
 # keep Wine from writing launchers/file associations into the user's macOS account
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}winemenubuilder.exe=d"
 

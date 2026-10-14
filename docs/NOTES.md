@@ -569,6 +569,40 @@ ABIs. The runner could not create native OpenGL, so OpenGL rendering and WGL ali
 rendering were explicitly skipped. The package was built and uploaded. These
 results do not establish Primordialis rendering or Steam overlay support.
 
+## Graphics runtime update (2026-10-14)
+
+The owner requested the OpenGL and Vulkan translation fixes after confirming
+Happy Wheels' real Steam overlay. The installed `gluon-wine-186bfc4` contains
+the OpenGL aliases and bundled MoltenVK/D3D9 changes, but the shared default
+still selects the older development runtime. No local graphics test was launched.
+
+Source review found a native Vulkan requirement missing from Wine: the host
+advertises `VK_KHR_portability_subset`, but Wine's filtered device-extension
+table omitted it. The new native-only patch detects host support, queries the
+15 supported portability feature bits and preserves the original feature chain
+when enabling the required extension. Vulkan 1.0 callers receive the host's
+properties2 query prerequisite when supported. Generated Windows declarations
+and shared driver ABI stay intact. The exact private layout and structure type
+are checked against pinned Khronos XML, with five negative fixtures. The next
+Actions run must compile it and verify API 1.0 device creation plus native-enabled
+extension logs and D3D9 readback in both ABIs. See `graphics-vulkan.md`.
+
+The older Actions build omitted dependencies present in the development runtime.
+Before replacing the shared runtime, the builder now restores source-built TLS,
+GStreamer and SDL plus pinned official shared Wine Mono/Gecko releases. TLS and
+media dependency closures are relocated and checked; no commercial-product
+binaries are copied. New Windows provider/module checks cover both ABIs, with
+no network or rendering in those checks. Source build and real runtime results
+for this update remain pending. The earlier green artifact remains intact.
+
+Packages now use an Actions-run/attempt-specific runtime directory and stage a
+pending selection instead of overwriting `runtime/current`. Offline sync defers
+while Steam or Wine is active, then atomically replaces the default symlink with
+an exact previous-target backup. Old runtime directories and game prefixes are
+preserved. Ten fixtures cover idle installation, activity/inspection failures,
+late Steam startup, dry runs and invalid requests. The complete local fixture
+suite passed 72 tests (three platform skips); no native code was executed.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
