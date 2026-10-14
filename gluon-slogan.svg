@@ -6,9 +6,9 @@
     <text x="0" y="0" fill="#FFFFFF"><tspan fill="#F9D949">Download</tspan><tspan> Gluon and experience a world without</tspan></text>
     <text x="0" y="48" fill="#FFFFFF">CrossOver (and Windows).</text>
   </g>
-  <text x="90" y="365"
+  <text x="90" y="255"
         font-family="Arial, Helvetica, sans-serif"
         font-size="15"
         font-weight="400"
         fill="#929292">Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product.</text>
-</svg> 
+</svg>
