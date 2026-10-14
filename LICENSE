@@ -1,24 +1,376 @@
-This is free and unencumbered software released into the public domain.
+GLUON PUBLIC LICENSE
 
-Anyone is free to copy, modify, publish, use, compile, sell, or
-distribute this software, either in source code form or as a compiled
-binary, for any purpose, commercial or non-commercial, and by any
-means.
+Version 1.2
+Effective Date: October 2026
 
-In jurisdictions that recognize copyright laws, the author or authors
-of this software dedicate any and all copyright interest in the
-software to the public domain. We make this dedication for the benefit
-of the public at large and to the detriment of our heirs and
-successors. We intend this dedication to be an overt act of
-relinquishment in perpetuity of all present and future rights to this
-software under copyright law.
+Copyright © 2026 mzyhot. All rights reserved.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-OTHER DEALINGS IN THE SOFTWARE.
+PREAMBLE
 
-For more information, please refer to <https://unlicense.org>
+This Gluon Public License (the “License”) establishes the terms and conditions under which certain original software and associated materials developed specifically for the Gluon project may be used, reproduced, modified, distributed, sublicensed, and otherwise exploited.
+
+The permissions granted herein are intended to be broadly available to eligible persons and entities, subject to the express exclusions, limitations, and conditions set forth below.
+
+For the avoidance of doubt, this License governs exclusively the original Gluon-specific materials lawfully designated as subject to its terms. No provision of this License shall be construed to govern, amend, supersede, restrict, or otherwise affect the licensing terms applicable to any third-party software or materials.
+
+ARTICLE I. DEFINITIONS AND INTERPRETATION
+
+Section 1.01. Defined Terms
+
+For purposes of this License, the following terms shall have the meanings specified below:
+
+(a) “Licensor” means mzyhot or any other person or legal entity possessing sufficient rights in particular Covered Materials to distribute such materials pursuant to this License.
+
+(b) “Licensee” means any natural person or legal entity exercising, or seeking to exercise, rights granted under this License.
+
+(c) “Covered Materials” means original, copyrightable source code, executable code, scripts, documentation, and other materials specifically developed for the Gluon project, to the extent such materials are owned or lawfully licensable by the applicable Licensor and expressly designated as governed by this License.
+
+(d) “Third-Party Materials” means all software, source code, executable code, libraries, frameworks, dependencies, documentation, and other materials not expressly designated as Covered Materials by a person possessing the legal authority to make such designation.
+
+(e) “CodeWeavers” means CodeWeavers, Inc., together with its successors, parent entities, subsidiaries, and entities directly or indirectly controlled by, controlling, or under common control with CodeWeavers, Inc.
+
+(f) “Excluded Person” means any person or entity described in Article III.
+
+(g) “Covered Rights” means the rights expressly granted under Article II.
+
+(h) “Circumvention Arrangement” means any agreement, agency relationship, contractual undertaking, coordinated activity, or other demonstrable arrangement entered into for the purpose of enabling an Excluded Person to exercise Covered Rights that such Excluded Person is prohibited from exercising directly.
+
+(i) “Derivative Work” means a work based upon one or more preexisting works that constitutes a derivative work under applicable copyright law.
+
+(j) “Distribution” means making copies of Covered Materials available to another person or entity, whether commercially or noncommercially, including by sale, transfer, publication, or electronic transmission.
+
+Section 1.02. Interpretation
+
+Headings are included solely for convenience and shall not affect interpretation.
+
+The terms “including” and “includes” shall be construed without limitation.
+
+References to a person include legal entities where the context permits.
+
+No provision shall be interpreted as granting rights that the applicable Licensor lacks authority to grant.
+
+ARTICLE II. GRANT OF LICENSE
+
+Section 2.01. General Grant
+
+Subject to full compliance with this License, each Licensor hereby grants to each eligible Licensee a worldwide, non-exclusive, royalty-free copyright license to exercise the following rights in the Covered Materials:
+
+(a) To access, use, execute, and reproduce the Covered Materials;
+
+(b) To inspect, examine, study, and analyze the Covered Materials;
+
+(c) To modify, adapt, translate, and prepare Derivative Works of the Covered Materials;
+
+(d) To distribute, publish, transmit, and otherwise make available original or modified copies of the Covered Materials;
+
+(e) To sublicense, sell, license commercially, or otherwise exploit the Covered Materials;
+
+(f) To incorporate the Covered Materials into other software, products, or services; and
+
+(g) To exercise any other rights under copyright law expressly authorized by the foregoing provisions.
+
+Section 2.02. Conditions of Grant
+
+The grant established by Section 2.01 is expressly conditioned upon:
+
+(a) The Licensee not being an Excluded Person;
+
+(b) Compliance with the redistribution requirements of Article V;
+
+(c) Compliance with the anti-circumvention provisions of Article IV; and
+
+(d) Compliance with all other applicable provisions of this License.
+
+Section 2.03. Reservation of Rights
+
+All rights not expressly granted herein are reserved to their respective holders.
+
+No patent license, trademark license, or other intellectual property license is granted by implication, estoppel, or otherwise.
+
+Section 2.04. Independent Statutory Rights
+
+Nothing herein shall restrict any activity permitted without authorization from the relevant copyright holder under applicable law.
+
+ARTICLE III. EXCLUDED PERSONS AND ENTITIES
+
+Section 3.01. Express Exclusion of CodeWeavers
+
+NOTWITHSTANDING ANY PROVISION TO THE CONTRARY, NO LICENSE, AUTHORIZATION, OR PERMISSION IS GRANTED UNDER THIS LICENSE TO CODEWEAVERS OR ANY OTHER EXCLUDED PERSON.
+
+The exclusion established by this Article constitutes an express limitation upon the persons eligible to receive and exercise Covered Rights.
+
+Section 3.02. Categories of Excluded Persons
+
+The following shall constitute Excluded Persons:
+
+(a) CodeWeavers. CodeWeavers, as defined in Section 1.01(e).
+
+(b) Employees and Representatives. Any natural person currently employed by CodeWeavers or acting in an official representative capacity on its behalf.
+
+(c) Affiliated Entities. Any entity maintaining a formal affiliation, partnership, agency, or organizational relationship with CodeWeavers.
+
+(d) Sponsored Persons. Any person or entity receiving sponsorship from CodeWeavers pursuant to an existing sponsorship agreement or arrangement.
+
+(e) Endorsed Persons. Any person or entity that has knowingly accepted, adopted, or publicly represented an official endorsement by CodeWeavers.
+
+(f) Agents and Contractors. Any person or entity acting pursuant to a contractual, agency, or representative relationship with CodeWeavers in connection with the Covered Materials.
+
+(g) Circumvention Participants. Any person or entity knowingly participating in a Circumvention Arrangement.
+
+Section 3.03. Prohibited Exercise of Rights
+
+Excluded Persons shall have no authorization under this License to:
+
+(a) Reproduce or distribute Covered Materials;
+
+(b) Prepare or distribute Derivative Works of Covered Materials;
+
+(c) Incorporate Covered Materials into commercial or noncommercial products;
+
+(d) Sublicense or commercially exploit Covered Materials;
+
+(e) Exercise Covered Rights through an intermediary, representative, contractor, or agent; or
+
+(f) Otherwise engage in activities requiring authorization under copyright law where such authorization is purportedly derived from this License.
+
+Section 3.04. Unsolicited Conduct
+
+An unsolicited communication, unilateral request, public reference, or purported endorsement originating solely from CodeWeavers shall not, without acceptance or additional qualifying circumstances, establish that the recipient is an Excluded Person.
+
+Section 3.05. Temporal Application
+
+Excluded Person status shall be determined at the time the relevant Covered Right is exercised.
+
+Termination of a qualifying relationship may restore eligibility for subsequent activities, subject to any outstanding violation or termination under Article IX.
+
+ARTICLE IV. PROHIBITION AGAINST CIRCUMVENTION
+
+Section 4.01. General Prohibition
+
+No Licensee shall knowingly participate in, facilitate, or carry out a Circumvention Arrangement for the purpose of enabling an Excluded Person to obtain or exercise Covered Rights indirectly.
+
+Section 4.02. Prohibited Arrangements
+
+Without limiting Section 4.01, prohibited conduct includes:
+
+(a) Reproducing or modifying Covered Materials pursuant to an arrangement undertaken on behalf of an Excluded Person;
+
+(b) Procuring Covered Materials as an intermediary for an Excluded Person;
+
+(c) Creating or maintaining Derivative Works pursuant to an arrangement intended to evade Article III;
+
+(d) Transferring or sublicensing Covered Materials under an arrangement intended to confer prohibited rights upon an Excluded Person;
+
+(e) Employing nominees, shell entities, contractors, agents, or other intermediaries to conceal an Excluded Person’s participation; and
+
+(f) Knowingly assisting an Excluded Person in exercising rights withheld under this License through coordinated conduct.
+
+Section 4.03. Requirement of Demonstrable Coordination
+
+A violation of this Article requires knowing participation in an actual Circumvention Arrangement.
+
+Mere speculation regarding an Excluded Person’s possible benefit shall not constitute sufficient grounds for establishing a violation.
+
+Section 4.04. Independent Conduct
+
+Nothing in this Article prohibits independent development, lawful research, public discussion, or activities undertaken without a Circumvention Arrangement.
+
+ARTICLE V. REDISTRIBUTION AND DERIVATIVE WORKS
+
+Section 5.01. Permitted Redistribution
+
+An eligible Licensee may distribute Covered Materials in original or modified form, provided that the Licensee:
+
+(a) Preserves applicable copyright notices;
+
+(b) Includes a copy of this License or provides a reasonably accessible copy accompanying the distribution;
+
+(c) Identifies material modifications made to the Covered Materials;
+
+(d) Complies with applicable third-party licensing obligations; and
+
+(e) Does not knowingly purport to grant Covered Rights to an Excluded Person.
+
+Section 5.02. Ownership of Modifications
+
+A Licensee retains ownership of independently copyrightable modifications authored by that Licensee, subject to the rights of holders of preexisting material.
+
+No provision herein shall operate as an assignment of copyright.
+
+Section 5.03. Licensing of Independent Contributions
+
+A Licensee may apply separate licensing terms to independently copyrightable contributions, provided that such terms do not purport to extinguish or override restrictions applicable to preexisting Covered Materials.
+
+Section 5.04. Preservation of Original Terms
+
+Redistribution, incorporation, or modification shall not remove the application of this License to preexisting Covered Materials.
+
+Section 5.05. No Automatic Extension
+
+This License shall not automatically apply to independent software, unrelated components, or separately licensed materials merely because they are combined, linked, packaged, or distributed with Covered Materials.
+
+ARTICLE VI. EXCLUSION OF THIRD-PARTY MATERIALS
+
+Section 6.01. Exclusive Application
+
+THIS LICENSE APPLIES SOLELY TO COVERED MATERIALS AND SHALL NOT APPLY TO THIRD-PARTY MATERIALS.
+
+The presence of Third-Party Materials within the Gluon repository, installation package, runtime environment, or distribution shall not subject such materials to this License.
+
+Section 6.02. Independent Licensing
+
+All Third-Party Materials shall remain governed by their respective applicable licenses, copyright notices, and legal terms.
+
+Such materials may include, without limitation:
+
+(a) Wine and its components;
+
+(b) DXVK and its components;
+
+(c) MoltenVK and other graphics translation software;
+
+(d) Operating-system frameworks and system libraries;
+
+(e) Independently developed compatibility layers;
+
+(f) External development tools and dependencies; and
+
+(g) Any other material for which the applicable Licensor does not possess authority to grant rights under this License.
+
+Section 6.03. Modifications to Third-Party Materials
+
+Modifications to Third-Party Materials shall remain subject to all applicable preexisting licensing obligations.
+
+Any independently copyrightable contribution contained within such modifications may be separately licensed only to the extent permitted by applicable law and the governing third-party licenses.
+
+Section 6.04. No Extension of Exclusions
+
+The restrictions established by Articles III and IV shall apply exclusively to Covered Materials and the rights granted under this License.
+
+Such restrictions shall not diminish, revoke, modify, or otherwise impair rights independently granted under licenses governing Third-Party Materials.
+
+Section 6.05. Conflicting Terms
+
+Where compliance with this License and a third-party license would be mutually incompatible in connection with a proposed distribution, no permission to undertake that incompatible distribution is granted by this License.
+
+Nothing herein shall be construed as authorizing a violation of another applicable license.
+
+ARTICLE VII. INTELLECTUAL PROPERTY AND ATTRIBUTION
+
+Section 7.01. Copyright Ownership
+
+Copyright in Covered Materials shall remain vested in the applicable copyright holders.
+
+Section 7.02. Attribution
+
+Recipients shall preserve copyright, licensing, and attribution notices applicable to Covered Materials.
+
+Section 7.03. Trademarks
+
+No rights to use the trademarks, service marks, trade names, logos, or branding of Gluon, mzyhot, or any contributor are granted, except as otherwise permitted by applicable law.
+
+Section 7.04. No Representation of Endorsement
+
+No Licensee shall falsely represent that a modified version of the Covered Materials has been approved, certified, or endorsed by the Licensor.
+
+ARTICLE VIII. DISCLAIMER OF WARRANTIES AND LIMITATION OF LIABILITY
+
+Section 8.01. Disclaimer of Warranties
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE COVERED MATERIALS ARE PROVIDED “AS IS” AND “AS AVAILABLE,” WITHOUT WARRANTIES OF ANY KIND, WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE.
+
+THE LICENSOR EXPRESSLY DISCLAIMS ALL WARRANTIES, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY, RELIABILITY, SECURITY, AND COMPATIBILITY.
+
+NO REPRESENTATION OR WARRANTY IS MADE THAT THE COVERED MATERIALS WILL BE UNINTERRUPTED, ERROR-FREE, SECURE, OR SUITABLE FOR ANY PARTICULAR USE.
+
+Section 8.02. Assumption of Risk
+
+EACH LICENSEE ASSUMES ALL RISKS ASSOCIATED WITH THE INSTALLATION, EXECUTION, MODIFICATION, DISTRIBUTION, AND USE OF THE COVERED MATERIALS.
+
+Section 8.03. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT SHALL ANY LICENSOR BE LIABLE FOR ANY DAMAGES ARISING OUT OF OR IN CONNECTION WITH THE COVERED MATERIALS OR THIS LICENSE.
+
+SUCH DAMAGES INCLUDE, WITHOUT LIMITATION, DIRECT, INDIRECT, INCIDENTAL, CONSEQUENTIAL, SPECIAL, EXEMPLARY, OR PUNITIVE DAMAGES; LOSS OF DATA; LOSS OF PROFITS; BUSINESS INTERRUPTION; SYSTEM FAILURE; AND DAMAGE TO SOFTWARE OR HARDWARE.
+
+THIS LIMITATION SHALL APPLY REGARDLESS OF THE LEGAL THEORY OF LIABILITY AND WHETHER OR NOT THE LICENSOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+Section 8.04. Mandatory Legal Exceptions
+
+Nothing in this Article shall exclude or limit liability to the extent such exclusion or limitation is prohibited by applicable law.
+
+ARTICLE IX. TERMINATION AND REINSTATEMENT
+
+Section 9.01. Automatic Termination
+
+The rights granted to a Licensee under this License shall terminate automatically upon a material violation of its terms.
+
+Section 9.02. Effect of Termination
+
+Upon termination, the Licensee shall cease exercising all rights dependent upon this License.
+
+Termination shall not affect rights independently granted under other applicable licenses.
+
+Section 9.03. Cure and Reinstatement
+
+Upon cessation of the violation, the Licensee’s rights shall be reinstated provisionally.
+
+Reinstatement shall become permanent if:
+
+(a) The relevant Licensor does not notify the Licensee of the violation within sixty (60) days following cessation; or
+
+(b) The Licensee receives notice of the violation for the first time from the relevant Licensor and cures the violation within thirty (30) days after receiving such notice.
+
+Section 9.04. Excluded Person Status
+
+A person who becomes an Excluded Person shall cease to be eligible to exercise Covered Rights for the duration of such status.
+
+The subsequent cessation of Excluded Person status shall not excuse violations occurring during the period of exclusion.
+
+Section 9.05. Existing Compliant Grants
+
+Termination shall not automatically terminate valid grants previously received by independent, compliant Licensees.
+
+ARTICLE X. GENERAL PROVISIONS
+
+Section 10.01. Severability
+
+If any provision of this License is held invalid, unlawful, or unenforceable by a court of competent jurisdiction, the remaining provisions shall continue in effect to the maximum extent permitted by applicable law.
+
+Section 10.02. No Waiver
+
+Failure or delay by a Licensor to enforce any provision shall not constitute a waiver of that provision or any other right.
+
+Section 10.03. Entire Agreement
+
+This License constitutes the complete terms governing the copyright permissions expressly granted herein.
+
+No oral statement, informal communication, or third-party representation shall modify this License without authorization from the relevant Licensor.
+
+Section 10.04. Amendments and Subsequent Versions
+
+The Licensor may publish amended or subsequent versions of this License.
+
+Unless expressly authorized by the relevant Licensor, publication of a subsequent version shall not retroactively alter rights granted under an earlier version.
+
+Section 10.05. Construction
+
+Nothing herein shall be construed to:
+
+(a) Grant rights exceeding those lawfully held by the Licensor;
+
+(b) Restrict rights independently arising under applicable law;
+
+(c) Impose licensing obligations upon Third-Party Materials;
+
+(d) Alter existing third-party licensing arrangements; or
+
+(e) Confer rights upon Excluded Persons contrary to Article III.
+
+Section 10.06. Acceptance
+
+Receipt, possession, or examination of Covered Materials shall not, by itself, constitute acceptance of this License.
+
+A person who exercises rights requiring copyright-holder authorization and granted solely under this License does so subject to its terms and conditions.
+
+No provision herein shall be construed to require acceptance for activities lawfully permitted independently of this License.
