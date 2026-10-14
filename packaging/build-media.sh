@@ -106,6 +106,19 @@ done
 mkdir -p "$SRC/glib/subprojects/proxy-libintl"
 tar -xzf "$DL/proxy-libintl-0.4.tar.gz" -C "$SRC/glib/subprojects/proxy-libintl" --strip-components 1
 
+# GLib 2.78's D-Bus generator uses distutils, removed in Python 3.12.
+# Backport upstream's dependency-free parser without changing the runtime API.
+GLIB_PATCH="$ROOT/packaging/patches/glib-codegen-python.patch"
+echo "cc6a049d598cb82dbd7b84db08276e93ae680700543fb1d69ea52e5ba4b263e4  $GLIB_PATCH" | shasum -a 256 -c -
+if patch --dry-run --forward --batch --fuzz=0 -p1 -d "$SRC/glib" < "$GLIB_PATCH" >/dev/null 2>&1; then
+    patch --forward --batch --fuzz=0 -p1 -d "$SRC/glib" < "$GLIB_PATCH"
+elif patch --dry-run --reverse --batch --fuzz=0 -p1 -d "$SRC/glib" < "$GLIB_PATCH" >/dev/null 2>&1; then
+    echo 'GLib codegen Python compatibility patch already applied'
+else
+    echo 'GLib source differs from the supported codegen patch; refusing to continue' >&2
+    exit 1
+fi
+
 for library in libffi pcre2; do
     mkdir -p "$BUILD/$library"
     (
@@ -190,6 +203,7 @@ cp "$SRC/pcre2/LICENCE" "$NOTICES/PCRE2-LICENSE.txt"
 cp "$SRC/glib/COPYING" "$NOTICES/GLib-COPYING.txt"
 cp -R "$SRC/glib/LICENSES" "$NOTICES/GLib-LICENSES"
 cp "$SRC/glib/subprojects/gvdb/COPYING" "$NOTICES/GVDB-COPYING.txt"
+cp "$GLIB_PATCH" "$NOTICES/Gluon-GLib-codegen.patch"
 cp "$SRC/glib/subprojects/proxy-libintl/COPYING" "$NOTICES/proxy-libintl-COPYING.txt"
 cp "$SRC/gstreamer/LICENSE" "$NOTICES/GStreamer-LICENSE.txt"
 for component in gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav; do
@@ -207,6 +221,9 @@ SHA-256 ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872
 GVDB, GLib 2.78.0's pinned submodule commit 0854af0fdb6d527a8d1999835ac2c5059976c210:
 https://gitlab.gnome.org/GNOME/gvdb/-/archive/0854af0fdb6d527a8d1999835ac2c5059976c210/gvdb-0854af0fdb6d527a8d1999835ac2c5059976c210.tar.gz
 SHA-256 08352e54e8216d9001820c627c62858585465b51dc557cc22f0f4770ed182ebd
+GLib codegen Python compatibility: dependency-free parser backported from upstream
+https://gitlab.gnome.org/GNOME/glib/-/commit/38faeca62ebd5be89b1ec3e6c530e499ce2d7240
+Patch SHA-256 cc6a049d598cb82dbd7b84db08276e93ae680700543fb1d69ea52e5ba4b263e4
 SDL2 2.32.10: https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10
 SHA-256 5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165
 libffi 3.4.6: https://github.com/libffi/libffi/releases/tag/v3.4.6
