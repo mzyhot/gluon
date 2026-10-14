@@ -95,9 +95,11 @@ if [ ! -f "$DEPS/lib/libMoltenVK.dylib" ]; then
     log "Unpacking MoltenVK"
     mkdir -p "$WORK/moltenvk"
     tar -xf "$DL/MoltenVK-macos.tar" -C "$WORK/moltenvk"
-    mvk="$(find "$WORK/moltenvk" -type d -path '*MoltenVK/dylib/macOS' | head -1)"
-    inc="$(find "$WORK/moltenvk" -type d -path '*MoltenVK/include' | head -1)"
-    cp "$mvk/libMoltenVK.dylib" "$DEPS/lib/"
+    mvk="$(find "$WORK/moltenvk" -name libMoltenVK.dylib -path '*/dylib/macOS/*' | head -1)"
+    inc="$(find "$WORK/moltenvk" -type d -name include -path '*MoltenVK/include' | head -1)"
+    [ -n "$mvk" ] && [ -n "$inc" ] || { echo "unexpected MoltenVK archive layout" >&2; exit 1; }
+    cp "$mvk" "$DEPS/lib/"
+    lipo -info "$DEPS/lib/libMoltenVK.dylib"
     cp -R "$inc"/* "$DEPS/include/"
     cp "$(find "$WORK/moltenvk" -maxdepth 2 -name LICENSE | head -1)" "$DEPS/MoltenVK-LICENSE.txt"
 fi
