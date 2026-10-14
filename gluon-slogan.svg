@@ -1,1 +1,14 @@
-   Download Gluon and experience a world without  CrossOver (and Windows).  Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product. 
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1750 480">
+  <g transform="translate(90 180) rotate(-3.5)"
+     font-family="Arial, Helvetica, sans-serif"
+     font-size="36"
+     font-weight="800">
+    <text x="0" y="0" fill="#FFFFFF"><tspan fill="#F9D949">Download</tspan><tspan> Gluon and experience a world without</tspan></text>
+    <text x="0" y="48" fill="#FFFFFF">CrossOver (and Windows).</text>
+  </g>
+  <text x="90" y="365"
+        font-family="Arial, Helvetica, sans-serif"
+        font-size="15"
+        font-weight="400"
+        fill="#929292">Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product.</text>
+</svg> 
