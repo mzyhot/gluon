@@ -74,3 +74,16 @@ source origins and Gluon's Wine patch.
 The package's bridge files being present does not prove an achievement or overlay
 test. Steam's native overlay is taken only from the user's installed Steam client;
 Valve's overlay library is not part of this package or these artifacts.
+
+## Owner game validation
+
+On 2026-10-14, the owner launched Happy Wheels through its normal Steam Play
+button with the verified source-built `gluon-wine-186bfc4` runtime. The owner
+confirmed that Shift+Tab opened Steam's actual overlay in fullscreen and that a
+Steam achievement popup appeared. The two recorded game sessions exited
+successfully after 52 and 109 seconds.
+
+This is a separate user-observed game result, beyond the cloud probes above. It
+establishes the overlay and achievement popup for this Happy Wheels setup; it
+does not establish other games, notification sound, metadata-refresh protection,
+Primordialis rendering or sustained performance.

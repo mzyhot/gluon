@@ -544,7 +544,15 @@ they do not have the development runtime's Hardened Runtime signing gate.
 Happy Wheels' per-game settings select this runtime on the next normal Play.
 The default runtime link and original prefix were left intact, and the selection
 is reversible from `backups/happy-runtime-20261014-153843`. No installer script,
-Wine executable or game was started by this deployment. Owner overlay test pending.
+Wine executable or game was started by this deployment. The owner subsequently
+confirmed that Steam's actual overlay and achievement popup both appear during
+the requested Happy Wheels fullscreen test. Launch logs confirm the source-built
+runtime, original executable/prefix, original Steam IDs and native overlay request;
+user sessions at 16:09:55 and 16:10:54 ended successfully after 52 and 109 seconds.
+The visible result is owner-confirmed, not inferred from those logs. No custom
+banner or artificial achievement changes were used. The signing-policy correction
+and native insertion restoration resolve this Happy Wheels notification failure.
+Other games and OpenGL/Vulkan overlay paths have not been tested.
 
 The build now checks the signing policy of all present native Wine host paths
 before runtime probes. Static inspection accepts the staged runtime and rejects
@@ -575,9 +583,10 @@ results do not establish Primordialis rendering or Steam overlay support.
 3. **Steam's Stop button.** `app_stop` and `SteamClient.Apps.TerminateApp` did not
    signal the launcher. Find out how the Mac client stops a game.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
-   "init error gone" with one game; local achievement caches confirm persisted unlocks.
-   Valve's real overlay popup/sound through the restored native loading path,
-   Workshop and DRM-wrapped titles are untested.
+   "init error gone" with People Playground; local achievement caches confirm persisted
+   unlocks. The owner confirmed Valve's real overlay and achievement popup in Happy
+   Wheels fullscreen with the source-built runtime. Other game/backend overlay paths,
+   sound level, Workshop and DRM-wrapped titles remain untested.
 5. **Install scripts.** Steam logs `RunningInstallScript` but the Windows steps
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.

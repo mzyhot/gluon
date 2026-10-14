@@ -5,9 +5,11 @@ inside a game launched from its original Steam library page. A custom banner or
 sound is not an acceptable substitute. The rejected custom notification prototype
 has been removed. No achievement state should be changed to test this work.
 
-This document records source and existing-log evidence gathered on 2026-10-14.
-It does not establish that the native overlay renders in Gluon yet. No game,
-Wine session, graphics probe, or compiler was launched for this source review.
+This document records source, binary and launch-log evidence gathered on
+2026-10-14, followed by the owner's successful Happy Wheels fullscreen test.
+The owner confirmed Steam's actual overlay and achievement popup with the
+source-built runtime. No game, Wine session, graphics probe or compiler was
+launched by the agent for this investigation.
 
 ## Stats and rendering are separate
 
@@ -118,7 +120,7 @@ Valve overlay selector inventory also included `steamoverlay_addScheduledHandler
 This is a candidate hook route to inspect, not proof that native Steam overlay
 works through MoltenVK or Gluon's Vulkan-based Direct3D 9 implementation.
 
-## Remaining verification
+## CLI analysis and the initial launch change
 
 REA CLI analysis now used Ghidra 12.1.4 explicitly, with one available CPU,
 512 MB headless heap, reduced priority, a 45-second startup deadline and a
@@ -141,8 +143,8 @@ then restores it on the final plain-Wine native game command. Setup and explicit
 server commands remain clear. Implicit child/server processes may inherit the
 final Wine environment, so their exclusion is not claimed. Steam's original
 game IDs and original library page are retained. No Valve files are shipped,
-copied or modified. This fixes the observed missing loading request; runtime
-initialization, IPC and actual popup/sound are still to be verified.
+copied or modified. At this stage the missing loading request was restored;
+native loading and visible notifications had not yet been established.
 
 Native binary analysis must use REA CLI with Ghidra exclusively. Hopper is
 prohibited by the owner. The source observations above and Ghidra observations
@@ -154,10 +156,10 @@ ID association, and the exact environment passed to Wine. Loading a dylib is
 not a successful notification test. Also account for the Proton tool's protected
 shell/arm64-Python wrapper, which differs from a direct plain-Wine invocation.
 
-Any eventual validation must use one short, bounded game session, stop on
-failure, and clean up only its own prefix. It must demonstrate Valve's actual
-popup and sound, including fullscreen behavior, without artificially unlocking
-or resetting achievements. Until then, real Steam overlay support remains open.
+Further agent-run validation must use one short, bounded game session and stop
+on failure. It must demonstrate Valve's actual notification, including fullscreen
+behavior, without artificially unlocking or resetting achievements. The owner's
+own later test supplies the visible Happy Wheels result below.
 
 ## Failed Play test and the signing gate
 
@@ -200,8 +202,8 @@ normal Steam Play. The old runtime, default runtime link and original game prefi
 remain intact; no running game's loader paths were switched. The selection's
 rollback record is in `backups/happy-runtime-20261014-153843`. The new runtime
 omits Mono/Gecko and several multimedia dependencies, so other games have not
-been switched. The owner was asked to try the real fullscreen overlay once on
-the new runtime; that result remains pending.
+been switched. The owner then tested the real fullscreen overlay on the new
+runtime successfully, as recorded below.
 
 `packaging/check-overlay-policy.py` now audits the actual native Wine host
 signatures before the build's runtime checks. A hardened executable must have
@@ -218,3 +220,22 @@ off unless `STEAM_OVERLAY_LOGGING`, `STEAM_OVERLAY_LOGGING_FLUSH` or frame-time
 logging is present. Enabled logs are written to
 `/tmp/gameoverlayrenderer.<native-pid>.log`. Ordinary logging may be enabled
 for a single diagnostic game session; frame-time logging is unnecessary.
+
+## Owner-confirmed fullscreen result
+
+On 2026-10-14 the owner answered the normal Steam Play / fullscreen Shift+Tab
+test: both Steam's actual overlay and an achievement notification appeared.
+This closes the reported missing visual notification for Happy Wheels on the
+source-built runtime. The rejected custom notification helper remains removed;
+no achievement was artificially unlocked or reset by Gluon for this test.
+
+The existing launch log corroborates selection of `gluon-wine-186bfc4`, the
+original Happy Wheels executable and prefix, original Steam IDs, the Steam API
+bridge and Valve's validated native insertion list. It records user sessions
+starting at 16:09:55 and 16:10:54, ending with status zero after
+52 and 109 seconds respectively. These logs establish launch configuration and
+clean exits; the owner's observation establishes the visible overlay and popup.
+
+This result applies to Happy Wheels' DXMT/Metal path on this Mac. Other games,
+OpenGL and Vulkan overlay rendering, sound level and performance have not been
+separately validated. Metadata-refresh protection remains a distinct open issue.
