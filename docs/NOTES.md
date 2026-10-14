@@ -270,8 +270,44 @@ The launcher, for a plain-Wine runtime that carries them:
 | Game | Result | Evidence |
 |---|---|---|
 | People Playground (Unity, D3D11) | Works. Without the bridge: runs, renders (user-confirmed), but "SteamApi_Init failed". With the bridge: 15-minute session, that error no longer in the game log. | Unity log: Direct3D 11.0 level 11.1 on "Apple M4" |
-| Happy Wheels (Electron) | DXMT device created, then `CreateSwapChain: cross-process swapchain not supported yet`. Launcher now adds `--in-process-gpu` for Chromium-based apps. Not re-tested since. | wine log |
-| Primordialis (OpenGL 3) | Not re-tested on this runtime. Expected to still fail: macOS gives OpenGL 3+ only as a core profile. | |
+| Happy Wheels (Electron) | Renders with `--in-process-gpu` (added automatically for Chromium-based apps; without it DXMT logs `cross-process swapchain not supported yet`). Fullscreen crashed with the DXMT build from the CrossOver bundle and does not with upstream DXMT 0.80 - see below. | wine log, user report |
+| Primordialis (OpenGL 3) | Starts (picks its AVX build) but the OpenGL error remains (user report). macOS gives OpenGL 3+ only as a core profile. Not fixed. | user report |
+
+### Happy Wheels fullscreen crash - diagnosis
+
+Reproduction without the game's UI: the game keeps "start in fullscreen" as a flag file,
+`%APPDATA%\\HappyWheels\\hwdata\\flags\\fullscreen`. With it present the game crashed 12 s
+after launch, 3 out of 3 runs, at the same address as the user's crash on toggling
+fullscreen. (The game exits if started with a Chromium debugging port, so that route is
+not available.)
+
+What the crash is, from `WINEDEBUG=+loaddll,+seh`:
+
+- Access violation in `msvcrt.dll` +0xA496, inside its memory-copy routine.
+- Registers decode (per `dlls/msvcrt/string.c`: rdi/rsi = current destination/source,
+  r8 = bytes left, rcx/rdx = original arguments): a copy of 0x591000 bytes =
+  1520 x 960 x 4, with 0x1000 bytes left when the source ran out.
+- The source is readable for 0x590000 bytes, which is exactly a 1520 x **959** x 4 image
+  rounded up to 4 KB pages, starting at the head of a large Chromium allocation.
+- The caller is DXMT's `d3d11.dll` (the exception handlers of the two calling frames are
+  inside it).
+
+So DXMT copied one row more than the application supplied. Large buffers have nothing
+mapped after them, which is why only fullscreen-sized uploads fault; in a window the
+same over-read lands in pooled memory and goes unnoticed.
+
+Upstream DXMT's `TextureUpdateCommand` / `UpdateTexture` compute the row count from the
+update box correctly. With the official upstream **DXMT v0.80** release swapped into the
+runtime, the same reproduction runs without a fault. The defect is therefore in the DXMT
+build that ships inside CrossOver 26.3 (file dated 2026-07-15), not in v0.80. Which
+commit introduced or fixed it has not been identified; the CI-built runtime pins v0.80.
+
+Local runtime: upstream v0.80 DLLs are installed over the bundled ones (kept as
+`*.cx263`). People Playground needs re-checking on v0.80.
+
+Crash reporting: `HKCU\\Software\\Wine\\WineDbg\\ShowCrashDialog=0` was set in that prefix;
+Wine's debugger still printed no backtrace. The module and register method above works
+without it.
 
 ### Tooling note
 
