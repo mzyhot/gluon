@@ -1,7 +1,5 @@
 <?xml version='1.0' encoding='UTF-8'?>
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
-<title id="title">Low-poly Gluon proton logo</title>
-<desc id="desc">Three faceted white quarks with two black upward arrows and one black downward arrow, connected by three touching half-size yellow gluon spheres. No lines.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img"
 <defs>
 <g id="quark">
 <polygon points="0.00,-70.00 26.79,-64.67 49.50,-49.50 64.67,-26.79 70.00,0.00 64.67,26.79 49.50,49.50 26.79,64.67 0.00,70.00 -26.79,64.67 -49.50,49.50 -64.67,26.79 -70.00,0.00 -64.67,-26.79 -49.50,-49.50 -26.79,-64.67" fill="#e8eaef"/>
