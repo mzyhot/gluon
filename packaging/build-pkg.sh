@@ -16,6 +16,7 @@ set -e
 
 version="${1:-0.1.0}"
 here="$(cd "$(dirname "$0")/.." && pwd)"
+. "$here/packaging/require-cloud.sh"
 runtime_src="${GLUON_PKG_RUNTIME:-$(cd "$HOME/Library/Application Support/Gluon/runtime/current" && pwd -P)}"
 [ -x "$runtime_src/proton" ] || [ -x "$runtime_src/bin/wine" ] || { echo "no runtime at $runtime_src" >&2; exit 1; }
 [ -d "$runtime_src/licenses" ] || { echo "runtime at $runtime_src has no licenses folder; refusing to package it" >&2; exit 1; }

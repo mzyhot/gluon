@@ -1,0 +1,25 @@
+{
+  "name": "Gluon cloud source review",
+  "image": "mcr.microsoft.com/devcontainers/python:3.2.0-3.12-bookworm",
+  "remoteUser": "vscode",
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "4gb",
+    "storage": "32gb"
+  },
+  "containerEnv": {
+    "GLUON_CLOUD_ONLY": "1",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install --no-install-recommends -y patch perl curl ca-certificates",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "files.watcherExclude": {
+          "**/build/**": true,
+          "**/third_party/**": true
+        }
+      }
+    }
+  }
+}

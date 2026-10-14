@@ -17,10 +17,16 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 240
+    env:
+      JOBS: "4"
     steps:
       - uses: actions/checkout@v4
 
@@ -53,6 +59,25 @@ jobs:
       - name: Build runtime
         run: packaging/build-runtime.sh
 
+      - name: Compile OpenGL probes
+        run: |
+          packaging/check-opengl.sh --compile-only arm64 x86_64
+          mkdir -p build/graphics-probes
+          clang -arch x86_64 -O2 -Wall -Wextra -Werror packaging/check-opengl.c \
+            -framework OpenGL -o build/graphics-probes/opengl-native
+          for arch in x86_64 i686; do
+            "build/llvm-mingw/bin/$arch-w64-mingw32-clang" -O2 -Wall -Wextra -Werror \
+              packaging/check-wgl.c -lopengl32 -lgdi32 -luser32 \
+              -o "build/graphics-probes/wgl-$arch.exe"
+            "build/llvm-mingw/bin/$arch-w64-mingw32-clang" -O2 -Wall -Wextra -Werror \
+              tools/d3d9_probe.c -lgdi32 -luser32 \
+              -o "build/graphics-probes/d3d9-$arch.exe"
+          done
+
+      - name: Check complete runtime on GitHub macOS
+        timeout-minutes: 8
+        run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
+
       - name: Build logs on failure
         if: failure()
         run: |
@@ -70,6 +95,20 @@ jobs:
           name: Gluon-${{ steps.version.outputs.version }}
           path: dist/Gluon-*.pkg*
           if-no-files-found: error
+
+      - name: Graphics build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphics-build-evidence
+          path: |
+            build/graphics-probes/*.log
+            build/graphics-probes/*.json
+            build/graphics-probes/*.exe
+            build/d3d9/*/pe-inspection.txt
+            build/d3d9/*/meson-logs/meson-log.txt
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Release
         if: github.ref_type == 'tag'

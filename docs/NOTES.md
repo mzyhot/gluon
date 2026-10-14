@@ -333,6 +333,90 @@ Not yet in the CI-built runtime (present in the local development copy): DXVK fo
 Direct3D 9, wine-mono and Gecko, GnuTLS (so no HTTPS from inside games), GStreamer
 (video playback), SDL (controllers through SDL).
 
+## Graphics development and execution policy (2026-10-13)
+
+The owner stopped local graphics testing after reporting severe MacBook heating.
+All matching Wine/graphics test processes were terminated; the stop check found
+zero remaining processes. Do not repeat the failed native-module experiments or
+start parallel local probes. Compilation stays on GitHub Actions. The owner later
+authorized one short local test at a time, with reduced workload/priority, a hard
+timeout, immediate stop on failure, and prefix-specific cleanup. Temperature
+polling was explicitly withdrawn; do not start a temperature polling loop.
+
+The first `smctemp` invocation failed inside the tool sandbox with IOKit
+`kIOReturnNotPermitted` (`e00002e2`); its `0.0` was invalid. A later sensor-only
+invocation outside the sandbox returned valid readings. No graphics
+test was started by either temperature command.
+
+Build/probe helpers now reject ordinary local invocation, default to four build
+workers, and run on GitHub infrastructure. The optional Linux Codespaces setup
+supports source review and validation; it cannot reproduce macOS/Metal/CGL.
+Use macOS Actions for the complete runtime. See `docs/CLOUD-DEVELOPMENT.md`.
+
+### OpenGL
+
+Primordialis was reproduced from a copied game and copied prefix. Its trace calls
+only `wglCreateContext`; no attributes/core context request precedes the failure.
+macdrv supplies `2.1 Metal - 91.7`; its separate core probe finds `4.1`. The legacy
+context advertises `GL_EXT_gpu_shader4`, yet Wine rejects the unsuffixed
+`glVertexAttribIPointer` because the generated requirement is OpenGL 3.0.
+
+A source-built Windows baseline probe confirmed the EXT entry point exists and
+sets integer-array state (`integer_array=1`, `GL_error=0`). The Wine source patch
+adds all 34 exact Khronos-defined core/EXT aliases in that extension. Capability
+checks now precede the shared function-pointer cache so a pointer obtained on a
+core context cannot bypass a later legacy context's capability checks.
+
+All alias metadata, signatures and source entries passed validation against the
+SHA-256-pinned Khronos registry. Missing aliases, changed signatures and a cache
+bypass were rejected by negative checks. The native Wine OpenGL module compiled,
+but substituting that module alone in a development-runtime copy failed during
+DLL attachment before WGL ran. This is not a passed runtime test. Validate the
+complete source-built runtime in Actions; do not repeat that partial substitution.
+
+ANGLE's Metal backend supplies ES 2/3, and rejects the desktop EGL API. MGL's
+current source has incomplete integer attributes, enumeration, context ownership
+and legacy support. Neither was shipped or used to claim full desktop OpenGL
+compatibility. Primordialis rendering remains unresolved; an alias fix does not
+add modern GLSL or every desktop API. Evidence: `docs/graphics-opengl-backends.md`.
+
+### Vulkan and Direct3D 9
+
+Wine configure is explicitly bound to the bundled
+`@rpath/libMoltenVK.dylib`, preventing an unrelated Vulkan SDK on a runner from
+silently selecting the shipped backend. Native loading/instance-extension checks
+passed, and both Windows ABI probes compiled. Initial sandboxed GPU/device and
+Wine executions were unavailable and were not retried in that environment.
+See `docs/graphics-vulkan.md`.
+
+Direct3D 9 now builds from `sources/dxvk` in the existing SHA-256-pinned
+CodeWeavers archive, for both x86_64 and i386. Three labelled source patches adapt
+modern headers and negotiate the optional geometry/cull/fill Vulkan features;
+the latter is based on the pinned Sikarugir d9vk source. The unmodified feature
+requests reproduced `vkCreateDevice` failure on MoltenVK. Both patched source
+DLLs passed PE machine/export/import checks. Their Wine builtin marker makes
+runtime-folder loading work; the original DLLs remain `d3d9.dll.wined3d`.
+
+Historical local logs, before the stop instruction, show both source DLLs passing
+the tiny clear/triangle GPU readback on MoltenVK 1.4.2: pixels `0xff123456` and
+`0xff3366aa` matched. Installation fixtures preserved the original bytes and
+included the license/source notices. These results are not full CI-runtime,
+Steam game, presentation, performance or installer validation. See
+`docs/graphics-d3d9.md` and `NOTICE.md`.
+
+A later, lower-priority single-test attempt with a 20-second deadline stopped
+before spawning Wine: the temporary test runtimes no longer existed. No graphics
+process was launched. Use a fresh CI-built runtime for the next authorized test.
+
+### Cloud validation
+
+Existing Wine build run 38489527625 (commit `52c59e8`) completed successfully.
+Its configure/build fixes were preserved. Branch `codex/graphics-cloud` adds Linux
+source validation plus macOS compilation, bounded complete-runtime probes and
+uploaded text evidence. Each Wine probe has a deadline and an isolated CI prefix;
+cleanup stops its server. A missing hosted-runner GPU is recorded as a skip,
+never a passed rendering check. New cloud results are pending dispatch.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number

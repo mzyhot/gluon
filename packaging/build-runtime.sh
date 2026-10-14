@@ -10,6 +10,7 @@
 #   FreeType      built from the same source release
 #   MoltenVK      KhronosGroup release (Apache-2.0)
 #   DXMT          3Shain/dxmt release (LGPL-2.1) - Direct3D 10/11 on Metal
+#   DXVK          built from the same source release (Zlib) - Direct3D 9 on Vulkan
 #   Steam bridge  optional input: build/inputs/steam-bridge-*.tar.gz
 #
 # Runs on an Apple Silicon Mac with Rosetta 2, Xcode, CMake, and Homebrew bison and flex.
@@ -20,12 +21,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/packaging/require-cloud.sh"
 WORK="${WORK:-$ROOT/build}"
 OUT="${OUT:-$WORK/gluon-wine}"
 DL="$WORK/downloads"
 SRC="$WORK/src"
 DEPS="$WORK/deps"
-JOBS="$(sysctl -n hw.ncpu)"
+JOBS="${JOBS:-4}"
 
 CX_SRC_URL="https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.gz"
 CX_SRC_SHA="ac99c8ca4b3848f3e81784135f023df266b61c2345726ea55a50b3e030dd6872"
@@ -56,6 +58,19 @@ fetch "$DXMT_URL" "$DXMT_SHA" "$DL/dxmt-builtin.tar.gz"
 if [ ! -d "$SRC/wine" ]; then
     log "Unpacking Wine and FreeType sources"
     tar -xzf "$DL/crossover-sources.tar.gz" -C "$SRC" --strip-components 1 sources/wine sources/freetype
+fi
+if [ ! -f "$SRC/dxvk/meson.build" ]; then
+    log "Unpacking Direct3D 9 sources"
+    tar -xzf "$DL/crossover-sources.tar.gz" -C "$SRC" --strip-components 1 sources/dxvk
+fi
+
+log "Applying Wine OpenGL dispatch changes"
+"$ROOT/packaging/apply-wine-patches.sh" "$SRC/wine"
+"$ROOT/packaging/check-opengl-aliases.sh" "$SRC/wine" "$DL"
+WINE_PATCH_SHA="$(shasum -a 256 "$ROOT/packaging/patches/wine-opengl-promoted-aliases.patch" | cut -d' ' -f1)"
+if [ -x "$OUT/bin/wine" ] && { [ ! -f "$OUT/.gluon-wine-patches" ] || [ "$(cat "$OUT/.gluon-wine-patches")" != "$WINE_PATCH_SHA" ]; }; then
+    echo "Existing runtime predates the Wine patches. Build with a new WORK/OUT directory." >&2
+    exit 1
 fi
 if [ ! -d "$WORK/llvm-mingw" ]; then
     log "Unpacking llvm-mingw"
@@ -106,6 +121,10 @@ fi
 
 if [ ! -x "$OUT/bin/wine" ]; then
     log "Configuring Wine"
+    # Select the bundled implementation even if the runner has a Vulkan SDK installed.
+    # Wine's cache variables accept the relocatable name used by its native bridge.
+    export ac_cv_lib_soname_vulkan=''
+    export ac_cv_lib_soname_MoltenVK='@rpath/libMoltenVK.dylib'
     # OpenGL is left to auto-detection: on macOS it comes from winemac.drv and the system
     # framework, and asking for it explicitly makes the (Linux-oriented) EGL check fatal.
     mkdir -p "$WORK/wine-build"
@@ -126,6 +145,7 @@ if [ ! -x "$OUT/bin/wine" ]; then
     make -j"$JOBS"
     log "Installing Wine"
     make install
+    printf '%s\n' "$WINE_PATCH_SHA" > "$OUT/.gluon-wine-patches"
 fi
 
 log "Adding support libraries and graphics layers"
@@ -145,6 +165,9 @@ for arch in x86_64-windows i386-windows; do
 done
 cp "$dxmt/x86_64-unix/winemetal.so" "$OUT/lib/wine/x86_64-unix/"
 
+log "Building Direct3D 9 on Vulkan for x86_64 and i386"
+WORK="$WORK" JOBS="$JOBS" "$ROOT/packaging/build-d3d9.sh" "$SRC/dxvk" "$WORK/llvm-mingw" "$OUT"
+
 bridge="$(ls "$WORK"/inputs/steam-bridge-*.tar.gz 2>/dev/null | head -1 || true)"
 if [ -n "$bridge" ]; then
     log "Adding the Steam API bridge from $(basename "$bridge")"
@@ -156,6 +179,7 @@ fi
 log "Writing license texts and the component list"
 L="$OUT/licenses"
 mkdir -p "$L"
+cp "$ROOT/packaging/patches/wine-opengl-promoted-aliases.patch" "$L/Gluon-Wine-OpenGL.patch"
 cp "$SRC/wine/COPYING.LIB" "$L/Wine-COPYING.LIB.txt"
 cp "$SRC/wine/LICENSE" "$L/Wine-LICENSE.txt"
 cp "$SRC/freetype/LICENSE.TXT" "$L/FreeType-LICENSE.txt" 2>/dev/null || cp "$SRC/freetype/docs/FTL.TXT" "$L/FreeType-LICENSE.txt"
@@ -167,7 +191,10 @@ Source and origin of every component in this runtime
 Wine 11.0 with CodeWeavers' changes - compiled by Gluon's build from
   $CX_SRC_URL
   sha256 $CX_SRC_SHA
+  Gluon modifications: licenses/Gluon-Wine-OpenGL.patch (LGPL-2.1-or-later)
 FreeType - compiled by Gluon's build from the same archive
+DXVK 1.10.3 (Direct3D 9 only) - compiled by Gluon's build from sources/dxvk
+  in the same archive; Wine builtin marker added, see licenses/DXVK-BUILD.txt
 MoltenVK - $MOLTENVK_URL
 DXMT - $DXMT_URL  (source: https://github.com/3Shain/dxmt, tag v0.80)
 Steam API bridge, when present - see licenses/steam-bridge/
@@ -175,7 +202,8 @@ Build script: packaging/build-runtime.sh in the Gluon repository
 EOF
 cat > "$OUT/GLUON-COMPONENTS.txt" <<EOF
 Gluon Windows runtime, built $(date -u +%F) by packaging/build-runtime.sh.
-Compiled from source: Wine 11.0 with CodeWeavers' open-source changes, FreeType.
+Compiled from source: Wine 11.0 with CodeWeavers' open-source changes, FreeType,
+DXVK 1.10.3 for Direct3D 9 on Vulkan (x86_64 and i386; d3d9.dll.wined3d preserved).
 From upstream releases: MoltenVK v1.4.2, DXMT v0.80 (installed over d3d11, dxgi, d3d10core;
 Wine's originals kept as *.wined3d).
 Not included: wine-mono and Gecko, GnuTLS, GStreamer, SDL.
@@ -183,6 +211,7 @@ See licenses/SOURCES.txt.
 EOF
 
 log "Checking the result"
+"$ROOT/packaging/check-vulkan.sh" "$OUT" "$SRC/wine" "$WORK/llvm-mingw" "$WORK/graphics-probes"
 file "$OUT/bin/wine" | sed "s#$OUT/##"
 "$OUT/bin/wine" --version
 du -sh "$OUT" | cut -f1
