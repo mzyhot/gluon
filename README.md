@@ -1,7 +1,6 @@
 # Gluon
 
 ### *Download Gluon and experience a world without CrossOver (and Windows).*
-
 <sub>Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product.</sub>
 
 ## Layout
