@@ -97,10 +97,15 @@ def main():
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])
             run(f"vulkan-loader-{arch}", [wine, str(probes / f"vulkan-{arch}.exe")])
             if native_gl["status"] == "passed":
+                # Without the opt-in, a 3.3 compatibility request must still be rejected.
                 run(f"wgl-alias-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--require-alias"])
+                run(f"wgl-compat-as-core-{arch}",
+                    [wine, str(probes / f"wgl-{arch}.exe"), "--require-alias", "--compat-as-core"],
+                    overrides={"GLUON_GL_COMPAT_AS_CORE": "1"})
             else:
-                results.append(dict(name=f"wgl-alias-{arch}", status="skipped",
-                                    reason="Native CGL prerequisite did not pass."))
+                for name in (f"wgl-alias-{arch}", f"wgl-compat-as-core-{arch}"):
+                    results.append(dict(name=name, status="skipped",
+                                        reason="Native CGL prerequisite did not pass."))
             if native_vk["status"] == "passed":
                 device, contents = run(f"vulkan-device-1.0-{arch}",
                                        [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.0"],

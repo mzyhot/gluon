@@ -44,6 +44,11 @@ cached GL capability changes and valid registry index zero. Restoring the faulty
 unconditional GL gate must fail all three WGL lookup cases. This fixture uses
 controlled dispatch slots and calls no graphics API.
 
+The opt-in macdrv compatibility-as-core decision helper is compiled the same
+way and checked against 24 switch/version/profile/flag cases. Mutations that
+ignore `GLUON_GL_COMPAT_AS_CORE` or remap already supported requests must fail.
+Codespaces runs only its source contract.
+
 No native graphics API runs during these checks. Linux Codespaces cannot verify Apple's Metal/OpenGL behavior, Rosetta, macOS WGL contexts, or game
 rendering. A passing source check therefore establishes source consistency only.
 

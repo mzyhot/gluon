@@ -64,6 +64,7 @@ printf '%s  %s\n' "$GLUON_SOURCE_SHA" "$GLUON_SOURCE_ARCHIVE" | shasum -a 256 -c
 # Extract only text needed by the checks, rather than a full runtime source tree.
 tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/opengl32/unix_wgl.c \
+    sources/wine/dlls/winemac.drv/opengl.c \
     sources/wine/dlls/opengl32/thunks.c \
     sources/wine/dlls/opengl32/unix_thunks.c \
     sources/wine/dlls/win32u/vulkan.c \
@@ -91,6 +92,13 @@ if [ "${GITHUB_ACTIONS:-}" = true ]; then
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-display-name.py" "$GLUON_SOURCE_TEMP/wine" --self-test
 else
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-display-name.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
+
+echo "Checking the opt-in macdrv OpenGL compatibility-as-core mapping"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-gl-compat-as-core.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-gl-compat-as-core.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
 fi
 
 echo "Checking DXVK patch applicability against the pinned source"

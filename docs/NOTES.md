@@ -785,6 +785,20 @@ a manifest are under
 `build/local-install-backups/<id>/`. Only a usage
 invocation of the installed host was run locally.
 
+## Primordialis compatibility context (2026-10-15)
+
+The owner's next Primordialis launch asserted `could not create gl context,
+error: 8341` (`0x2095`, `ERROR_INVALID_VERSION_ARB`) for its OpenGL 3.3,
+flags 0, compatibility-profile request. A linear-disassembly call-site audit
+(whole-binary Ghidra analysis was stopped after the owner's Mac overheated)
+found only core-profile usage apart from never creating a vertex array object.
+The new `wine-gl-compat-as-core.patch` maps such requests to Apple's core
+profile only when `GLUON_GL_COMPAT_AS_CORE=1`, and binds a default vertex array
+object per mapped context. Details, limits and checks are in
+`graphics-opengl-backends.md`. The switch belongs only in
+`games/3011360.env`; rendering and the one unsized `GL_SRGB_ALPHA` upload need
+an owner-run launch.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
@@ -809,9 +823,11 @@ invocation of the installed host was run locally.
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.
 6. **Runtime.** Corrected complete build 38725676665 and its preserved-runtime
-   recheck passed, and the shared default is active. Primordialis still needs
-   OpenGL 3.3 compatibility-profile support; Dock naming and additional games
-   need owner-run verification. Enable and test msync separately.
+   recheck passed, and the shared default is active. Primordialis's 3.3
+   compatibility request has an opt-in core-profile mapping awaiting a complete
+   build and owner-run rendering; general compatibility-profile support is
+   still missing. Dock naming and additional games need owner-run
+   verification. Enable and test msync separately.
 7. **Swarm Queen first launch** stops at Steam's EULA dialog, which the user has to
    answer.
 8. **Packaging.** The debug bridge (`-cef-enable-debugging`) is a development aid only;

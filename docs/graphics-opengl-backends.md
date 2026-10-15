@@ -118,10 +118,50 @@ the explicit attribute list does.
 
 A real core context with an application-specific adaptation could be explored,
 but a default VAO alone does not restore fixed-function drawing, client-memory
-arrays, quads, line behavior, or all sharing semantics. No such adaptation is
-enabled or claimed here, and general compatibility-profile support is unfinished.
-The static investigation did not execute the game. A bounded Ghidra query timed
-out before analysis; no decompiler result is claimed.
+arrays, quads, line behavior, or all sharing semantics. General
+compatibility-profile support is unfinished. The static investigation did not
+execute the game. Whole-binary Ghidra analysis was stopped twice (timeout, then
+host heat); the call-site audit below uses linear disassembly only.
+
+## Opt-in compatibility-as-core mapping (2026-10-15)
+
+A call-site audit of the same AVX executable checks what the game would lose
+in a core profile. Its OpenGL imports and loaded names contain no fixed-function,
+matrix, client-state or display-list entry points, and no vertex array object
+calls. Every `glDrawArrays` mode is `GL_TRIANGLES` or `GL_TRIANGLE_FAN`. All 238
+`glVertexAttribPointer`/`glVertexAttribIPointer` calls pass small constant
+offsets after binding `GL_ARRAY_BUFFER`; no client-memory arrays were found.
+Texture wraps are repeat, clamp-to-edge and clamp-to-border; there is no
+`GL_CLAMP` or `GL_GENERATE_MIPMAP`. Enabled capabilities are blend, scissor and
+depth test. `glGetString` is only queried for `GL_VERSION`, and `glGetError` is
+read only while formatting an assertion that has already failed. Shader files
+use no deprecated GLSL built-ins and receive `#version 330`. Internal formats
+are sized or core-valid except one unsized `GL_SRGB_ALPHA` upload, which needs
+owner-run confirmation on Apple's core profile.
+
+`wine-gl-compat-as-core.patch` therefore adds a per-game opt-in to macdrv:
+with `GLUON_GL_COMPAT_AS_CORE=1`, a 3.0–4.1 compatibility or
+non-forward-compatible request is created as Apple's core profile, still
+limited by the host's maximum core version, and logs a WARN. Each mapped context
+binds its own default vertex array object the first time it becomes current,
+standing in for the compatibility profile's array object zero. Requests already
+accepted by macdrv and every other version are unchanged, and without the switch
+every original rejection remains. This deliberately breaks the WGL
+compatibility contract for opted-in games: removed functionality stays
+unavailable, a later `glBindVertexArray(0)` restores core behavior, and wide
+lines are unavailable as in any forward-compatible context. Primordialis loads
+neither `glBindVertexArray` nor `glLineWidth`. It must stay per game.
+
+`check-gl-compat-as-core.py` pins the patched macdrv source and, on GitHub
+Actions Linux, compiles the exact opt-in decision helper with 24 cases
+(switch values, versions, profiles and flags). Its self-test rejects five
+source mutations and helper mutations that ignore the switch or remap
+supported requests. The WGL probe repeats Primordialis's exact request: without
+the switch it must fail with `ERROR_INVALID_VERSION_ARB`; with
+`--compat-as-core` and the switch it must report GL 3.3 or newer, a nonzero
+default vertex array, and render a buffer-backed GLSL 330 triangle without
+creating its own array object. Hosted runners lack CGL, so this rendering
+case is expected to be skipped there; game rendering needs an owner-run launch.
 
 ## Existing Wine path
 
