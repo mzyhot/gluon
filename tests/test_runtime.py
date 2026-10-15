@@ -97,10 +97,10 @@ class RuntimeSelectionTests(unittest.TestCase):
         self.current.unlink()
         symlink = os.symlink
 
-        def create_concurrent_selection(target, link, **kwargs):
+        def create_concurrent_selection(target, link, target_is_directory=False, **kwargs):
             if Path(link) == self.current:
                 symlink("other-runtime", self.current)
-            return symlink(target, link, **kwargs)
+            return symlink(target, link, target_is_directory=target_is_directory, **kwargs)
 
         with mock.patch.object(runtime.os, "symlink", side_effect=create_concurrent_selection):
             self.assertEqual(self.activate(), [])
