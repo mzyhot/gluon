@@ -199,6 +199,11 @@ static NSRunningApplication *steam_owner(NSString *directory)
         int user = steamPipe ? methods->connectUser(client, steamPipe) : 0;
         if (user)
         {
+            /* SteamAPI_Init obtains SteamUtils for its pipe; SteamShutdown_t is
+             * a SteamUtils callback. Without it, the Steam exit fallback remains. */
+            if (!methods->getUtils || !methods->getUtils(client, steamPipe, GLUON_STEAM_UTILS_VERSION))
+                fprintf(stderr, "gluon: %s unavailable on the callback pipe; Steam exit still stops this "
+                        "session\n", GLUON_STEAM_UTILS_VERSION);
             fprintf(stderr, "gluon: watching Steam shutdown on owned callback pipe\n");
             while (!self.finished)
             {

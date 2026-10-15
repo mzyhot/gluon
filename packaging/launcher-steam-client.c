@@ -90,12 +90,45 @@ static void release_user(GluonSteamClient *client, int pipe, int user)
     record("release-user");
 }
 
+static void *unused_user_interface(GluonSteamClient *client, int user, int pipe, const char *version)
+{
+    (void)client;
+    (void)user;
+    (void)pipe;
+    (void)version;
+    _exit(71); /* The watcher needs no user, game server or friends interface. */
+}
+
+static void unused_binding(GluonSteamClient *client, const void *address, uint16_t port)
+{
+    (void)client;
+    (void)address;
+    (void)port;
+    _exit(71);
+}
+
+static void *get_utils(GluonSteamClient *client, int pipe, const char *version)
+{
+    static int utils;
+    char event[64];
+    (void)client;
+    if (pipe != 42 || outstanding) _exit(71);
+    snprintf(event, sizeof(event), "get-utils:%s", version);
+    record(event);
+    return mode("utils-fail") ? NULL : &utils;
+}
+
 static const GluonSteamClientVTable fixture_vtable = {
     .createPipe = create_pipe,
     .releasePipe = release_pipe,
     .connectUser = connect_user,
     .createLocalUser = create_local_user,
     .releaseUser = release_user,
+    .getUser = unused_user_interface,
+    .getGameServer = unused_user_interface,
+    .setLocalIPBinding = unused_binding,
+    .getFriends = unused_user_interface,
+    .getUtils = get_utils,
 };
 static GluonSteamClient fixture_client = { &fixture_vtable };
 

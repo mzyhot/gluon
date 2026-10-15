@@ -12,7 +12,8 @@ import time
 import traceback
 
 # A host connected to Steam records these around its private callback pipe.
-CONNECTED = ["loaded", "create-interface", "create-pipe", "connect-user"]
+USER_CONNECTED = ["loaded", "create-interface", "create-pipe", "connect-user"]
+CONNECTED = USER_CONNECTED + ["get-utils:SteamUtils010"]
 RELEASED = ["release-user", "release-pipe", "release-thread-memory"]
 
 
@@ -140,7 +141,7 @@ while :; do /bin/sleep 0.05; done
                 games.append((spawn("wait", str(evidence), environment=environment), evidence))
             for game, evidence in games:
                 ready(game, evidence)
-                steam_event(macos, game, "connect-user")
+                steam_event(macos, game, CONNECTED[-1])
             return games
 
         try:
@@ -252,7 +253,7 @@ while :; do /bin/sleep 0.05; done
                  ["loaded", "create-interface", "create-pipe", "release-thread-memory"],
                  "Steam shutdown callback pipe could not connect"),
                 ("user", steam_client, "user-fail",
-                 CONNECTED + ["release-pipe", "release-thread-memory"],
+                 USER_CONNECTED + ["release-pipe", "release-thread-memory"],
                  "Steam shutdown callback pipe could not connect"),
             ]
             failing = []
@@ -272,6 +273,21 @@ while :; do /bin/sleep 0.05; done
             for message in {case[4] for case in cases}:
                 assert message in output, f"{message!r} missing from host output"
             print("launcher-host: unavailable Steam interfaces passed", flush=True)
+
+            # A pipe without SteamUtils still drains its callbacks and stops on
+            # SteamShutdown_t; the Steam exit fallback covers the rest.
+            steam, environment = make_steam("utils", mode="utils-fail")
+            evidence = root / "steam-utils-unavailable"
+            game = spawn("wait", str(evidence), environment=environment)
+            ready(game, evidence)
+            steam_event(steam, game, "get-utils:SteamUtils010")
+            (steam / "shutdown").touch()
+            wait(game, 143)
+            assert evidence.read_text() == "TERM\n"
+            recorded = steam_events(steam, game)
+            assert recorded == CONNECTED + ["get:704", "free:704"] + RELEASED, recorded
+            assert "SteamUtils010 unavailable on the callback pipe" in host_output()
+            print("launcher-host: callback pipe without SteamUtils passed", flush=True)
 
             # Unrelated callbacks are drained in bounded batches, not a busy loop.
             steam, environment = make_steam("flood", mode="flood")
