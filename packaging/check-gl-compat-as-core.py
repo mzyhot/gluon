@@ -195,7 +195,8 @@ def main():
                  "switch <unset>"),
                 # Mapping requests macdrv already supports would bypass its checks.
                 (helper.replace("return profile != WGL_CONTEXT_CORE_PROFILE_BIT_ARB || "
-                                "!(flags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB);", "return TRUE;"),
+                                "!(flags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB);",
+                                "(void)profile; (void)flags; return TRUE;"),
                  "flags 0x2 -> 1 (expected 0)"),
             )
             for name, (mutation, expected) in enumerate(mutations):
