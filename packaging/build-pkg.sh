@@ -45,6 +45,22 @@ install -m 644 "$here"/gluon/*.py "$root/lib/gluon/"
 # runtime's own separate launcher program (Gluon is driven by Steam, not by an app).
 rsync -a --exclude '/files/share/default_pfx' --exclude '/*.lock' --exclude '/bin/pmac' \
     "$runtime_src/" "$root/runtime/$runtime_name/"
+# Ship every applied Wine modification, including patches added after the
+# original OpenGL/Vulkan notice list. The stamp must describe this exact set.
+if [ -f "$runtime_src/.gluon-wine-patches" ]; then
+    expected_patches="$("$here/packaging/apply-wine-patches.sh" --hash)"
+    [ "$(cat "$runtime_src/.gluon-wine-patches")" = "$expected_patches" ] \
+        || { echo "runtime Wine patches do not match this checkout" >&2; exit 1; }
+    wine_patch_names="$("$here/packaging/apply-wine-patches.sh" --list)"
+    patch_notices="$root/runtime/$runtime_name/licenses/gluon-wine-patches"
+    mkdir -p "$patch_notices"
+    for patch_name in $wine_patch_names; do
+        install -m 644 "$here/packaging/patches/$patch_name.patch" "$patch_notices/"
+    done
+    printf '%s\n' "$wine_patch_names" > "$patch_notices/APPLIED.txt"
+    printf '\nGluon Wine modifications (LGPL-2.1-or-later):\n  All applied patches are included under licenses/gluon-wine-patches/.\n  See APPLIED.txt and the runtime .gluon-wine-patches stamp.\n' \
+        >> "$root/runtime/$runtime_name/licenses/SOURCES.txt"
+fi
 printf '{"schema":1,"name":"%s","version":"%s"}\n' "$runtime_name" "$version" \
     > "$root/runtime/pending.json"
 
