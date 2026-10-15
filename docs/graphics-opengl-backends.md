@@ -53,8 +53,9 @@ the same 67 exact GL function names. Comparing those names with the Wine registr
 and recorded legacy extensions identifies this draw-instanced lookup as the
 additional supported alias omission; integer uniforms/attributes and the divisor
 already have checked mappings. This is a source/static audit, not evidence that
-all rendering or shader requirements are satisfied. The new complete runtime
-still needs cloud compilation and owner-run rendering verification.
+all rendering or shader requirements are satisfied. The corrected complete
+runtime has passed cloud compilation and module checks; owner-run rendering
+verification remains outstanding.
 
 The executable variants also contain `330` immediately beside a `#version %s`
 shader-preprocessor string. Referenced shader files use `gl_VertexID`, integer
@@ -79,14 +80,48 @@ check before shared cached pointers; WGL entries retain Wine's original dispatch
 availability path. An absent WGL slot still fails driver lookup, and every lookup
 still needs an active context. This restores the context-creation and WGL
 extension-string thunks without changing context versions or forcing a profile.
-The next requested context attributes remain unknown until the game can complete
-its function loading.
+Static inspection of the context-creation call subsequently identified the
+requested attributes, described below; they have not yet been reached in an
+owner-run session with the corrected resolver.
 
 An isolated cloud C fixture compiles the exact patched resolver with controlled
 dispatch slots and capabilities, including WGL context/extension-string entries,
 missing entries, no active context, and a cached GL pointer returning to an
 unsupported context. The native WGL probe checks these WGL thunks in legacy,
 core and restored legacy contexts when a CGL-capable host is available.
+
+Complete build [38725676665](https://github.com/mzyhot/gluon/actions/runs/38725676665)
+and fresh-host preserved-runtime recheck
+[38728423047](https://github.com/mzyhot/gluon/actions/runs/38728423047) passed.
+Both Windows ABI module checks passed, but native CGL and WGL rendering checks
+were skipped for missing runner capability. The corrected runtime is now the
+shared Gluon default, with old test pins removed. These results verify the build
+and loader path, not Primordialis rendering or compatibility-profile support.
+
+## Primordialis context request
+
+The installed current/AVX executable has SHA-256
+`[hash removed]`.
+Its 32-byte attribute list at file offset [address removed] contains
+`{0x2091, 3, 0x2092, 3, 0x2094, 0, 0x9126, 2}`. Function [address removed]
+copies this list to its stack, appends zero, and passes it to the indirect call
+at [address removed]. The loader stores `wglGetProcAddress("wglCreateContextAttribsARB")`
+in that same pointer slot, [address removed]. The SSE3 variant has the same list.
+This ties OpenGL 3.3, flags zero, and the compatibility profile to the actual
+context-creation call site; it is not a runtime observation.
+
+The pinned macdrv rejects that request. `CX_FWD_COMPAT_GL_CTX=1` supplies only
+the forward-compatible flag; the compatibility-profile check still fails.
+Thus restoring WGL lookup does not establish that Primordialis can create its
+desired rendering context. The legacy trace alone did not establish this;
+the explicit attribute list does.
+
+A real core context with an application-specific adaptation could be explored,
+but a default VAO alone does not restore fixed-function drawing, client-memory
+arrays, quads, line behavior, or all sharing semantics. No such adaptation is
+enabled or claimed here, and general compatibility-profile support is unfinished.
+The static investigation did not execute the game. A bounded Ghidra query timed
+out before analysis; no decompiler result is claimed.
 
 ## Existing Wine path
 

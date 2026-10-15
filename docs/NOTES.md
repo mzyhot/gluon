@@ -714,6 +714,44 @@ naming build 38723411770 was canceled; the corrected patch requires a fresh
 complete build. The early legacy trace does not prove the game cannot request
 its own modern context after function loading.
 
+Follow-up static call-site inspection identified that request as OpenGL 3.3,
+flags zero, compatibility profile. The actual pointer is loaded from
+`wglCreateContextAttribsARB`; the same list appears in all three executable
+variants. macdrv rejects this profile, including when `CX_FWD_COMPAT_GL_CTX=1`
+adds the forward-compatible flag. Correct WGL dispatch remains a valid shared
+fix, but the game's rendering still needs compatibility-profile support. The
+full evidence and limits are in `graphics-opengl-backends.md`.
+
+## Shared runtime activation (2026-10-15)
+
+The corrected complete runtime build
+https://github.com/mzyhot/gluon/actions/runs/38725676665 succeeded at `b4fd214`.
+Its native launcher fixtures, dependency/module checks, Vulkan loader/device
+checks, and Direct3D 9 readbacks passed for both Windows ABIs. Native CGL and WGL
+rendering checks were explicitly skipped because the runner lacks the required
+CGL capability. A fresh-host recheck of the preserved complete runtime also
+succeeded at `90d7608`:
+https://github.com/mzyhot/gluon/actions/runs/38728423047 . That recheck verified
+archive provenance, source/probe hashes and runtime stamps before running the
+same bounded checks without recompiling Wine. Source checks 38725956148 passed
+all 103 fixtures, 38 checked aliases with 12 negative cases, the exact resolver
+fixture and its WGL regression mutation, and the 24 naming cases.
+
+The verified complete package was staged alongside the old runtimes. After the
+owner confirmed Steam was closed, the existing updater activated
+`gluon-runtime-0.1.1-dev-38725676665.1` as `runtime/current`. The temporary pins
+in `games/3011360.env` and `games/4705510.env` were removed after checking their
+installed hashes. All ordinary Gluon launches now follow this shared default;
+explicit custom runtime overrides retain priority. Original settings and the
+previous default are recorded under
+`build/local-install-backups/<id>/`. The installed
+launcher, session helper, runtime selector, native host checksum and runtime
+patch stamp were verified. No local Wine or game was launched for these checks.
+
+Steam Stop is owner-confirmed. The new naming patch still needs an owner-run
+Dock check. Primordialis's compatibility-context requirement remains unresolved;
+successful module checks and restored WGL lookup do not establish game rendering.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
@@ -735,8 +773,10 @@ its own modern context after function loading.
 5. **Install scripts.** Steam logs `RunningInstallScript` but the Windows steps
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.
-6. **Runtime.** CI build `186bfc4` is green; test its runtime against the same games, then add the
-   missing pieces listed under Distribution, and enable and test msync.
+6. **Runtime.** Corrected complete build 38725676665 and its preserved-runtime
+   recheck passed, and the shared default is active. Primordialis still needs
+   OpenGL 3.3 compatibility-profile support; Dock naming and additional games
+   need owner-run verification. Enable and test msync separately.
 7. **Swarm Queen first launch** stops at Steam's EULA dialog, which the user has to
    answer.
 8. **Packaging.** The debug bridge (`-cef-enable-debugging`) is a development aid only;
