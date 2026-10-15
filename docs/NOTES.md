@@ -39,9 +39,8 @@ Without a launch option Steam tries to start the `.exe` directly and fails with
 Steam's Steam Play manager only becomes active when the client's platform is Linux at
 startup (`@sSteamCmdForcePlatformType linux`). That makes the whole client behave as
 Linux and puts installed macOS games at risk (their depots stop matching), so it is
-not used. The earlier experiment that changed this inside the running client is
-retired; its source is kept in `archive/retired-hook/` for reference only and is not
-built or installed.
+not used. An earlier experiment that changed this inside the running client is
+retired and removed; Gluon does not modify the Steam client.
 
 ## appinfo.vdf (v29) facts
 
