@@ -199,8 +199,8 @@ and licenses were verified before staging the complete runtime as
 
 Happy Wheels now selects that runtime through its per-game settings on the next
 normal Steam Play. The old runtime, default runtime link and original game prefix
-remain intact; no running game's loader paths were switched. The selection's
-rollback record is in `backups/happy-runtime-20261014-153843`. The new runtime
+remain intact; no running game's loader paths were switched. The selection
+has a rollback record. The new runtime
 omits Mono/Gecko and several multimedia dependencies, so other games have not
 been switched. The owner then tested the real fullscreen overlay on the new
 runtime successfully, as recorded below.
@@ -231,9 +231,8 @@ no achievement was artificially unlocked or reset by Gluon for this test.
 
 The existing launch log corroborates selection of `gluon-wine-186bfc4`, the
 original Happy Wheels executable and prefix, original Steam IDs, the Steam API
-bridge and Valve's validated native insertion list. It records user sessions
-starting at 16:09:55 and 16:10:54, ending with status zero after
-52 and 109 seconds respectively. These logs establish launch configuration and
+bridge and Valve's validated native insertion list. It records two user
+sessions, both ending with status zero. These logs establish launch configuration and
 clean exits; the owner's observation establishes the visible overlay and popup.
 
 This result applies to Happy Wheels' DXMT/Metal path on this Mac. Other games,

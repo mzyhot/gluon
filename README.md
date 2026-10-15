@@ -18,7 +18,7 @@ Steam Play; for MacOS.
       gluon           launcher Steam starts in place of the game's .exe
     scripts/          install-tool.sh (development copy of the launcher inside Steam)
     packaging/        build-runtime.sh (runtime from source), build-pkg.sh, package scripts
-    docs/NOTES.md     findings, open items, machine state
+    docs/NOTES.md     findings and open items
     archive/          retired experiments, kept for reference
 
 ## Installer package

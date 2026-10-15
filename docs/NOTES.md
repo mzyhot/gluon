@@ -189,8 +189,7 @@ sync the Mac client downloaded every cloud file, including four under `Mods/`. I
 post-exit pass it logged `no longer matches any patterns (2). Removing from cloud` for all
 180 files ("2" is Steam's platform flag for macOS), re-persisted the 176 that match the
 Contraptions rule, and committed `Forget` for the four `Mods` files in upload batch 48.
-Local copies were untouched; they and the contraptions are backed up in
-`backups/cloud-1118200-20261013-163753`.
+Local copies were untouched; they and the contraptions were backed up locally.
 
 Of the managed apps, 38 have auto-cloud rules; most rules use Windows roots
 (`WinAppDataLocalLow`, `WinMyDocuments`, ...) and 29 are marked Windows-only. As a macOS
@@ -310,13 +309,6 @@ Crash reporting: `HKCU\\Software\\Wine\\WineDbg\\ShowCrashDialog=0` was set in t
 Wine's debugger still printed no backtrace. The module and register method above works
 without it.
 
-### Tooling note
-
-REA in the desktop app had no Ghidra setting (only the terminal config did), so it used
-Hopper. `the desktop app's configuration` now has `GHIDRA_INSTALL_DIR` and
-`REA_ANALYSIS_PROVIDER=ghidra` (backup beside it); it applies after the app restarts its
-REA server. Until then `rea` on the command line with those variables uses Ghidra.
-
 ### Other components on disk, not in use
 
 - `runtime/wine-cx-24.0.7`: Sikarugir engine `WS12WineCX24.0.7_7` (sha256 verified) with
@@ -336,18 +328,11 @@ Direct3D 9, wine-mono and Gecko, GnuTLS (so no HTTPS from inside games), GStream
 
 ## Graphics development and execution policy (2026-10-13)
 
-The owner stopped local graphics testing after reporting severe MacBook heating.
-All matching Wine/graphics test processes were terminated; the stop check found
-zero remaining processes. Do not repeat the failed native-module experiments or
-start parallel local probes. Compilation stays on GitHub Actions. The owner later
-authorized one short local test at a time, with reduced workload/priority, a hard
-timeout, immediate stop on failure, and prefix-specific cleanup. Temperature
-polling was explicitly withdrawn; do not start a temperature polling loop.
-
-The first `smctemp` invocation failed inside the tool sandbox with IOKit
-`kIOReturnNotPermitted` (`e00002e2`); its `0.0` was invalid. A later sensor-only
-invocation outside the sandbox returned valid readings. No graphics
-test was started by either temperature command.
+Local graphics testing stopped after the development Mac overheated. Do not
+repeat the failed native-module experiments or start parallel local probes.
+Compilation stays on GitHub Actions. A local test, when one is needed, runs one
+at a time with reduced workload/priority, a hard timeout, immediate stop on
+failure, and prefix-specific cleanup.
 
 Build/probe helpers now reject ordinary local invocation, default to four build
 workers, and run on GitHub infrastructure. The optional Linux Codespaces setup
@@ -435,7 +420,7 @@ refresh hazard, in addition to the owner's manual removal of the game folder.
 
 Steam was closed through its own `-shutdown` command. Gluon sync restored the
 refreshed entries and the stale Happy Wheels manifest was moved, without deletion,
-to `backups/install-4705510-20261014-103947/appmanifest_4705510.acf`. After reopening
+to `backups/install-<appid>-<timestamp>/`. After reopening
 Steam, its library index no longer listed Happy Wheels as installed; the owner
 confirmed the Install button was enabled. No saves or compatibility prefixes were
 removed and the game was not launched.
@@ -465,15 +450,12 @@ Hardcoding a future change number or locking the shared cache is not used: those
 would not reliably prevent an in-memory replacement and could affect native games.
 
 Gluon's launcher clears Steam's native overlay library before Wine. The Steam API
-bridge stores achievements: local caches decode 14 Happy Wheels unlocks and 17
-People Playground unlocks. A custom cache watcher and AppKit banner prototype was
-installed and detected the real achievement an unlock, but the owner
-heard its sound without seeing its fullscreen panel. A window-ordering fix was
-previewed once. The owner rejected this substitute and requires Steam's actual
-achievement notifications and overlay. The custom helper and its package/launcher
-integration were removed; previous installed files were preserved under
-`backups/removed-custom-notifications-20261014-110905`. No active custom helper
-remained at removal. Do not restore this prototype or show another custom banner.
+bridge stores achievements: local achievement caches confirm persisted unlocks for
+Happy Wheels and People Playground. A custom cache watcher and AppKit banner
+prototype detected a real unlock, but its fullscreen panel was not visible. This
+substitute was rejected: Steam's actual achievement notifications and overlay are
+required. The custom helper and its package/launcher integration were removed.
+Do not restore this prototype or show another custom banner.
 Real Steam overlay support remains unresolved.
 
 The installation/metadata/process fixtures passed as part of the earlier 63-test
@@ -481,21 +463,8 @@ suite; that count included the removed banner prototype. No Wine, game, OpenGL o
 Vulkan process was started by those fixture tests. Game sessions above were the
 owner's own tests. Source and packaging changes remain uncommitted.
 
-The owner stopped REA after it selected the configured Hopper provider. The
-Hopper query failed with Apple-events authorization denied and unconfirmed target
-cleanup; it was not retried. All research agents were interrupted. The subsequent
-process check showed no running Hopper or Ghidra/Java analysis process. Future REA
-native analysis must explicitly use Ghidra, never Hopper; do not resume the stopped
-analysis without the owner's instruction.
-
-The owner subsequently resumed the investigation and explicitly requested REA's
-command-line tools. The connected MCP instance lacked `GHIDRA_INSTALL_DIR`; the
-installed CLI was used with the existing `a local Ghidra 12.1.4 installation`, explicit
-`--provider ghidra`, a 512 MB headless heap, one available CPU and reduced priority.
-Every native invocation had a 60-second external deadline and a 45-second startup
-deadline. REA evidence confirms Ghidra 12.1.4; Hopper was not used after resumption.
-No Ghidra installation or native build was required: its Mac arm64 decompiler was
-already present in `Ghidra/Features/Decompiler/build/os/mac_arm_64/decompile`.
+Native static analysis uses Ghidra 12.1.4 only, with a 512 MB headless heap, one
+CPU, reduced priority and short startup and external deadlines.
 
 The official Steam overlay's x86_64 slice was analyzed statically, without executing
 it. Its initializer reads `SteamGameId` and `SteamOverlayGameId` and creates native
@@ -543,12 +512,12 @@ REA signature inspection confirms both native Wine executables are unsigned;
 they do not have the development runtime's Hardened Runtime signing gate.
 Happy Wheels' per-game settings select this runtime on the next normal Play.
 The default runtime link and original prefix were left intact, and the selection
-is reversible from `backups/happy-runtime-20261014-153843`. No installer script,
+is reversible. No installer script,
 Wine executable or game was started by this deployment. The owner subsequently
 confirmed that Steam's actual overlay and achievement popup both appear during
 the requested Happy Wheels fullscreen test. Launch logs confirm the source-built
 runtime, original executable/prefix, original Steam IDs and native overlay request;
-user sessions at 16:09:55 and 16:10:54 ended successfully after 52 and 109 seconds.
+both recorded test sessions ended successfully.
 The visible result is owner-confirmed, not inferred from those logs. No custom
 banner or artificial achievement changes were used. The signing-policy correction
 and native insertion restoration resolve this Happy Wheels notification failure.
@@ -642,9 +611,8 @@ gameplay, and server waits, including a wrapper that ignores TERM. All runtime
 executables and notification handlers in those fixtures are Python recorders.
 No Wine, game, native graphics probe, runtime build, or renderer was executed.
 
-The tested launcher and runtime-selection module were installed into the owner's
-Gluon folder with originals saved under
-`build/local-install-backups/<id>/`. During this work the
+The tested launcher and runtime-selection module were installed on the development
+Mac with the originals backed up. During this work the
 existing background helper independently selected
 `gluon-runtime-0.1.0-38653382448.1` after Steam became idle. Its `current` link is
 present. No game session was started to verify rendering or the Steam Stop UI.
@@ -680,8 +648,7 @@ Vulkan device, and Direct3D 9 checks for both Windows ABIs. Native OpenGL and WG
 rendering checks were skipped because the hosted runner lacks the CGL prerequisite.
 The package artifact digest and its contained package checksum were verified.
 Its complete runtime was staged alongside the old runtime and selected only in
-`games/3011360.env`; rollback is recorded under
-`build/local-install-backups/<id>/`. Rendering still
+`games/3011360.env`, with a rollback record. Rendering still
 needs an owner-run retry. No local Wine or native graphics probe was run.
 
 Native static inspection found a Steam process-kill path that starts with
@@ -700,8 +667,7 @@ are assigned to GitHub Actions; source checks already passed the exact naming
 helper's 24 cases and rejected the original suffix bug. The owner confirmed Steam
 Stop works on a fresh session. The launch log records the native host receiving
 Cocoa quit, forwarding TERM, and the child entering prefix cleanup. The tested
-host/launcher/session module were installed with rollback under
-`build/local-install-backups/<id>/`. Dock appearance
+host/launcher/session module were installed with a rollback record. Dock appearance
 still requires the rebuilt naming runtime.
 
 The same owner-run Primordialis retry passed the previous lookup and stopped at
@@ -743,8 +709,7 @@ owner confirmed Steam was closed, the existing updater activated
 in `games/3011360.env` and `games/4705510.env` were removed after checking their
 installed hashes. All ordinary Gluon launches now follow this shared default;
 explicit custom runtime overrides retain priority. Original settings and the
-previous default are recorded under
-`build/local-install-backups/<id>/`. The installed
+previous default were recorded for rollback. The installed
 launcher, session helper, runtime selector, native host checksum and runtime
 patch stamp were verified. No local Wine or game was launched for these checks.
 
@@ -755,10 +720,10 @@ successful module checks and restored WGL lookup do not establish game rendering
 ## Steam quit with running games (2026-10-15)
 
 The owner reported that quitting Steam with a game open hangs the same way Stop
-did before the native host. Steam's logs for the 06:42 Primordialis session show
-`steam://exit` at 06:42:19 opening Steam's `Shutdown` popup while the game kept
-running. Gluon only began prefix cleanup after `Apps.TerminateApp` delivered a
-Cocoa quit at 06:42:30; Steam then repeated its exit and shut down at 06:42:37.
+did before the native host. Steam's logs for a Primordialis session show
+`steam://exit` opening Steam's `Shutdown` popup while the game kept running.
+Gluon only began prefix cleanup about 11 seconds later, when `Apps.TerminateApp`
+delivered a Cocoa quit; Steam then repeated its exit and shut down.
 The host had handled Stop, but nothing connected Steam's own shutdown to it.
 
 Each launcher host now opens a private callback pipe to the user's installed
@@ -779,10 +744,9 @@ needs an owner-run Steam quit; no local Steam, Wine or game was launched.
 Recheck run https://github.com/mzyhot/gluon/actions/runs/38761822480 at
 `526d904` passed every launcher host fixture. Its `launcher-host` artifact
 matched GitHub's recorded zip digest and was installed as
-`bin/gluon-launcher-host` (SHA-256 `ccbd7ea8...1276`) while no game was running.
-The installed shell launcher already matched the branch. The previous host and
-a manifest are under
-`build/local-install-backups/<id>/`. Only a usage
+`bin/gluon-launcher-host` while no game was running.
+The installed shell launcher already matched the branch. The previous host was
+backed up with a manifest. Only a usage
 invocation of the installed host was run locally.
 
 ## Primordialis compatibility context (2026-10-15)
@@ -790,7 +754,7 @@ invocation of the installed host was run locally.
 The owner's next Primordialis launch asserted `could not create gl context,
 error: 8341` (`0x2095`, `ERROR_INVALID_VERSION_ARB`) for its OpenGL 3.3,
 flags 0, compatibility-profile request. A linear-disassembly call-site audit
-(whole-binary Ghidra analysis was stopped after the owner's Mac overheated)
+(whole-binary Ghidra analysis was stopped as too heavy for the local machine)
 found only core-profile usage apart from never creating a vertex array object.
 The new `wine-gl-compat-as-core.patch` maps such requests to Apple's core
 profile only when `GLUON_GL_COMPAT_AS_CORE=1`, and binds a default vertex array
@@ -853,12 +817,8 @@ and an owner-run overlay launch are still required.
 8. **Packaging.** The debug bridge (`-cef-enable-debugging`) is a development aid only;
    the enable flow itself is file-based and does not need it.
 
-## Machine state
+## Installed layout
 
 - `~/Library/Application Support/Gluon/` - `state/apps.json` (original metadata values
   per enabled app), `backups/`, `logs/launch-<appid>.log`, `logs/wine-<appid>.log`,
   `runtime/current`.
-- Still present from the retired experiment and unused: `lib/libgluon_hook.dylib`,
-  `logs/hook.log`.
-- Project Zomboid (108600) and POSTAL (232770) manifests are in `steamapps/`, identical
-  to their backups. `parked/` is empty.

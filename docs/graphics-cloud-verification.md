@@ -4,7 +4,7 @@ Both workflows passed on commit
 `186bfc4d1b9f3d725697db536c38875392e3704f` on 2026-10-14:
 
 - [Build run 38600823639](https://github.com/mzyhot/gluon/actions/runs/38600823639),
-  `macos-15`, finished at 12:00:40.
+  `macos-15`.
 - [Source checks run 38600824537](https://github.com/mzyhot/gluon/actions/runs/38600824537),
   Ubuntu 24.04. All 53 fixtures passed, including the three launcher environment
   routing fixtures skipped on macOS. Pinned source patches, all 34 OpenGL alias
@@ -81,7 +81,7 @@ On 2026-10-14, the owner launched Happy Wheels through its normal Steam Play
 button with the verified source-built `gluon-wine-186bfc4` runtime. The owner
 confirmed that Shift+Tab opened Steam's actual overlay in fullscreen and that a
 Steam achievement popup appeared. The two recorded game sessions exited
-successfully after 52 and 109 seconds.
+successfully.
 
 This is a separate user-observed game result, beyond the cloud probes above. It
 establishes the overlay and achievement popup for this Happy Wheels setup; it
