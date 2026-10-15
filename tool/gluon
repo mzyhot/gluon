@@ -17,10 +17,12 @@
 #   GLUON_RUNTIME     runtime folder to use; default is $GLUON_HOME/runtime/current
 #   GLUON_EXTRA_ARGS  extra arguments appended to the game's command line
 #   GLUON_DRY_RUN     if set, log what would be started and exit 0
+#   GLUON_CAFFEINATE  0 lets the Mac and display sleep during a session (default 1)
+#   WINEMSYNC         0 turns off msync for a plain Wine runtime (default 1)
 #
 # Per-game settings: $GLUON_HOME/games/<appid>.env, one NAME=value per line, applied as
 # environment before anything else is decided (e.g. GLUON_RUNTIME=wine-stable,
-# PROTON_NO_MSYNC=1, PROTON_MAC_GFX=wined3d).
+# WINEMSYNC=0, GLUON_GL_COMPAT_AS_CORE=1, PROTON_NO_MSYNC=1, PROTON_MAC_GFX=wined3d).
 
 # Steam preserves its intended list separately in STEAM_DYLD_INSERT_LIBRARIES.
 # Keep the launcher's first helper commands free of native insertions as well.
@@ -170,6 +172,11 @@ else
     export WINEPREFIX="$compat/pfx-wine"
 fi
 export WINEDEBUG="${WINEDEBUG:-fixme-all}"
+# Mach-semaphore synchronization (msync) avoids most wineserver round trips.
+# Client and server must agree: every Wine command below, including prefix
+# setup and shutdown, inherits it, and an earlier server is waited for first.
+# WINEMSYNC=0 in a game's settings turns it off; other runtimes ignore it.
+[ "$kind" != wine ] || export WINEMSYNC="${WINEMSYNC:-1}"
 if [ -d "$runtime/lib/gstreamer-1.0" ]; then
     export GST_PLUGIN_SYSTEM_PATH_1_0="$runtime/lib/gstreamer-1.0"
     export GST_PLUGIN_SCANNER_1_0="$runtime/libexec/gstreamer-1.0/gst-plugin-scanner"
@@ -181,6 +188,7 @@ export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}winemenubuilder.
 log "  runtime   = $runtime ($kind)"
 log "  prefix    = $WINEPREFIX"
 log "  program   = $exe"
+[ -z "${WINEMSYNC:-}" ] || log "  msync     = $WINEMSYNC"
 
 if [ "$kind" = proton ]; then
     # The contract Steam gives a Steam Play tool. The client folder is where the tool
@@ -299,6 +307,14 @@ request_stop() {
 
 trap request_stop TERM INT HUP
 
+# Controller play produces no keyboard or mouse activity, so keep the system
+# and display awake for the whole session. caffeinate ends with this script.
+# GLUON_CAFFEINATE=0 in a game's settings turns it off.
+keep_awake() {
+    [ "${GLUON_CAFFEINATE:-1}" != 0 ] && [ -x /usr/bin/caffeinate ] || return 0
+    /usr/bin/caffeinate -d -i -w "$$" >/dev/null 2>&1 &
+}
+
 printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
 started=$(date +%s)
 log_start=$(wc -l < "$WINE_LOG")
@@ -312,6 +328,7 @@ if [ "$kind" = proton ]; then
         export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;mscoree,mshtml="
     fi
     log "  starting the tool (output in $WINE_LOG)"
+    keep_awake
     run_wait "$runtime/proton" waitforexitandrun "$exe" "$@"
     status=$?
 else
@@ -368,6 +385,7 @@ else
             : > "$compat/.gluon-steam-bridge"
             log "  steam bridge: registry entries written"
         fi
+        keep_awake
         log "  starting Wine through the Steam helper (output in $WINE_LOG)"
         launching=1
         if [ -n "$overlay_insert" ]; then
@@ -378,6 +396,7 @@ else
             "$runtime/bin/wine" 'c:\windows\system32\steam.exe' "$exe" "$@" >> "$WINE_LOG" 2>&1 &
         fi
     else
+        keep_awake
         log "  starting Wine (output in $WINE_LOG)"
         launching=1
         if [ -n "$overlay_insert" ]; then
