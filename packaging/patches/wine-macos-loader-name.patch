@@ -1,10 +1,33 @@
 --- a/dlls/ntdll/unix/loader.c
 +++ b/dlls/ntdll/unix/loader.c
-@@ -612,9 +612,72 @@
+@@ -612,9 +612,95 @@
  }
  
  
 -static char *create_preloader_link(const char *wineloader_path, const char *exe_name)
++/* Editing a signed loader would invalidate its signature and macOS would kill
++ * the program, so only copy a thin, unsigned 64-bit Mach-O loader. */
++static BOOL loader_copy_allowed(const char *data, size_t size)
++{
++    unsigned int magic, ncmds, cmd, cmdsize, i;
++    size_t pos = 32;  /* sizeof(struct mach_header_64) */
++
++    if (size < pos) return FALSE;
++    memcpy(&magic, data, sizeof(magic));
++    memcpy(&ncmds, data + 16, sizeof(ncmds));
++    if (magic != 0xfeedfacf) return FALSE;  /* MH_MAGIC_64 */
++    for (i = 0; i < ncmds; i++)
++    {
++        if (size - pos < 8) return FALSE;
++        memcpy(&cmd, data + pos, sizeof(cmd));
++        memcpy(&cmdsize, data + pos + 4, sizeof(cmdsize));
++        if (cmd == 0x1d) return FALSE;  /* LC_CODE_SIGNATURE */
++        if (cmdsize < 8 || cmdsize > size - pos) return FALSE;
++        pos += cmdsize;
++    }
++    return TRUE;
++}
++
 +/* Gluon: libraries inserted with DYLD_INSERT_LIBRARIES, such as Steam's overlay,
 + * can load AppKit before the loader's main() rewrites the bundle name in memory,
 + * and the application menu then keeps the default name. Write a copy of the
@@ -33,7 +56,7 @@
 +    }
 +    close(fd);
 +    fd = -1;
-+    if (!data || !size || !name_len) goto out;
++    if (!data || !size || !name_len || !loader_copy_allowed(data, size)) goto out;
 +
 +    if (!(name = memmem(data, size, prefix, prefix_len))) goto out;
 +    name += prefix_len;
@@ -74,7 +97,7 @@
      char *linkpath = create_tempdir(wineloader_path);
  
      if (!linkpath)
-@@ -625,6 +688,15 @@
+@@ -625,8 +711,17 @@
  
      /* If the link already exists, use it (if it's in this dir, it points to the right place). */
      if (!stat(linkpath, &st))
@@ -83,10 +106,12 @@
 +        if (!stat(wineloader_path, &loader_st) &&
 +            st.st_dev == loader_st.st_dev && st.st_ino == loader_st.st_ino)
 +            write_named_loader(wineloader_path, linkpath, exe_name);
-+        return linkpath;
-+    }
-+
-+    if (write_named_loader(wineloader_path, linkpath, exe_name))
          return linkpath;
++    }
  
++    if (write_named_loader(wineloader_path, linkpath, exe_name))
++        return linkpath;
++
      /* Try a hard link first, to avoid the little "alias" arrow that the Dock puts on the icon.
+      * But if that fails, fall back to a symlink.
+      */
