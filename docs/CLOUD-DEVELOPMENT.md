@@ -38,6 +38,12 @@ The helper compilation has a 20-second deadline and each fixture a five-second
 deadline. It links no Wine modules and starts no Wine process. Codespaces runs
 only its source-contract check; helper compilation stays on Actions.
 
+The same bounds apply to an isolated fixture of the exact Wine function resolver.
+It checks WGL dispatch separately from GL extensions, active-context requirements,
+cached GL capability changes and valid registry index zero. Restoring the faulty
+unconditional GL gate must fail all three WGL lookup cases. This fixture uses
+controlled dispatch slots and calls no graphics API.
+
 No native graphics API runs during these checks. Linux Codespaces cannot verify Apple's Metal/OpenGL behavior, Rosetta, macOS WGL contexts, or game
 rendering. A passing source check therefore establishes source consistency only.
 

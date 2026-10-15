@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloud-only source checks. One isolated string helper is compiled and tested;
+# Cloud-only source checks. Isolated string and dispatch helpers are compiled;
 # no Wine process, native graphics library, game, Steam installation, or
 # commercial-product binary is used.
 # Run in a GitHub Codespace or GitHub Actions Linux runner:
@@ -78,6 +78,13 @@ bash "$GLUON_SOURCE_ROOT/packaging/apply-wine-patches.sh" "$GLUON_SOURCE_TEMP/wi
 bash "$GLUON_SOURCE_ROOT/packaging/apply-wine-patches.sh" "$GLUON_SOURCE_TEMP/wine"
 bash "$GLUON_SOURCE_ROOT/packaging/check-opengl-aliases.sh" "$GLUON_SOURCE_TEMP/wine" "$GLUON_SOURCE_DOWNLOADS"
 bash "$GLUON_SOURCE_ROOT/packaging/check-vulkan-portability.sh" "$GLUON_SOURCE_TEMP/wine" "$GLUON_SOURCE_DOWNLOADS"
+
+echo "Checking the exact Wine GL/WGL function resolver"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-opengl-dispatch.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-opengl-dispatch.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
 
 echo "Checking the exact Wine display-name string helper"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
