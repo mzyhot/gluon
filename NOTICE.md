@@ -44,6 +44,8 @@ configuration and source locations recorded beside their license texts.
 
 Steam's native overlay is loaded, when Steam supplies it, from the user's installed
 Mac Steam client. No Valve overlay library is copied into or distributed with Gluon.
+The launcher host likewise loads the installed client's `steamclient.dylib` only to
+receive Steam's shutdown callback; no Steam client library is distributed.
 
 No binary from any commercial product is included, and nothing from Apple's Game Porting
 Toolkit.

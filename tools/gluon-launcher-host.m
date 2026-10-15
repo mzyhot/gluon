@@ -6,11 +6,12 @@
 #import <sys/wait.h>
 #import <signal.h>
 #import <errno.h>
+#import <dlfcn.h>
 #import <stdio.h>
-#import <stdlib.h>
 #import <stdlib.h>
 #import <string.h>
 #import <unistd.h>
+#import "gluon-steam-client.h"
 
 extern char **environ;
 static volatile sig_atomic_t received_signal;
@@ -20,16 +21,69 @@ static void remember_signal(int number)
     if (!received_signal) received_signal = number;
 }
 
+static NSString *steam_client_directory(void)
+{
+    const char *launched = getenv("SteamClientLaunch");
+    if (!launched || strcmp(launched, "1")) return nil;
+    const char *config = getenv("STEAM_CLIENT_CONFIG_FILE");
+    const char *compat = getenv("STEAM_COMPAT_CLIENT_INSTALL_PATH");
+    NSString *directory = nil;
+    if (config && *config)
+        directory = [[NSString stringWithUTF8String:config] stringByDeletingLastPathComponent];
+    else if (compat && *compat) directory = [NSString stringWithUTF8String:compat];
+    if (!directory.isAbsolutePath) return nil;
+    return directory.stringByStandardizingPath.stringByResolvingSymlinksInPath;
+}
+
+static NSString *steam_executable(NSString *bundle)
+{
+    if (!bundle.isAbsolutePath) return nil;
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+        [bundle stringByAppendingPathComponent:@"Contents/Info.plist"]];
+    if (![info[@"CFBundleIdentifier"] isEqual:@"com.valvesoftware.steam"] ||
+        ![info[@"CFBundleExecutable"] isEqual:@"steam_osx"] ||
+        ![info[@"CFBundlePackageType"] isEqual:@"APPL"]) return nil;
+    return [bundle stringByAppendingPathComponent:@"Contents/MacOS/steam_osx"]
+        .stringByStandardizingPath.stringByResolvingSymlinksInPath;
+}
+
+static NSRunningApplication *steam_owner(NSString *directory)
+{
+    if (!directory) return nil;
+    NSMutableSet<NSString *> *executables = [NSMutableSet set];
+    NSString *bundled = steam_executable(directory.stringByDeletingLastPathComponent
+        .stringByDeletingLastPathComponent);
+    if (bundled) [executables addObject:bundled];
+    const char *installed = getenv("STEAM_APP_BUNDLE_PATH");
+    NSString *bootstrap = installed ? steam_executable([NSString stringWithUTF8String:installed]) : nil;
+    if (bootstrap) [executables addObject:bootstrap];
+    NSRunningApplication *owner = nil;
+    for (NSRunningApplication *app in [NSRunningApplication
+        runningApplicationsWithBundleIdentifier:@"com.valvesoftware.steam"])
+    {
+        NSString *path = app.executableURL.path.stringByStandardizingPath.stringByResolvingSymlinksInPath;
+        if (!app.terminated && path && [executables containsObject:path])
+        {
+            if (owner) return nil; /* Never guess between client instances. */
+            owner = app;
+        }
+    }
+    return owner;
+}
+
 @interface GluonLauncherHost : NSObject <NSApplicationDelegate>
 @property(nonatomic) char **arguments;
 @property(nonatomic) pid_t child;
 @property(nonatomic) BOOL stopping;
-@property(nonatomic) BOOL finished;
+@property(atomic) BOOL finished;
 @property(nonatomic) BOOL forced;
 @property(nonatomic) int result;
 @property(nonatomic) double stopDeadline;
 @property(nonatomic) double reapDeadline;
 @property(nonatomic, strong) NSTimer *timer;
+@property(nonatomic, strong) NSString *steamDirectory;
+@property(nonatomic, strong) NSRunningApplication *steamOwner;
+@property(nonatomic, strong) dispatch_semaphore_t steamWatcherDone;
 - (void)poll;
 @end
 
@@ -88,6 +142,11 @@ static void remember_signal(int number)
 - (void)poll
 {
     if (self.finished || [self reap]) return;
+    if (self.steamOwner.terminated && !self.stopping)
+    {
+        fprintf(stderr, "gluon: owning Steam application exited; stopping session\n");
+        [self requestStop:SIGTERM];
+    }
     if (received_signal && !self.stopping) [self requestStop:(int)received_signal];
     if (!self.child || !self.stopping || self.finished) return;
     double now = NSProcessInfo.processInfo.systemUptime;
@@ -106,6 +165,90 @@ static void remember_signal(int number)
         fprintf(stderr, "gluon: launcher child did not reap after forced cleanup; prefix shutdown unconfirmed\n");
         [self finish:124];
     }
+}
+
+/* Runs on the watcher thread only. Steam sends SteamShutdown_t to connected
+ * clients when the user quits it, then waits for their games to exit; a game
+ * that ignores the callback holds Steam open. */
+- (void)runSteamWatcher:(NSString *)directory
+{
+    NSString *path = [directory stringByAppendingPathComponent:@"steamclient.dylib"];
+    void *library = dlopen(path.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+    if (!library) fprintf(stderr, "gluon: Steam client library: %s\n", dlerror());
+    GluonSteamCreateInterface create = library ?
+        (GluonSteamCreateInterface)dlsym(library, "CreateInterface") : NULL;
+    GluonSteamGetCallback get = library ?
+        (GluonSteamGetCallback)dlsym(library, "Steam_BGetCallback") : NULL;
+    GluonSteamFreeCallback freeCallback = library ?
+        (GluonSteamFreeCallback)dlsym(library, "Steam_FreeLastCallback") : NULL;
+    GluonSteamReleaseThreadMemory releaseThreadMemory = library ?
+        (GluonSteamReleaseThreadMemory)dlsym(library, "Steam_ReleaseThreadLocalMemory") : NULL;
+    if (!create || !get || !freeCallback)
+    {
+        fprintf(stderr, "gluon: Steam shutdown callback unavailable; Cocoa Stop remains active\n");
+        return;
+    }
+    GluonSteamClient *client = create("SteamClient020", NULL);
+    const GluonSteamClientVTable *methods = client ? client->vtable : NULL;
+    if (!methods || !methods->createPipe || !methods->connectUser ||
+        !methods->releaseUser || !methods->releasePipe)
+        fprintf(stderr, "gluon: SteamClient020 shutdown interface unavailable\n");
+    else
+    {
+        int steamPipe = methods->createPipe(client);
+        int user = steamPipe ? methods->connectUser(client, steamPipe) : 0;
+        if (user)
+        {
+            fprintf(stderr, "gluon: watching Steam shutdown on owned callback pipe\n");
+            while (!self.finished)
+            {
+                BOOL shutdown = NO;
+                /* Drain only this host's private pipe. The game's callbacks
+                 * stay on its own pipe, even when it ignores SteamShutdown. */
+                for (int count = 0; count < 32 && !self.finished; count++)
+                {
+                    GluonSteamCallback callback = {0};
+                    int call = 0;
+                    if (!get(steamPipe, &callback, &call)) break;
+                    shutdown = callback.identifier == GLUON_STEAM_SHUTDOWN;
+                    freeCallback(steamPipe);
+                    if (shutdown) break;
+                }
+                if (shutdown)
+                {
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        fprintf(stderr, "gluon: Steam shutdown requested; stopping session\n");
+                        [self requestStop:SIGTERM];
+                    });
+                    break;
+                }
+                [NSThread sleepForTimeInterval:0.1];
+            }
+            methods->releaseUser(client, steamPipe, user);
+        }
+        else fprintf(stderr, "gluon: Steam shutdown callback pipe could not connect\n");
+        if (steamPipe) methods->releasePipe(client, steamPipe);
+    }
+    if (releaseThreadMemory) releaseThreadMemory(true);
+    /* Steam owns worker threads in this image. Do not dlclose while they may
+     * still be running, or join IPC from the UI thread. */
+}
+
+- (void)watchSteamShutdown
+{
+    NSString *directory = self.steamDirectory;
+    if (!directory) return;
+    /* Steam IPC or library initialization must never block Cocoa Stop, shell
+     * reaping or the cleanup deadline. Only the main thread signals the child. */
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    self.steamWatcherDone = done;
+    [NSThread detachNewThreadWithBlock:^{
+        @autoreleasepool
+        {
+            [self runSteamWatcher:directory];
+        }
+        dispatch_semaphore_signal(done);
+    }];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification
@@ -145,6 +288,7 @@ static void remember_signal(int number)
     /* Cocoa callbacks and the timer are serialized on the main thread. A
      * POSIX signal during spawn only sets a flag, checked after PID capture. */
     if (received_signal) [self requestStop:(int)received_signal];
+    [self watchSteamShutdown];
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
@@ -191,6 +335,13 @@ int main(int argc, char **argv)
         host.arguments = argv;
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        host.steamDirectory = steam_client_directory();
+        host.steamOwner = steam_owner(host.steamDirectory);
+        if (host.steamOwner)
+            fprintf(stderr, "gluon: Steam application %d exit will stop this session\n",
+                host.steamOwner.processIdentifier);
+        else if (host.steamDirectory)
+            fprintf(stderr, "gluon: owning Steam application not identified; exit fallback inactive\n");
         NSApp.delegate = host;
         host.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
             (void)timer;
@@ -198,6 +349,13 @@ int main(int argc, char **argv)
         }];
         [NSRunLoop.mainRunLoop addTimer:host.timer forMode:NSRunLoopCommonModes];
         [NSApp run];
-        return host.result;
+        /* Let the watcher release its Steam pipe, but never wait on blocked IPC. */
+        if (host.steamWatcherDone)
+            dispatch_semaphore_wait(host.steamWatcherDone,
+                dispatch_time(DISPATCH_TIME_NOW, (int64_t)NSEC_PER_SEC));
+        /* steamclient.dylib may still run its own threads, so skip image
+         * destructors that could race them. The child is already reaped. */
+        fflush(NULL);
+        _exit(host.result);
     }
 }

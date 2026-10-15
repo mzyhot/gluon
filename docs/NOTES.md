@@ -752,6 +752,30 @@ Steam Stop is owner-confirmed. The new naming patch still needs an owner-run
 Dock check. Primordialis's compatibility-context requirement remains unresolved;
 successful module checks and restored WGL lookup do not establish game rendering.
 
+## Steam quit with running games (2026-10-15)
+
+The owner reported that quitting Steam with a game open hangs the same way Stop
+did before the native host. Steam's logs for the 06:42 Primordialis session show
+`steam://exit` at 06:42:19 opening Steam's `Shutdown` popup while the game kept
+running. Gluon only began prefix cleanup after `Apps.TerminateApp` delivered a
+Cocoa quit at 06:42:30; Steam then repeated its exit and shut down at 06:42:37.
+The host had handled Stop, but nothing connected Steam's own shutdown to it.
+
+Each launcher host now opens a private callback pipe to the user's installed
+`steamclient.dylib` on a background thread and stops its game through the
+existing TERM cleanup when `SteamShutdown_t` (704) arrives. The game's own pipe
+is never drained. If Steam exits without that callback, the host also stops
+when the identified owning Steam application terminates. Every running game has
+its own host, so quitting Steam stops all of them, while Stop for one game still
+leaves the others running. Library, interface or pipe failures are logged and
+leave Stop handling unchanged. Blocked Steam IPC cannot delay Stop or host exit.
+
+Cloud fixtures use a controlled `steamclient.dylib` and a fake Steam bundle.
+They cover three concurrent games, one stopped first, an unrelated callback, the
+shutdown callback, Steam exiting without it, blocked IPC, missing/failing
+interfaces and a callback flood. Delivery of 704 by the real Mac client still
+needs an owner-run Steam quit; no local Steam, Wine or game was launched.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
@@ -765,6 +789,8 @@ successful module checks and restored WGL lookup do not establish game rendering
    Platform icons and the remaining library flows are untested.
 3. **Steam's Stop button.** Fixed through the native host; owner-confirmed on
    a fresh session, with the Cocoa-quit handoff recorded in the launcher log.
+   Quitting Steam with games open now stops each game from Steam's shutdown
+   callback, or when Steam exits; that path still needs an owner-run Steam quit.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
    "init error gone" with People Playground; local achievement caches confirm persisted
    unlocks. The owner confirmed Valve's real overlay and achievement popup in Happy

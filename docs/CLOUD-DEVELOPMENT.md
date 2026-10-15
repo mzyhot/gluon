@@ -82,8 +82,9 @@ source checks do not replace a successful macOS build or rendering validation.
 
 Before the runtime build, a separate macOS job compiles a universal native
 launcher host and checks Cocoa quit delivery, inherited signal state, argument
-and status propagation, and independent concurrent hosts. It uses harmless shell
-fixtures under a 30-second deadline; no Wine or game runs in that job. Packaging
+and status propagation, independent concurrent hosts, and Steam quit through a
+controlled Steam client library and fake Steam application. It uses harmless
+fixtures under a 60-second deadline; no Steam, Wine or game runs in that job. Packaging
 requires that tested host and installs it beside the shell launcher.
 
 The macOS job additionally runs each complete-runtime probe with a 30-second
