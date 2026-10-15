@@ -24,15 +24,21 @@ timeout 19m bash packaging/check-sources.sh
 ```
 
 This checks tracked shell/Python syntax, downloads the same SHA-256-pinned
-CodeWeavers open-source archive as the runtime build, and extracts only the six
+CodeWeavers open-source archive as the runtime build, and extracts only the
 Wine/DXVK source files needed for validation. It applies the Wine alias patch,
 verifies repeat application, checks all 38 aliases and their signatures against
 the pinned Khronos XML registry, runs the validator's negative cases, and checks
 all three DXVK patches. The helper rejects macOS and environments outside GitHub
 Codespaces or GitHub Actions. Download cache contents are reverified on every run.
 
-No compiler or native graphics API runs during these checks. Linux Codespaces
-cannot verify Apple's Metal/OpenGL behavior, Rosetta, macOS WGL contexts, or game
+On GitHub Actions Linux, the checks also compile the exact patched Wine
+`extract_exe_name` function as an isolated string fixture, test executable suffixes,
+paths and unchanged input, and verify that the fixture rejects the original bug.
+The helper compilation has a 20-second deadline and each fixture a five-second
+deadline. It links no Wine modules and starts no Wine process. Codespaces runs
+only its source-contract check; helper compilation stays on Actions.
+
+No native graphics API runs during these checks. Linux Codespaces cannot verify Apple's Metal/OpenGL behavior, Rosetta, macOS WGL contexts, or game
 rendering. A passing source check therefore establishes source consistency only.
 
 Stop the Codespace when finished to stop its compute usage:

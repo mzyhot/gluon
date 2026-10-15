@@ -649,6 +649,25 @@ existing background helper independently selected
 `gluon-runtime-0.1.0-38653382448.1` after Steam became idle. Its `current` link is
 present. No game session was started to verify rendering or the Steam Stop UI.
 
+## Terminal executable suffix in Wine application names
+
+The owner confirmed that separate games run simultaneously, but their Dock names
+still end in `.exe`. The pinned native Wine loader calculates a shortened display
+name and then duplicates the full name, so enabling its named-loader path exposes
+that suffix. `wine-macos-display-name.patch` trims only a terminal ASCII `.exe`,
+case-insensitively, in the copied display name. It preserves internal dots, other
+suffixes, a lone `.exe`, and the executable path supplied to Wine.
+
+`check-wine-display-name.py` extracts that exact patched C helper for an isolated
+GitHub Actions Linux fixture. Its 24 cases cover Windows and Unix paths, spaces,
+Unicode, existing 32-hex launcher prefixes, empty names and repeated suffixes.
+The fixture also checks that the input path remains unchanged and rejects a
+mutation reproducing the original suffix bug. Local validation applied and
+reverse-checked the patch against the pinned source and checked the source
+contract, three negative mutations and the local compilation guard. No helper was
+compiled locally. Cloud helper execution, a complete runtime rebuild and actual
+Dock appearance still require validation.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number

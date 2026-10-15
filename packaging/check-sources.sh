@@ -1,6 +1,7 @@
 #!/bin/bash
-# Cloud-only source checks. No compiler, Wine process, native graphics library,
-# game, Steam installation, or commercial-product binary is used.
+# Cloud-only source checks. One isolated string helper is compiled and tested;
+# no Wine process, native graphics library, game, Steam installation, or
+# commercial-product binary is used.
 # Run in a GitHub Codespace or GitHub Actions Linux runner:
 #   timeout 19m bash packaging/check-sources.sh
 set -euo pipefail
@@ -66,6 +67,7 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/opengl32/thunks.c \
     sources/wine/dlls/opengl32/unix_thunks.c \
     sources/wine/dlls/win32u/vulkan.c \
+    sources/wine/dlls/ntdll/unix/loader.c \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
     sources/dxvk/src/d3d9/d3d9_include.h \
@@ -76,6 +78,13 @@ bash "$GLUON_SOURCE_ROOT/packaging/apply-wine-patches.sh" "$GLUON_SOURCE_TEMP/wi
 bash "$GLUON_SOURCE_ROOT/packaging/apply-wine-patches.sh" "$GLUON_SOURCE_TEMP/wine"
 bash "$GLUON_SOURCE_ROOT/packaging/check-opengl-aliases.sh" "$GLUON_SOURCE_TEMP/wine" "$GLUON_SOURCE_DOWNLOADS"
 bash "$GLUON_SOURCE_ROOT/packaging/check-vulkan-portability.sh" "$GLUON_SOURCE_TEMP/wine" "$GLUON_SOURCE_DOWNLOADS"
+
+echo "Checking the exact Wine display-name string helper"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-display-name.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-display-name.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
 
 echo "Checking DXVK patch applicability against the pinned source"
 for patch_name in dxvk-explicit-algorithm dxvk-mingw-resource-manager dxvk-supported-metal-features; do

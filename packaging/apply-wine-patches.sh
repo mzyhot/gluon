@@ -2,7 +2,7 @@
 # Apply Gluon's changes to the published Wine source. Never silently skip drift.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PATCH_NAMES=(wine-opengl-promoted-aliases wine-vulkan-portability)
+PATCH_NAMES=(wine-opengl-promoted-aliases wine-vulkan-portability wine-macos-display-name)
 if [ "${1:-}" = --hash ]; then
     for name in "${PATCH_NAMES[@]}"; do
         printf '%s %s\n' "$name" "$(shasum -a 256 "$ROOT/packaging/patches/$name.patch" | cut -d' ' -f1)"
