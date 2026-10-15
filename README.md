@@ -54,7 +54,9 @@ host. The overlay comes from the user's installed Steam client.
 Runtime builds include extension-checked OpenGL aliases and native Vulkan
 portability negotiation through MoltenVK. Packages stage each complete runtime in
 a unique directory; the background helper switches the default only while Steam
-and Wine are idle, preserving the previous selection for rollback. Game prefixes
+and Wine are idle, preserving the previous selection for rollback. A first install
+can create a missing default while Steam is open; the launcher also recovers it
+from the validated package request if needed. Game prefixes
 stay in place. See the graphics documents for tested capabilities and limitations.
 
 **Steam Play, for macOS.**

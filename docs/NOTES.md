@@ -603,6 +603,52 @@ preserved. Ten fixtures cover idle installation, activity/inspection failures,
 late Steam startup, dry runs and invalid requests. The complete local fixture
 suite passed 72 tests (three platform skips); no native code was executed.
 
+## Launcher recovery and lifecycle fixes (2026-10-14)
+
+The latest Primordialis (`3011360`) attempts in `launch-3011360.log` failed before
+Wine with `no runtime found`. The installed v0.1.0 directory and `pending.json`
+were present, but `runtime/current` was absent. The updater waited for Steam to
+quit even to create the initial selection. These attempts provide no new OpenGL
+rendering evidence; the retained `glVertexAttribIPointer could not be loaded`
+game log is from the earlier runtime.
+
+Runtime selection now permits creating a missing default while Steam is open.
+It validates the packaged request and complete Wine/server layout, records the
+selection, and creates the link exclusively so a concurrent selection cannot be
+overwritten. Existing selections, including dangling links, retain the idle update
+rules. The launcher can invoke a bootstrap-only helper if no runtime is available;
+dry runs do not create the default. Startup/setup failures now produce a Gluon
+notification with the error and launch-log path.
+
+Wineboot, registry setup, and server waits now run as tracked background jobs with
+interruptible shell waits. A delivered TERM/INT/HUP stops the owned helper, kills
+only the selected Wine prefix, waits for server shutdown, and reaps the helper.
+The shell defers cancellation across child-PID capture and checks its live job
+table before signalling a delayed helper. Failed registry setup no longer marks
+the bridge initialized or starts the game. This hardens delivered signals; Steam's
+actual Stop-button signal path remains unverified.
+
+For the modern plain-Wine native-loader layout, the launcher supplies the runtime
+DLL root through `WINEDLLPATH`, preserving a nonempty custom value. The pinned
+Wine loader uses this variable to enable its existing descriptive process links
+and embedded application-menu naming. Proton retains its own configuration.
+Actual Dock/menu appearance still needs a normal owner-run game session. Initial
+environment logging now shares one timestamp instead of invoking `date` per line.
+
+The local offline suite ran 97 tests: 94 passed and three existing Linux-only
+overlay fixtures were skipped on macOS. Sixteen new launcher fixtures cover
+startup/naming, bootstrap, notification routing, and cancellation during setup,
+gameplay, and server waits, including a wrapper that ignores TERM. All runtime
+executables and notification handlers in those fixtures are Python recorders.
+No Wine, game, native graphics probe, runtime build, or renderer was executed.
+
+The tested launcher and runtime-selection module were installed into the owner's
+Gluon folder with originals saved under
+`build/local-install-backups/<id>/`. During this work the
+existing background helper independently selected
+`gluon-runtime-0.1.0-38653382448.1` after Steam became idle. Its `current` link is
+present. No game session was started to verify rendering or the Steam Stop UI.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number

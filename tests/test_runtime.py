@@ -1,4 +1,6 @@
 """Runtime update fixtures preserve running sessions and previous installations."""
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import os
 from pathlib import Path
@@ -26,6 +28,9 @@ class RuntimeSelectionTests(unittest.TestCase):
         self.wine = self.new / "bin/wine"
         self.wine.write_bytes(b"fixture, never executed")
         self.wine.chmod(0o755)
+        self.wineserver = self.new / "bin/wineserver"
+        self.wineserver.write_bytes(b"fixture, never executed")
+        self.wineserver.chmod(0o755)
         self.current = self.base / "current"
         self.current.symlink_to(self.old)
         self.pending = self.base / "pending.json"
@@ -64,12 +69,73 @@ class RuntimeSelectionTests(unittest.TestCase):
         self.assertEqual(self.activate(), [])
         self.assertEqual(list(self.base.glob(".current-*")), [])
 
-    def test_first_install_creates_selection_only_when_idle(self):
+    def test_first_install_creates_selection(self):
         self.current.unlink()
         self.assertEqual(len(self.activate()), 1)
         self.assertEqual(os.readlink(self.current), self.new.name)
         record = next((self.home / "backups").glob("runtime-*/selection.json"))
         self.assertIsNone(json.loads(record.read_text())["previous"])
+
+    def test_first_install_creates_selection_while_steam_or_wine_is_active(self):
+        self.current.unlink()
+        with mock.patch.object(steam, "is_running", return_value=True), \
+                mock.patch.object(runtime.subprocess, "run", return_value=
+                                  subprocess.CompletedProcess([], 0, b"123\n", b"")):
+            self.assertEqual(len(self.activate()), 1)
+        self.assertEqual(os.readlink(self.current), self.new.name)
+        self.assertEqual((self.old / "preserved.dat").read_bytes(), b"old runtime")
+
+    def test_dangling_selection_is_not_a_first_install(self):
+        self.current.unlink()
+        self.current.symlink_to("missing-runtime")
+        with mock.patch.object(steam, "is_running", return_value=True):
+            self.assertEqual(self.activate(), [])
+        self.assertEqual(os.readlink(self.current), "missing-runtime")
+        self.assertFalse((self.home / "backups").exists())
+
+    def test_first_install_does_not_replace_a_concurrent_selection(self):
+        self.current.unlink()
+        symlink = os.symlink
+
+        def create_concurrent_selection(target, link, **kwargs):
+            if Path(link) == self.current:
+                symlink("other-runtime", self.current)
+            return symlink(target, link, **kwargs)
+
+        with mock.patch.object(runtime.os, "symlink", side_effect=create_concurrent_selection):
+            self.assertEqual(self.activate(), [])
+        self.assertEqual(os.readlink(self.current), "other-runtime")
+        self.assertEqual(list(self.base.glob(".current-*")), [])
+
+    def test_bootstrap_only_keeps_existing_selection_even_while_idle(self):
+        self.assertEqual(self.activate(bootstrap_only=True), [])
+        self.assert_old()
+        self.assertFalse((self.home / "backups").exists())
+
+    def test_bootstrap_cli_creates_missing_selection_and_logs_action(self):
+        self.current.unlink()
+        output = io.StringIO()
+        with redirect_stdout(output), mock.patch.object(steam, "is_running", return_value=True):
+            self.assertEqual(runtime.main(["--bootstrap", "--home", str(self.home)]), 0)
+        self.assertEqual(os.readlink(self.current), self.new.name)
+        self.assertIn("selected packaged runtime " + self.new.name, output.getvalue())
+
+    def test_bootstrap_cli_keeps_existing_selection(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(runtime.main(["--bootstrap", "--home", str(self.home)]), 0)
+        self.assert_old()
+        self.assertEqual(output.getvalue(), "")
+        self.assertFalse((self.home / "backups").exists())
+
+    def test_bootstrap_cli_reports_validation_failure(self):
+        self.current.unlink()
+        self.write_request(name="../outside")
+        error_output = io.StringIO()
+        with redirect_stderr(error_output):
+            self.assertEqual(runtime.main(["--bootstrap", "--home", str(self.home)]), 1)
+        self.assertIn("invalid packaged runtime request", error_output.getvalue())
+        self.assertFalse(self.current.is_symlink())
 
     def test_steam_or_wine_activity_defers_without_changing_installations(self):
         with mock.patch.object(steam, "is_running", return_value=True):
@@ -140,3 +206,28 @@ class RuntimeSelectionTests(unittest.TestCase):
         with self.assertRaises(runtime.RuntimeSelectionError):
             self.activate()
         self.assertTrue(self.current.is_dir())
+
+    def test_runtime_without_wineserver_is_rejected(self):
+        self.wineserver.unlink()
+        with self.assertRaises(runtime.RuntimeSelectionError):
+            self.activate()
+        self.assert_old()
+        self.assertFalse((self.home / "backups").exists())
+
+    def test_proton_runtime_requires_both_wine_and_wineserver(self):
+        files = self.new / "files"
+        files.mkdir()
+        (self.new / "bin").rename(files / "bin")
+        proton = self.new / "proton"
+        proton.write_bytes(b"fixture, never executed")
+        proton.chmod(0o755)
+        for name in ("wine", "wineserver"):
+            with self.subTest(name=name):
+                executable = files / "bin" / name
+                executable.chmod(0o644)
+                with self.assertRaises(runtime.RuntimeSelectionError):
+                    self.activate()
+                self.assert_old()
+                executable.chmod(0o755)
+        self.assertEqual(len(self.activate()), 1)
+        self.assertEqual(os.readlink(self.current), self.new.name)

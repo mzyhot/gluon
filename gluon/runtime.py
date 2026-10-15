@@ -1,16 +1,18 @@
-"""Select a newly packaged runtime while Steam and Wine are idle.
+"""Select a packaged runtime, replacing an existing selection only while idle.
 
 Packages stage a complete runtime under a unique name. Old runtimes and game
 prefixes stay in place; only the default symlink changes, with a rollback record.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import uuid
 from typing import List
 
@@ -77,7 +79,14 @@ def _idle() -> bool:
     return result.returncode == 1
 
 
-def activate_pending(dry_run: bool = False, home: str = None) -> List[str]:
+def _can_activate(previous) -> bool:
+    # A first selection only creates a missing link. It replaces no runtime that
+    # Steam or Wine could already be using, so it need not wait for them to quit.
+    return previous is None or _idle()
+
+
+def activate_pending(dry_run: bool = False, home: str = None,
+                     bootstrap_only: bool = False) -> List[str]:
     home_path = Path(home or steam.GLUON_HOME)
     runtime_dir = home_path / "runtime"
     pending = runtime_dir / "pending.json"
@@ -91,22 +100,26 @@ def activate_pending(dry_run: bool = False, home: str = None) -> List[str]:
             raise RuntimeSelectionError("packaged runtime must be a directory inside Gluon")
         if not candidate.is_dir() or not (candidate / "licenses").is_dir():
             raise RuntimeSelectionError("packaged runtime is incomplete")
-        if not (os.access(candidate / "bin/wine", os.X_OK)
+        if not ((os.access(candidate / "bin/wine", os.X_OK)
+                 and os.access(candidate / "bin/wineserver", os.X_OK))
                 or (os.access(candidate / "proton", os.X_OK)
-                    and os.access(candidate / "files/bin/wine", os.X_OK))):
-            raise RuntimeSelectionError("packaged runtime has no Wine launcher")
+                    and os.access(candidate / "files/bin/wine", os.X_OK)
+                    and os.access(candidate / "files/bin/wineserver", os.X_OK))):
+            raise RuntimeSelectionError("packaged runtime has no complete Wine launcher and server")
         current = runtime_dir / "current"
         previous = _current(current)
+        if bootstrap_only and previous is not None:
+            return []
         if previous == request["name"]:
             return []
-        if not _idle():
+        if not _can_activate(previous):
             return []
         if dry_run:
             return ["would select packaged runtime " + request["name"]]
 
         # Recheck the request, selection and process state immediately before
-        # publishing. A concurrent install or Steam launch defers the update.
-        if _request(pending) != request or _current(current) != previous or not _idle():
+        # publishing. A concurrent install or Steam launch defers replacement.
+        if _request(pending) != request or _current(current) != previous or not _can_activate(previous):
             return []
         token = uuid.uuid4().hex
         backup = home_path / "backups" / ("runtime-" + token)
@@ -122,12 +135,39 @@ def activate_pending(dry_run: bool = False, home: str = None) -> List[str]:
             temporary.symlink_to(request["name"])
             # The complete old directory stays intact for rollback and never
             # receives files from the replacement runtime.
-            if _request(pending) != request or _current(current) != previous or not _idle():
+            if _request(pending) != request or _current(current) != previous or not _can_activate(previous):
                 return []
-            os.replace(temporary, current)
+            if previous is None:
+                try:
+                    # Do not replace a selection created after the final check,
+                    # including a dangling symlink or a non-symlink entry.
+                    current.symlink_to(request["name"])
+                except FileExistsError:
+                    return []
+            else:
+                os.replace(temporary, current)
         finally:
             if temporary.is_symlink():
                 temporary.unlink()
         return ["selected packaged runtime " + request["name"]]
     except (OSError, ValueError) as error:
         raise RuntimeSelectionError("cannot select the packaged runtime; previous runtime retained") from error
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Create a missing packaged runtime selection")
+    parser.add_argument("--bootstrap", action="store_true", required=True,
+                        help="create runtime/current only when it does not exist")
+    parser.add_argument("--home", help="Gluon data folder")
+    args = parser.parse_args(argv)
+    try:
+        for line in activate_pending(home=args.home, bootstrap_only=True):
+            print(line)
+    except RuntimeSelectionError as error:
+        print("gluon: %s" % error, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

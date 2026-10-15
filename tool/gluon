@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Gluon launcher - the program Steam starts in place of a Windows game's executable.
 #
 #   gluon <verb> <windows executable> [arguments...]
@@ -34,15 +34,27 @@ WINE_LOG="$LOG_DIR/wine-$appid.log"
 mkdir -p "$LOG_DIR"
 
 log() {
-    printf '%s [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$$" "$*" >> "$LOG"
+    printf '%s [%s] %s\n' "${log_timestamp:-$(date '+%Y-%m-%d %H:%M:%S')}" "$$" "$*" >> "$LOG"
+}
+
+notify() {
+    /usr/bin/osascript - "$1" "$2" >/dev/null 2>&1 <<'NOTE'
+on run argv
+    display notification (item 2 of argv) with title "Gluon" subtitle (item 1 of argv)
+end run
+NOTE
 }
 
 fail() {
     log "ERROR: $*"
     printf 'gluon: %s\n' "$*" >&2
+    notify "Could not start the game" "$* Log: $LOG"
     exit 1
 }
 
+# These entries describe one startup snapshot. Reuse its timestamp rather than
+# spawning a date process for every inherited Steam variable.
+log_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 log "---- invoked: $0"
 n=0
 for a in "$@"; do
@@ -53,6 +65,11 @@ log "  cwd = $(pwd)"
 env | grep -E '^(Steam|STEAM_|SteamApp|SteamGame|GLUON_|WINE|PROTON_)' | sort | while IFS= read -r line; do
     log "  env $line"
 done
+unset log_timestamp
+
+source_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
+helper_lib="$GLUON_HOME/lib"
+[ -f "$helper_lib/gluon/runtime.py" ] || helper_lib="$source_root"
 
 settings="$GLUON_HOME/games/$appid.env"
 if [ -f "$settings" ]; then
@@ -86,19 +103,40 @@ esac
 exe="$1"
 shift
 
-runtime=""
-kind=""
-for candidate in "$GLUON_RUNTIME" "$GLUON_HOME/runtime/$GLUON_RUNTIME" "$GLUON_WINE_ROOT" "$GLUON_HOME/runtime/current"; do
-    [ -n "$candidate" ] && [ "$candidate" != "$GLUON_HOME/runtime/" ] || continue
-    if [ -x "$candidate/proton" ] && [ -x "$candidate/files/bin/wineserver" ]; then
-        runtime="$candidate" kind=proton wineserver="$candidate/files/bin/wineserver"
-        break
-    elif [ -x "$candidate/bin/wine" ]; then
-        runtime="$candidate" kind=wine wineserver="$candidate/bin/wineserver"
-        break
-    fi
-done
+select_runtime() {
+    runtime=""
+    kind=""
+    for candidate in "$GLUON_RUNTIME" "$GLUON_HOME/runtime/$GLUON_RUNTIME" "$GLUON_WINE_ROOT" "$GLUON_HOME/runtime/current"; do
+        [ -n "$candidate" ] && [ "$candidate" != "$GLUON_HOME/runtime/" ] || continue
+        if [ -x "$candidate/proton" ] && [ -x "$candidate/files/bin/wine" ] \
+            && [ -x "$candidate/files/bin/wineserver" ]; then
+            runtime="$candidate" kind=proton wineserver="$candidate/files/bin/wineserver"
+            break
+        elif [ -x "$candidate/bin/wine" ] && [ -x "$candidate/bin/wineserver" ]; then
+            runtime="$candidate" kind=wine wineserver="$candidate/bin/wineserver"
+            break
+        fi
+    done
+}
+select_runtime
+if [ -z "$runtime" ] && [ -z "$GLUON_DRY_RUN" ] \
+    && [ ! -e "$GLUON_HOME/runtime/current" ] && [ ! -L "$GLUON_HOME/runtime/current" ] \
+    && [ -f "$helper_lib/gluon/runtime.py" ]; then
+    # Recover a first installation even if Steam was already open. This mode
+    # validates pending.json and only creates a missing default; updates still
+    # wait for the idle background helper.
+    PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 \
+        /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.runtime --bootstrap --home "$GLUON_HOME" >> "$LOG" 2>&1
+    select_runtime
+fi
 [ -n "$runtime" ] || fail "no runtime found (looked in \$GLUON_RUNTIME and $GLUON_HOME/runtime/current)"
+
+# The native loader uses this path when creating a descriptively named link for
+# each Windows process on macOS. Preserve paths supplied by the user/runtime.
+if [ "$kind" = wine ] && [ -x "$runtime/lib/wine/x86_64-unix/wine" ] \
+    && [ -f "$runtime/lib/wine/x86_64-unix/ntdll.so" ]; then
+    export WINEDLLPATH="${WINEDLLPATH:-$runtime/lib/wine}"
+fi
 
 # One prefix per game, laid out the way Steam Play does it: <library>/steamapps/compatdata/<appid>/pfx
 install_dir=""
@@ -187,8 +225,6 @@ if [ -n "$GLUON_DRY_RUN" ]; then
     exit 0
 fi
 
-overlay_source_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
-
 case "$exe" in
     */*) cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")" ;;
 esac
@@ -196,14 +232,56 @@ esac
 # Steam treats this process as the game: playtime, the Stop button and the cloud sync
 # on exit all follow it. Stay around until the session is over, and take the prefix
 # down if Steam asks us to stop.
+child_pid=""
+launching=""
+stop_requested=""
+run_wait() {
+    launching=1
+    "$@" >> "$WINE_LOG" 2>&1 &
+    child_pid=$!
+    launching=""
+    [ -z "$stop_requested" ] || stop_session
+    wait "$child_pid"
+    child_status=$?
+    child_pid=""
+    return "$child_status"
+}
+
+signal_child() {
+    # The shell may have reaped an exited job already. Consult its live job
+    # table so a delayed shutdown never signals a reused PID.
+    for owned_pid in $(jobs -pr) $(jobs -ps); do
+        [ "$owned_pid" != "$child_pid" ] || kill "-$1" "$owned_pid" 2>/dev/null
+    done
+}
+
 stop_session() {
     trap '' TERM INT HUP
+    unset DYLD_INSERT_LIBRARIES
     log "  stop requested, ending the session"
-    "$wineserver" -k >> "$WINE_LOG" 2>&1
+    # Terminate only the helper we own and the server selected by WINEPREFIX.
+    # Wine children may outlive the helper, so confirm server shutdown too.
+    signal_child TERM
+    "$wineserver" -k >> "$WINE_LOG" 2>&1 &
+    wait $!
+    "$wineserver" -w >> "$WINE_LOG" 2>&1 &
+    wait $!
+    if [ -n "$child_pid" ]; then
+        # The prefix is down; a wrapper that ignores TERM must not hold Steam's
+        # tracked launcher open indefinitely.
+        signal_child KILL
+        wait "$child_pid" 2>/dev/null
+    fi
     exit 143
 }
 
-trap stop_session TERM INT HUP
+request_stop() {
+    stop_requested=1
+    # A trap between spawn and $! must wait until the child PID is recorded.
+    [ -n "$launching" ] || stop_session
+}
+
+trap request_stop TERM INT HUP
 
 printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
 started=$(date +%s)
@@ -218,8 +296,7 @@ if [ "$kind" = proton ]; then
         export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;mscoree,mshtml="
     fi
     log "  starting the tool (output in $WINE_LOG)"
-    "$runtime/proton" waitforexitandrun "$exe" "$@" >> "$WINE_LOG" 2>&1 &
-    wait $!
+    run_wait "$runtime/proton" waitforexitandrun "$exe" "$@"
     status=$?
 else
     if [ ! -f "$WINEPREFIX/system.reg" ]; then
@@ -230,16 +307,16 @@ else
             # No bundled add-ons: without this, setup stops on a download prompt.
             setup_overrides="$setup_overrides;mscoree,mshtml="
         fi
-        WINEDLLOVERRIDES="$setup_overrides" "$runtime/bin/wine" wineboot --init >> "$WINE_LOG" 2>&1 \
-            || log "  wineboot exited with status $?"
-        "$wineserver" -w >> "$WINE_LOG" 2>&1
+        WINEDLLOVERRIDES="$setup_overrides" run_wait "$runtime/bin/wine" wineboot --init \
+            || fail "Wine prefix setup failed (see $WINE_LOG)"
+        run_wait "$wineserver" -w || fail "Wine prefix setup did not finish (see $WINE_LOG)"
     elif [ "$verb" = waitforexitandrun ]; then
-        "$wineserver" -w >> "$WINE_LOG" 2>&1
+        run_wait "$wineserver" -w || fail "Could not wait for the previous session (see $WINE_LOG)"
     fi
     overlay_insert=""
     if [ "${SteamClientLaunch:-}" = 1 ] && [ -n "${STEAM_DYLD_INSERT_LIBRARIES:-}" ]; then
         overlay_lib="$GLUON_HOME/lib"
-        [ -f "$overlay_lib/gluon/overlay.py" ] || overlay_lib="$overlay_source_root"
+        [ -f "$overlay_lib/gluon/overlay.py" ] || overlay_lib="$source_root"
         if [ -f "$overlay_lib/gluon/overlay.py" ]; then
             if [ -n "${STEAM_CLIENT_CONFIG_FILE:-}" ]; then
                 overlay_client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
@@ -267,14 +344,16 @@ else
         if [ ! -f "$compat/.gluon-steam-bridge" ]; then
             # Tell steam_api where the client library is: the bridge DLL.
             for value in SteamClientDll SteamClientDll64; do
-                "$runtime/bin/wine" reg add 'HKCU\Software\Valve\Steam\ActiveProcess' /v "$value" /t REG_SZ \
-                    /d 'C:\windows\system32\lsteamclient.dll' /f >> "$WINE_LOG" 2>&1
+                run_wait "$runtime/bin/wine" reg add 'HKCU\Software\Valve\Steam\ActiveProcess' /v "$value" /t REG_SZ \
+                    /d 'C:\windows\system32\lsteamclient.dll' /f \
+                    || fail "Steam bridge registry setup failed (see $WINE_LOG)"
             done
-            "$wineserver" -w >> "$WINE_LOG" 2>&1
+            run_wait "$wineserver" -w || fail "Steam bridge setup did not finish (see $WINE_LOG)"
             : > "$compat/.gluon-steam-bridge"
             log "  steam bridge: registry entries written"
         fi
         log "  starting Wine through the Steam helper (output in $WINE_LOG)"
+        launching=1
         if [ -n "$overlay_insert" ]; then
             log "  passing Steam's native overlay libraries to the Wine game host"
             DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" \
@@ -284,6 +363,7 @@ else
         fi
     else
         log "  starting Wine (output in $WINE_LOG)"
+        launching=1
         if [ -n "$overlay_insert" ]; then
             log "  passing Steam's native overlay libraries to the Wine game host"
             DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
@@ -291,11 +371,14 @@ else
             "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
         fi
     fi
-    wait $!
+    child_pid=$!
+    launching=""
+    [ -z "$stop_requested" ] || stop_session
+    wait "$child_pid"
     status=$?
+    child_pid=""
     # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
-    "$wineserver" -w >> "$WINE_LOG" 2>&1 &
-    wait $!
+    run_wait "$wineserver" -w
 fi
 elapsed=$(( $(date +%s) - started ))
 log "  session ended (exit status $status, ${elapsed}s)"
@@ -308,11 +391,7 @@ if [ "$status" -ne 0 ] && [ "$elapsed" -lt 90 ]; then
         | grep -a -v -E 'try_map_free_area|winediag|winebth|xalia|vrclient|Error while copying' \
         | tail -1 | cut -c1-160)"
     log "  reported to the user: ${reason:-no error line found}"
-    /usr/bin/osascript - "$(basename "$exe" .exe) stopped after ${elapsed}s" \
-        "${reason:-No error message was logged.} Log: $WINE_LOG" >/dev/null 2>&1 <<'NOTE'
-on run argv
-    display notification (item 2 of argv) with title "Gluon" subtitle (item 1 of argv)
-end run
-NOTE
+    notify "$(basename "$exe" .exe) stopped after ${elapsed}s" \
+        "${reason:-No error message was logged.} Log: $WINE_LOG"
 fi
 exit "$status"
