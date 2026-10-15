@@ -65,12 +65,11 @@ printf '%s  %s\n' "$GLUON_SOURCE_SHA" "$GLUON_SOURCE_ARCHIVE" | shasum -a 256 -c
 tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/opengl32/unix_wgl.c \
     sources/wine/dlls/winemac.drv/opengl.c \
+    sources/wine/dlls/winemac.drv/cocoa_app.m \
     sources/wine/dlls/opengl32/thunks.c \
     sources/wine/dlls/opengl32/unix_thunks.c \
     sources/wine/dlls/win32u/vulkan.c \
     sources/wine/dlls/ntdll/unix/loader.c \
-    sources/wine/loader/main.c \
-    sources/wine/loader/wine_info.plist.in \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
     sources/dxvk/src/d3d9/d3d9_include.h \
@@ -96,11 +95,18 @@ else
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-display-name.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
 fi
 
-echo "Checking named per-program Wine loader copies"
+echo "Checking that Wine keeps a loader started from an app bundle"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
-    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-loader-name.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-app-bundle.py" "$GLUON_SOURCE_TEMP/wine" --self-test
 else
-    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-loader-name.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-app-bundle.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
+
+echo "Checking that Wine gives Steam's overlay only to game processes"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-overlay-scope.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-overlay-scope.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
 fi
 
 echo "Checking the opt-in macdrv OpenGL compatibility-as-core mapping"

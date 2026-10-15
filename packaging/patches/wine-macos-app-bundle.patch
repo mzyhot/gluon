@@ -1,0 +1,101 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -69,6 +69,7 @@
+ # include <mach/mach.h>
+ # include <mach/mach_error.h>
+ # include <mach-o/getsect.h>
++# include <mach-o/dyld.h>
+ # include <crt_externs.h>
+ # ifndef _POSIX_SPAWN_DISABLE_ASLR
+ #  define _POSIX_SPAWN_DISABLE_ASLR 0x0100
+@@ -636,6 +637,18 @@
+ fail:
+     free(linkpath);
+     return NULL;
++}
++
++/* Gluon: a loader started from an app bundle (Contents/MacOS) keeps every
++ * process of its session in that bundle, so macOS uses the bundle's name,
++ * category and launch activation for all of them. */
++static char *bundled_wineloader(void)
++{
++    char path[PATH_MAX];
++    uint32_t size = sizeof(path);
++
++    if (_NSGetExecutablePath( path, &size ) || !strstr( path, ".app/Contents/MacOS/" )) return NULL;
++    return strdup( path );
+ }
+ 
+ static void replace_wineloader_path_with_link(char **wineloader_path, const char *image_path)
+@@ -686,8 +699,17 @@
+      * When the preloader is not being used, WINEDLLPATH needs to be set correctly for
+      * the loader to find ntdll.so, so don't even attempt this unless WINEDLLPATH is set.
+      */
+-    if (getenv("WINEDLLPATH"))
+-        replace_wineloader_path_with_link( &(argv[1]), image_path );
++    {
++        char *bundled = bundled_wineloader();
++
++        if (bundled)
++        {
++            free( argv[1] );
++            argv[1] = bundled;
++        }
++        else if (getenv("WINEDLLPATH"))
++            replace_wineloader_path_with_link( &(argv[1]), image_path );
++    }
+ #endif
+ 
+     execv( argv[1], argv + 1 );
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -2169,6 +2169,41 @@
+         [NSApp yieldActivationToApplication:otherApp];
+         [otherApp activateFromApplication:[NSRunningApplication currentApplication]
+                                   options:0];
++    }
++
++    /* Gluon: Steam, not another Wine app, is usually active when a game window
++       first appears, and it does not yield. A game started from its own app
++       bundle asks LaunchServices once to activate that bundle, then repeats the
++       request so the bundle's other Wine processes can yield as above.
++       GLUON_FOCUS=0 turns this off. */
++    - (void) activateBundleOnceIfStillInactive
++    {
++        static BOOL attempted;
++        NSURL *bundleURL = [[NSBundle mainBundle] bundleURL];
++        const char *focus = getenv("GLUON_FOCUS");
++
++        if (attempted || (focus && !strcmp(focus, "0"))) return;
++        if (![[bundleURL pathExtension] isEqualToString:@"app"]) return;
++        attempted = YES;
++
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++            NSWorkspaceOpenConfiguration *configuration;
++
++            if ([NSApp isActive]) return;
++            configuration = [NSWorkspaceOpenConfiguration configuration];
++            configuration.activates = YES;
++            configuration.createsNewApplicationInstance = NO;
++            configuration.addsToRecentItems = NO;
++            [[NSWorkspace sharedWorkspace] openApplicationAtURL:bundleURL
++                                                  configuration:configuration
++                                              completionHandler:^(NSRunningApplication *app, NSError *error){
++                (void)app;
++                (void)error;
++                dispatch_async(dispatch_get_main_queue(), ^{
++                    if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES];
++                });
++            }];
++        });
+     }
+ 
+     - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore
+@@ -2206,6 +2241,7 @@
+ 
+         /* This is racy. See the note in otherWineAppWillActivate:. */
+         [NSApp activate];
++        [self activateBundleOnceIfStillInactive];
+      }
+ 
+     /* CW Hack 22310, 24199 */
