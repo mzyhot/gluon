@@ -1,6 +1,6 @@
 --- a/dlls/opengl32/unix_wgl.c
 +++ b/dlls/opengl32/unix_wgl.c
-@@ -983,32 +983,72 @@
+@@ -983,32 +983,80 @@
          return (void *)-1;
      }
  
@@ -49,6 +49,12 @@
 +            { "glVertexAttribI4uiv", "glVertexAttribI4uivEXT" },
 +            { "glVertexAttribI4usv", "glVertexAttribI4usvEXT" },
 +            { "glVertexAttribIPointer", "glVertexAttribIPointerEXT" },
++            /* Desktop GL 3.1 draw-instanced commands have exact ARB and EXT
++             * aliases. Each candidate retains its own extension check. */
++            { "glDrawArraysInstanced", "glDrawArraysInstancedARB" },
++            { "glDrawArraysInstanced", "glDrawArraysInstancedEXT" },
++            { "glDrawElementsInstanced", "glDrawElementsInstancedARB" },
++            { "glDrawElementsInstanced", "glDrawElementsInstancedEXT" },
 +            { "glCopyTexSubImage3DEXT", "glCopyTexSubImage3D" },     /* needed by RuneScape */
 +            { "glVertexAttribDivisor", "glVertexAttribDivisorARB"},  /* needed by Caffeine */
 +            { "glCompressedTexImage2DARB", "glCompressedTexImage2D" }, /* needed by Grim Fandango Remastered */
@@ -56,10 +62,12 @@
 +
 +        for (i = 0; i < ARRAY_SIZE(alternatives); i++)
 +        {
++            PROC alternative;
 +            if (strcmp( name, alternatives[i].name )) continue;
 +            WARN( "Extension %s required for %s not supported, trying %s\n", found->extension,
 +                  name, alternatives[i].alt );
-+            return wrap_wglGetProcAddress( teb, alternatives[i].alt );
++            alternative = wrap_wglGetProcAddress( teb, alternatives[i].alt );
++            if (alternative != (void *)-1) return alternative;
 +        }
 +
 +        WARN( "Extension %s required for %s not supported\n", found->extension, name );

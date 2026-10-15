@@ -29,6 +29,33 @@ Suffix guessing, returning `glVertexAttribPointer`, or removing all capability
 checks would not preserve this behavior. An alias fix does not add newer GLSL or
 unimplemented APIs.
 
+## Instanced drawing follow-up (2026-10-14)
+
+After the owner launched the complete v0.1.0 runtime, Primordialis passed the
+earlier integer-attribute lookup and asserted at `glDrawArraysInstanced`
+(`code\gl_functions_list.h:33`). Its current game log confirms the screenshot.
+The earlier context trace advertises `GL_ARB_draw_instanced`; Wine's generated
+registry requires desktop GL 3.1 for the unsuffixed function, but the ARB entry
+requires the advertised extension. The same distinction applies to indexed
+instanced drawing.
+
+The pinned Khronos XML declares both ARB and EXT draw-instanced commands exact
+aliases of the corresponding core commands, with identical parameter types.
+The patch now adds both array and indexed commands, preferring ARB and then
+trying EXT only through its own capability check. A failed first candidate must
+not suppress the second. Wine returns a registry index from this resolver, so
+only `(void *)-1` indicates failure; index zero remains valid. The shader4 aliases,
+current-context checks before shared caches, context version and GLSL behavior
+are preserved.
+
+Static strings in all three installed Primordialis executable variants contain
+the same 67 exact GL function names. Comparing those names with the Wine registry
+and recorded legacy extensions identifies this draw-instanced lookup as the
+additional supported alias omission; integer uniforms/attributes and the divisor
+already have checked mappings. This is a source/static audit, not evidence that
+all rendering or shader requirements are satisfied. The new complete runtime
+still needs cloud compilation and owner-run rendering verification.
+
 ## Existing Wine path
 
 CodeWeavers' published 26.3 source, `sources/wine/dlls/winemac.drv/opengl.c`, creates

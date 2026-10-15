@@ -26,7 +26,7 @@ timeout 19m bash packaging/check-sources.sh
 This checks tracked shell/Python syntax, downloads the same SHA-256-pinned
 CodeWeavers open-source archive as the runtime build, and extracts only the six
 Wine/DXVK source files needed for validation. It applies the Wine alias patch,
-verifies repeat application, checks all 34 aliases and their signatures against
+verifies repeat application, checks all 38 aliases and their signatures against
 the pinned Khronos XML registry, runs the validator's negative cases, and checks
 all three DXVK patches. The helper rejects macOS and environments outside GitHub
 Codespaces or GitHub Actions. Download cache contents are reverified on every run.
