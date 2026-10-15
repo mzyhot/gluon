@@ -759,8 +759,8 @@ The new `wine-gl-compat-as-core.patch` maps such requests to Apple's core
 profile only when `GLUON_GL_COMPAT_AS_CORE=1`, and binds a default vertex array
 object per mapped context. Details, limits and checks are in
 `graphics-opengl-backends.md`. The switch belongs only in
-`games/3011360.env`; rendering and the one unsized `GL_SRGB_ALPHA` upload need
-an owner-run launch.
+`games/3011360.env`. The owner confirmed that Primordialis renders with that
+switch and the staged runtime from build 38776361036.
 
 ## Menu bar name with Steam's overlay (2026-10-15)
 
@@ -779,8 +779,42 @@ loader whose embedded plist already carries the program name, using the same
 rewrite and truncation as the in-memory rename, and replaces an earlier hard
 link. Any failure falls back to Wine's original hard link. Source checks pin
 the patch and, on Actions Linux, run the exact functions on fake loaders;
-Wine's original hard-link behavior must fail that fixture. A complete build
-and an owner-run overlay launch are still required.
+Wine's original hard-link behavior must fail that fixture. A copy is written
+only for a thin, unsigned 64-bit Mach-O loader; editing a signed one would
+invalidate its signature, so anything else keeps the hard link. A complete
+build and an owner-run overlay launch are still required. Dock naming is
+owner-confirmed with the display-name patch.
+
+## Steam quit callback, msync, keep-awake and Game Mode (2026-10-15)
+
+Steam showed its shutdown popup but never delivered `SteamShutdown_t` to the
+host's pipe, so quitting relied on the Steam-exit fallback (about 13 s).
+`SteamShutdown_t` is a SteamUtils callback (`k_iSteamUtilsCallbacks + 4`), and
+`SteamAPI_Init` obtains SteamUtils for its pipe. The host now requests
+`SteamUtils010` (the version paired with `SteamClient020` in Valve's SDK 1.50-1.55
+headers, method 9 of `ISteamClient`) on its private pipe after connecting the
+user. Failure is logged; the exit fallback remains. Real delivery still needs an
+owner-run Steam quit.
+
+`wineserver -k` exits 1 when no server is running, so shutdown success is now
+decided by `wineserver -w` returning in time; a server that keeps its lock is
+still reported as unconfirmed.
+
+Plain Wine runtimes now run with CrossOver's msync (`WINEMSYNC=1`) unless a
+game's settings set `WINEMSYNC=0`; every Wine command of a session shares it with
+the server. `caffeinate -d -i -w` keeps the Mac and display awake for the whole
+session (`GLUON_CAFFEINATE=0` disables it). `wine-macos-game-category.patch`
+declares `public.app-category.games` in the loader's embedded Info.plist so
+macOS Game Mode can recognize full-screen games. All three need owner-run
+confirmation; Game Mode shows its own menu bar indicator when active.
+
+Reference projects reviewed for reusable code: NotProton (GPL-3.0) is not
+license-compatible with the Gluon Public License, so only its ideas (a
+keep-awake assertion during play and a games category for Game Mode) were
+reimplemented independently. proton-macos (BSD-3-Clause) already supplies the
+Steam bridge; its launcher adds nothing Gluon lacks. kaon (Apache-2.0) relies on
+a Windows Steam client in a CrossOver bottle, which Gluon's native-client
+approach supersedes.
 
 ## Open items
 
@@ -795,8 +829,9 @@ and an owner-run overlay launch are still required.
    Platform icons and the remaining library flows are untested.
 3. **Steam's Stop button.** Fixed through the native host; owner-confirmed on
    a fresh session, with the Cocoa-quit handoff recorded in the launcher log.
-   Quitting Steam with games open now stops each game from Steam's shutdown
-   callback, or when Steam exits; that path still needs an owner-run Steam quit.
+   Quitting Steam with games open stops each game when Steam exits (owner-
+   confirmed, about 13 s). The host now also requests SteamUtils so Steam's
+   shutdown callback can stop games sooner; that needs an owner-run Steam quit.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
    "init error gone" with People Playground; local achievement caches confirm persisted
    unlocks. The owner confirmed Valve's real overlay and achievement popup in Happy
@@ -806,11 +841,10 @@ and an owner-run overlay launch are still required.
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.
 6. **Runtime.** Corrected complete build 38725676665 and its preserved-runtime
-   recheck passed, and the shared default is active. Primordialis's 3.3
-   compatibility request has an opt-in core-profile mapping awaiting a complete
-   build and owner-run rendering; general compatibility-profile support is
-   still missing. Dock naming and additional games need owner-run
-   verification. Enable and test msync separately.
+   recheck passed, and the shared default is active. Primordialis renders
+   through the opt-in core-profile mapping; general compatibility-profile
+   support is still missing. Dock naming is owner-confirmed. The menu bar
+   name, msync, keep-awake and Game Mode await a complete build and owner runs.
 7. **Swarm Queen first launch** stops at Steam's EULA dialog, which the user has to
    answer.
 8. **Packaging.** The debug bridge (`-cef-enable-debugging`) is a development aid only;

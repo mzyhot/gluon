@@ -164,6 +164,10 @@ default vertex array, and render a buffer-backed GLSL 330 triangle without
 creating its own array object. Hosted runners lack CGL, so this rendering
 case is expected to be skipped there; game rendering needs an owner-run launch.
 
+Owner result: with complete build 38776361036 staged for Primordialis only and
+`GLUON_GL_COMPAT_AS_CORE=1` in its settings, the game now renders. The unsized
+`GL_SRGB_ALPHA` upload therefore did not block it. The switch stays per game.
+
 ## Existing Wine path
 
 CodeWeavers' published 26.3 source, `sources/wine/dlls/winemac.drv/opengl.c`, creates
@@ -253,8 +257,8 @@ The source alias patch and its registry/signature checks are implemented. The
 native Wine module compiled, but a local partial-module substitution failed
 during DLL attachment before WGL calls; it is not runtime validation. Those local
 experiments were stopped after the owner reported overheating. Verify the complete
-CI-built Wine runtime using bounded Actions probes. Primordialis rendering is
-still unresolved. Local execution follows the latest constraints in `NOTES.md`.
+CI-built Wine runtime using bounded Actions probes. Primordialis renders through
+the opt-in mapping above. Local execution follows the latest constraints in `NOTES.md`.
 
 `packaging/check-opengl.sh [arm64|x86_64 ...]` compiles a standalone CGL probe. It
 reports legacy/core versions and flags, EXT_gpu_shader4 advertisement, host core/EXT

@@ -1,6 +1,8 @@
 # Third-party components
 
-Gluon's own code (this repository) is released under the Unlicense (see LICENSE).
+Gluon's own code (this repository) is released under the Gluon Public License, version 1.2
+(see LICENSE). It governs only Gluon's original materials; every component below keeps its
+own license, and Gluon's Wine patches remain under Wine's LGPL-2.1-or-later.
 
 The installer package carries a Windows runtime that Gluon's build assembles from
 open-source code (`packaging/build-runtime.sh`). License texts and source locations are
