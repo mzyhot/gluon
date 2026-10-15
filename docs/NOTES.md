@@ -748,44 +748,68 @@ The installed shell launcher already matched the branch. The previous host was
 backed up with a manifest. Only a usage
 invocation of the installed host was run locally.
 
-## Primordialis compatibility context (2026-10-15)
+## OpenGL compatibility contexts (2026-10-15)
 
-The owner's next Primordialis launch asserted `could not create gl context,
-error: 8341` (`0x2095`, `ERROR_INVALID_VERSION_ARB`) for its OpenGL 3.3,
-flags 0, compatibility-profile request. A linear-disassembly call-site audit
-(whole-binary Ghidra analysis was stopped as too heavy for the local machine)
-found only core-profile usage apart from never creating a vertex array object.
-The new `wine-gl-compat-as-core.patch` maps such requests to Apple's core
-profile only when `GLUON_GL_COMPAT_AS_CORE=1`, and binds a default vertex array
-object per mapped context. Details, limits and checks are in
-`graphics-opengl-backends.md`. The switch belongs only in
-`games/3011360.env`. The owner confirmed that Primordialis renders with that
-switch and the staged runtime from build 38776361036.
+A game asked Wine for an OpenGL 3.3 compatibility-profile context, which macdrv
+rejects with `ERROR_INVALID_VERSION_ARB` (8341) because macOS offers 3.x only as
+a core profile. A linear-disassembly call-site audit of that game (whole-binary
+Ghidra analysis was stopped as too heavy for the local machine) found only
+core-profile usage apart from never creating a vertex array object.
+`wine-gl-compat-as-core.patch` maps 3.0-4.1 compatibility or
+non-forward-compatible requests to Apple's core profile and binds a default
+vertex array object per mapped context. The launcher enables it for every game
+(`GLUON_GL_COMPAT_AS_CORE=0` opts out); it only changes requests Wine would
+otherwise refuse. Details and limits are in `graphics-opengl-backends.md`. The
+owner confirmed rendering with build 38776361036.
 
-## Menu bar name with Steam's overlay (2026-10-15)
+## One Mac app per game (2026-10-15)
 
-The owner saw Happy Wheels' menu bar title as `CrossOver-Hosted Application`,
-the default `CFBundleName` in the loader's embedded Info.plist. Wine starts
-each program through a per-program hard link to that loader and renames the
-bundle in memory at the start of `main()`. Steam's overlay is inserted with
-`DYLD_INSERT_LIBRARIES`; `gameoverlayrenderer.dylib` links AppKit, Foundation
-and CoreFoundation, which therefore initialize before `main()`, while the Wine
-loader itself links only libSystem. The in-memory rename then comes too late.
-This explains why only overlay-injected launches show the default name; it was
-inferred from linked libraries and imports, not by tracing the overlay.
+Three owner reports had one cause: Wine games are not Mac apps of their own.
+Games opened behind Steam, because since macOS 14 an app may activate only when
+the active app yields or LaunchServices launches it, and Steam never yields to a
+process it spawned. The menu bar showed `CrossOver-Hosted Application`, the
+loader's embedded default name: Wine renames it in memory at the start of
+`main()`, but Steam's overlay library links AppKit and Foundation, which load
+before `main()` and read the name first. And Game Mode never applied, since
+nothing declared a game category.
 
-`wine-macos-loader-name.patch` writes a per-program copy of the unsigned
-loader whose embedded plist already carries the program name, using the same
-rewrite and truncation as the in-memory rename, and replaces an earlier hard
-link. Any failure falls back to Wine's original hard link. Source checks pin
-the patch and, on Actions Linux, run the exact functions on fake loaders;
-Wine's original hard-link behavior must fail that fixture. A copy is written
-only for a thin, unsigned 64-bit Mach-O loader; editing a signed one would
-invalidate its signature, so anything else keeps the hard link. A complete
-build and an owner-run overlay launch are still required. Dock naming is
-owner-confirmed with the display-name patch.
+Each game now gets its own bundle,
+`~/Library/Application Support/Gluon/apps.noindex/<appid>/<name>.app`
+(`gluon/appbundle.py`), named from the game's app manifest, with
+`LSApplicationCategoryType` set to games and `LSUIElement` kept so Wine's helper
+processes stay agents. Its executable loads a one-time session file written by
+the launcher (refusing to start without it) and starts a hard link of the
+runtime's loader from `Contents/MacOS`. The launcher opens the bundle with
+`open -n -W -a`, which waits like the previous child process; Stop and Steam quit
+still end the session through the prefix's server. If LaunchServices never
+starts the bundle, the launcher starts Wine directly.
+`wine-macos-app-bundle.patch` makes Wine keep a loader that runs from a bundle,
+instead of re-executing through its temporary per-program link, so every
+process of the game stays in the bundle. If a window still appears while the
+game is inactive, macdrv asks LaunchServices once to activate the bundle and
+repeats Wine's cooperative handover (`GLUON_FOCUS=0` turns this off).
+LaunchServices does not report a bundle's exit status, so a crash notification
+after a bundle launch requires a crash line in the log. The superseded
+loader-copy and plist-category patches were removed. Front-most launch, menu bar
+name and Game Mode need an owner run with the new runtime.
 
-## Steam quit callback, msync, keep-awake and Game Mode (2026-10-15)
+## Steam's overlay limited to game processes (2026-10-15)
+
+The owner saw a game sometimes not close. After one such session a
+`winedevice.exe` stayed running for two hours with no server left. The Wine log
+shows why: Steam's `steamloader.dylib` and `gameoverlayrenderer.dylib`, inserted
+for the game, were inherited by every process the game host started, including
+the Wine server and `services.exe`. Steam's IPC code then reported
+`fork without exec` in the server and later ended a process with
+`fatal stalled cross-thread pipe (pipe is disconnected)`, leaving the prefix
+half stopped. `wine-macos-overlay-scope.patch` receives the overlay as
+`GLUON_OVERLAY_INSERT` and sets `DYLD_INSERT_LIBRARIES` only when starting a
+program outside the prefix's Windows directory; the server never receives it.
+Runtimes without the patch still get the overlay through dyld. Steam's toast
+animations may have suffered from several overlay instances registering for one
+game; that needs an owner check.
+
+## Steam quit callback, msync, keep-awake and settings (2026-10-15)
 
 Steam showed its shutdown popup but never delivered `SteamShutdown_t` to the
 host's pipe, so quitting relied on the Steam-exit fallback (about 13 s).
@@ -800,21 +824,22 @@ owner-run Steam quit.
 decided by `wineserver -w` returning in time; a server that keeps its lock is
 still reported as unconfirmed.
 
-Plain Wine runtimes now run with CrossOver's msync (`WINEMSYNC=1`) unless a
-game's settings set `WINEMSYNC=0`; every Wine command of a session shares it with
-the server. `caffeinate -d -i -w` keeps the Mac and display awake for the whole
-session (`GLUON_CAFFEINATE=0` disables it). `wine-macos-game-category.patch`
-declares `public.app-category.games` in the loader's embedded Info.plist so
-macOS Game Mode can recognize full-screen games. All three need owner-run
-confirmation; Game Mode shows its own menu bar indicator when active.
+Plain Wine runtimes run with CrossOver's msync (`WINEMSYNC=1`), sharing it with
+the server for every Wine command of a session, and `caffeinate -d -i -w` keeps
+the Mac and display awake until the launcher exits.
+
+Every feature is on for every game and can be switched off: in a game's Steam
+Launch Options (`%command% NAME=value`, applied and removed before the game sees
+its arguments, allow-listed names only), in `games/<appid>.env`, or for all
+games in `settings.env`. The README lists the switches.
 
 Reference projects reviewed for reusable code: NotProton (GPL-3.0) is not
 license-compatible with the Gluon Public License, so only its ideas (a
-keep-awake assertion during play and a games category for Game Mode) were
-reimplemented independently. proton-macos (BSD-3-Clause) already supplies the
-Steam bridge; its launcher adds nothing Gluon lacks. kaon (Apache-2.0) relies on
-a Windows Steam client in a CrossOver bottle, which Gluon's native-client
-approach supersedes.
+keep-awake assertion during play, a games category, launching through a
+per-game bundle) were reimplemented independently. proton-macos
+(BSD-3-Clause) already supplies the Steam bridge; its launcher adds nothing
+Gluon lacks. kaon (Apache-2.0) relies on a Windows Steam client in a CrossOver
+bottle, which Gluon's native-client approach supersedes.
 
 ## Open items
 
@@ -841,10 +866,11 @@ approach supersedes.
    (registry keys, redistributables such as Swarm Queen's Adobe AIR) are not run in
    the prefix.
 6. **Runtime.** Corrected complete build 38725676665 and its preserved-runtime
-   recheck passed, and the shared default is active. Primordialis renders
-   through the opt-in core-profile mapping; general compatibility-profile
-   support is still missing. Dock naming is owner-confirmed. The menu bar
-   name, msync, keep-awake and Game Mode await a complete build and owner runs.
+   recheck passed, and the shared default is active. OpenGL 3.x compatibility
+   requests are mapped to the core profile for every game; general
+   compatibility-profile support is still missing. Dock naming is
+   owner-confirmed. Per-game app bundles, overlay scoping, msync and keep-awake
+   await a complete build and owner runs.
 7. **Swarm Queen first launch** stops at Steam's EULA dialog, which the user has to
    answer.
 8. **Packaging.** The debug bridge (`-cef-enable-debugging`) is a development aid only;

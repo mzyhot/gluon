@@ -49,11 +49,12 @@ way and checked against 24 switch/version/profile/flag cases. Mutations that
 ignore `GLUON_GL_COMPAT_AS_CORE` or remap already supported requests must fail.
 Codespaces runs only its source contract.
 
-The loader-name fixture runs the exact patched copy functions on fake unsigned,
-signed and universal Mach-O loaders. Copies must keep every byte outside the
-embedded plist, signed or universal loaders must keep Wine's hard link, and
-Wine's original hard-link behavior must fail. Its source contract also
-validates the loader Info.plist template, including the games category.
+The app-bundle fixture compiles Wine's exact bundled-loader check against a
+stubbed executable-path lookup: loaders inside `.app/Contents/MacOS` are kept,
+temporary links and look-alike paths are not. The overlay-scope fixture runs the
+exact patched functions to check that only game programs receive Steam's overlay
+and that the server's environment never does; giving the overlay to every
+program or to the server must fail.
 
 No native graphics API runs during these checks. Linux Codespaces cannot verify Apple's Metal/OpenGL behavior, Rosetta, macOS WGL contexts, or game
 rendering. A passing source check therefore establishes source consistency only.

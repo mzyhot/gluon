@@ -124,7 +124,7 @@ compatibility-profile support is unfinished. The static investigation did not
 execute the game. Whole-binary Ghidra analysis was stopped twice (timeout, then
 local resource limits); the call-site audit below uses linear disassembly only.
 
-## Opt-in compatibility-as-core mapping (2026-10-15)
+## Compatibility-as-core mapping (2026-10-15)
 
 A call-site audit of the same AVX executable checks what the game would lose
 in a core profile. Its OpenGL imports and loaded names contain no fixed-function,
@@ -151,7 +151,9 @@ every original rejection remains. This deliberately breaks the WGL
 compatibility contract for opted-in games: removed functionality stays
 unavailable, a later `glBindVertexArray(0)` restores core behavior, and wide
 lines are unavailable as in any forward-compatible context. Primordialis loads
-neither `glBindVertexArray` nor `glLineWidth`. It must stay per game.
+neither `glBindVertexArray` nor `glLineWidth`. Because macdrv rejects every
+mapped request without it, the mapping only changes games that would otherwise
+fail to create their context.
 
 `check-gl-compat-as-core.py` pins the patched macdrv source and, on GitHub
 Actions Linux, compiles the exact opt-in decision helper with 24 cases
@@ -165,7 +167,8 @@ creating its own array object. Hosted runners lack CGL, so this rendering
 case is expected to be skipped there; game rendering needs an owner-run launch.
 
 Owner result: with complete build 38776361036 staged for Primordialis only and
-`GLUON_GL_COMPAT_AS_CORE=1` in its settings, the game now renders. The unsized
+`GLUON_GL_COMPAT_AS_CORE=1` in its settings, the game now renders. The launcher
+now enables the mapping for every game; `GLUON_GL_COMPAT_AS_CORE=0` opts out. The unsized
 `GL_SRGB_ALPHA` upload therefore did not block it. The switch stays per game.
 
 ## Existing Wine path
