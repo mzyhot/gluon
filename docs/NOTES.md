@@ -776,6 +776,15 @@ shutdown callback, Steam exiting without it, blocked IPC, missing/failing
 interfaces and a callback flood. Delivery of 704 by the real Mac client still
 needs an owner-run Steam quit; no local Steam, Wine or game was launched.
 
+Recheck run https://github.com/mzyhot/gluon/actions/runs/38761822480 at
+`526d904` passed every launcher host fixture. Its `launcher-host` artifact
+matched GitHub's recorded zip digest and was installed as
+`bin/gluon-launcher-host` (SHA-256 `ccbd7ea8...1276`) while no game was running.
+The installed shell launcher already matched the branch. The previous host and
+a manifest are under
+`build/local-install-backups/<id>/`. Only a usage
+invocation of the installed host was run locally.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
