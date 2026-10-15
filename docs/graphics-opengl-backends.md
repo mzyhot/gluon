@@ -56,6 +56,13 @@ already have checked mappings. This is a source/static audit, not evidence that
 all rendering or shader requirements are satisfied. The new complete runtime
 still needs cloud compilation and owner-run rendering verification.
 
+The executable variants also contain `330` immediately beside a `#version %s`
+shader-preprocessor string. Referenced shader files use `gl_VertexID`, integer
+attributes and explicit output locations. This is strong static evidence of a
+GLSL 3.30 requirement after function loading, while the recorded game context is
+legacy 2.1. The alias patch does not implement that shader language. Treat shader
+compilation as a separate prerequisite to verify on the next real launch.
+
 ## Existing Wine path
 
 CodeWeavers' published 26.3 source, `sources/wine/dlls/winemac.drv/opengl.c`, creates

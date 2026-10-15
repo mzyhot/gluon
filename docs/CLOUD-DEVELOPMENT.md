@@ -74,6 +74,15 @@ stops its server afterward. Module/loader checks can pass without a GPU; missing
 native CGL or Metal capability is reported as a skipped rendering prerequisite.
 Timeouts and failed assertions fail the job. Logs and `results.json` are uploaded.
 
+Completed runtimes and compiled probes are preserved for three days before runtime
+checks start. A failed check can then be retried on a fresh cloud runner without
+recompiling. Dispatch the same Build workflow with `recheck_run_id=<build-run-id>`
+and a package version. Rechecks verify the originating repository, archive digest,
+runtime patch/build stamps and compiled-probe source hashes before running the
+bounded checks. Packaging still requires success, and rechecks never publish a
+release. The harness waits for prefix setup to become idle before loading probe
+DLLs; unbuffered Vulkan stage logs identify where a later timeout occurs.
+
 GitHub documents the [workflow timeouts and concurrency controls](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)
 used to bound cloud runs. Workflow dispatch and monitoring via `gh` run locally as
 API requests; the workflow jobs themselves run on GitHub's machines.

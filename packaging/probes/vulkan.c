@@ -121,6 +121,8 @@ done:
 
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    puts("Vulkan probe: entered main");
     PFN_vkGetInstanceProcAddr get;
     PFN_vkEnumerateInstanceExtensionProperties enumerate;
     PFN_vkEnumerateInstanceVersion version;
@@ -130,6 +132,7 @@ int main(int argc, char **argv)
     int device_check = 0, api_1_0 = 0, status = 1;
 #ifdef WINE_UNIX_LIB
     if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "--device") && strcmp(argv[2], "--device-1.0"))) return 2;
+    puts("Vulkan probe: loading native library");
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!library) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 1; }
     get = (PFN_vkGetInstanceProcAddr)dlsym(library, "vkGetInstanceProcAddr");
@@ -137,17 +140,21 @@ int main(int argc, char **argv)
     api_1_0 = argc == 3 && !strcmp(argv[2], "--device-1.0");
 #else
     if (argc > 2 || (argc == 2 && strcmp(argv[1], "--device") && strcmp(argv[1], "--device-1.0"))) return 2;
+    puts("Vulkan probe: loading vulkan-1.dll");
     HMODULE library = LoadLibraryA("vulkan-1.dll");
     if (!library) { fprintf(stderr, "LoadLibrary(vulkan-1.dll): %lu\n", (unsigned long)GetLastError()); return 1; }
     get = (PFN_vkGetInstanceProcAddr)GetProcAddress(library, "vkGetInstanceProcAddr");
     device_check = argc == 2;
     api_1_0 = argc == 2 && !strcmp(argv[1], "--device-1.0");
 #endif
+    puts("Vulkan probe: library loaded");
     if (!get) { fputs("Missing vkGetInstanceProcAddr\n", stderr); goto done; }
     enumerate = (PFN_vkEnumerateInstanceExtensionProperties)get(NULL, "vkEnumerateInstanceExtensionProperties");
     version = (PFN_vkEnumerateInstanceVersion)get(NULL, "vkEnumerateInstanceVersion");
     if (!enumerate) { fputs("Missing vkEnumerateInstanceExtensionProperties\n", stderr); goto done; }
+    puts("Vulkan probe: querying instance version");
     if (version && (result = version(&api)) != VK_SUCCESS) goto done;
+    puts("Vulkan probe: querying instance extensions");
     if ((result = enumerate(NULL, &count, NULL)) != VK_SUCCESS || !count) goto done;
     if (!(extensions = calloc(count, sizeof(*extensions)))) goto done;
     if ((result = enumerate(NULL, &count, extensions)) != VK_SUCCESS) goto done;
@@ -176,9 +183,12 @@ done:
     if (status) fputs("Vulkan probe failed\n", stderr);
     free(extensions);
 #ifdef WINE_UNIX_LIB
+    puts("Vulkan probe: closing native library");
     dlclose(library);
 #else
+    puts("Vulkan probe: freeing vulkan-1.dll");
     FreeLibrary(library);
 #endif
+    puts("Vulkan probe: finished");
     return status;
 }

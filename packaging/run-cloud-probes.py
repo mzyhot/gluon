@@ -89,6 +89,9 @@ def main():
                                 str(runtime / "lib/libMoltenVK.dylib"), "--device"],
                            allow_unavailable=True)
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
+        # wineboot can return while setup/service children are still running.
+        # Match the launcher's first-run barrier before probing other DLLs.
+        run("wine-prefix-idle", [server, "-w"], seconds=30)
         for arch in ("x86_64", "i686"):
             run(f"runtime-dependencies-{arch}", [wine, str(probes / f"dependencies-{arch}.exe")])
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])
