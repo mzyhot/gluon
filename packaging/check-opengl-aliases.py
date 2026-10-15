@@ -19,6 +19,9 @@ ALIAS_GROUPS = (("GL_VERSION_3_0", "GL_EXT_gpu_shader4", 34),
                 ("GL_VERSION_3_1", "GL_ARB_draw_instanced", 2),
                 ("GL_VERSION_3_1", "GL_EXT_draw_instanced", 2))
 PATCH = Path(__file__).parent / "patches/wine-opengl-promoted-aliases.patch"
+GL_CAPABILITY_GATE = re.compile(
+    r'if\s*\(\s*!strncmp\s*\(\s*name\s*,\s*"gl"\s*,\s*2\s*\)\s*&&\s*'
+    r'!is_any_extension_supported\s*\(\s*ctx\s*,\s*found->extension\s*\)\s*\)\s*\{')
 
 
 def require(condition, message):
@@ -174,14 +177,16 @@ def validate(wine_root, registry, wrapper):
             set(actual_pairs) == pairs | existing_pairs,
             "Wine alternatives contain an unexpected or duplicate fallback")
 
-    # This source guard must precede the shared driver-pointer cache. Otherwise a
-    # lookup made on another context can bypass the current extension/version gate.
+    # GL capability checks must precede the shared driver-pointer cache, while
+    # WGL's prepopulated Wine dispatch slots retain their separate extension path.
     current = re.search(r"get_current_context\s*\(\s*teb\s*,\s*NULL\s*,\s*NULL\s*\)", function)
-    gate = re.search(r"if\s*\(\s*!is_any_extension_supported\s*\(\s*ctx\s*,\s*found->extension\s*\)\s*\)\s*\{",
-                     function)
+    gate = GL_CAPABILITY_GATE.search(function)
     cache = re.search(r"if\s*\(\s*!\*func_ptr\s*\)", function)
     require(current and gate and cache and current.start() < gate.start() < cache.start(),
-            "Current-context capability check must precede the driver-pointer cache")
+            "Current-context GL-only capability check must precede the driver-pointer cache")
+    capability_calls = re.findall(r"\bis_any_extension_supported\s*\(", function[:cache.start()])
+    require(len(capability_calls) == 1,
+            "WGL dispatch must not pass through an additional GL extension gate")
     guarded = block(function, gate.end() - 1)
     loop = re.search(r"for\s*\(\s*i\s*=\s*0\s*;\s*i\s*<\s*ARRAY_SIZE\(alternatives\)\s*;\s*i\+\+\s*\)\s*\{",
                      guarded)
@@ -280,9 +285,23 @@ def self_test(wine_root, registry, wrapper):
         require(count == 1, "Self-test requires exactly one successful fallback return")
         reject(label, registry, changed, "continue failed candidates and accept registry index zero")
 
+    gate = GL_CAPABILITY_GATE.search(source)
+    require(gate is not None, "Self-test requires the GL-only capability gate")
+    changed = source[:gate.start()] + source[gate.start():].replace(
+        '!strncmp( name, "gl", 2 ) && ', "", 1)
+    require(changed != source, "Self-test requires the checked GL namespace condition")
+    reject("unconditional GL gate rejects WGL dispatch", registry, changed,
+           "GL-only capability check must precede")
+
+    cache = re.search(r"if\s*\(\s*!\*func_ptr\s*\)", source)
+    changed = (source[:cache.start()] +
+               "if (!is_any_extension_supported( ctx, found->extension )) return (void *)-1;\n" +
+               source[cache.start():])
+    reject("additional WGL gate before cache", registry, changed,
+           "WGL dispatch must not pass through")
+
     # Model the original cache hazard with valid C: put the extension guard inside
     # the pointer-cache condition, where later contexts would skip it.
-    gate = re.search(r"if\s*\(\s*!is_any_extension_supported\s*\(\s*ctx\s*,\s*found->extension\s*\)\s*\)\s*\{", source)
     guarded = block(source, gate.end() - 1)
     gate_end = gate.end() + len(guarded) + 1
     moved = source[:gate.start()] + source[gate_end:]

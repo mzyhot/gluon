@@ -59,9 +59,34 @@ still needs cloud compilation and owner-run rendering verification.
 The executable variants also contain `330` immediately beside a `#version %s`
 shader-preprocessor string. Referenced shader files use `gl_VertexID`, integer
 attributes and explicit output locations. This is strong static evidence of a
-GLSL 3.30 requirement after function loading, while the recorded game context is
-legacy 2.1. The alias patch does not implement that shader language. Treat shader
-compilation as a separate prerequisite to verify on the next real launch.
+GLSL 3.30 requirement. The recorded legacy context precedes the function-loader
+assertions; it does not establish which context the game would request afterward.
+The alias patch does not add a shader language. Context creation and shader
+compilation still require a successful real launch.
+
+## WGL dispatch regression (2026-10-15)
+
+With the complete instancing runtime selected, the owner passed the earlier
+lookup and reached `wglCreateContextAttribsARB could not be loaded`
+(`code\\gl_functions_list.h:118`). Wine already implements this Windows API.
+`win32u/opengl.c` advertises `WGL_ARB_create_context` through its separate WGL
+extension string and prepopulates its dispatch slot. The moved pre-cache GL
+capability guard incorrectly checked that WGL entry against the current GL
+extension array and rejected it before reaching the populated slot.
+
+The guard now applies only to `gl*` names. GL lookups retain their current-context
+check before shared cached pointers; WGL entries retain Wine's original dispatch
+availability path. An absent WGL slot still fails driver lookup, and every lookup
+still needs an active context. This restores the context-creation and WGL
+extension-string thunks without changing context versions or forcing a profile.
+The next requested context attributes remain unknown until the game can complete
+its function loading.
+
+An isolated cloud C fixture compiles the exact patched resolver with controlled
+dispatch slots and capabilities, including WGL context/extension-string entries,
+missing entries, no active context, and a cached GL pointer returning to an
+unsupported context. The native WGL probe checks these WGL thunks in legacy,
+core and restored legacy contexts when a CGL-capable host is available.
 
 ## Existing Wine path
 

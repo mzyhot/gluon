@@ -1,12 +1,14 @@
 --- a/dlls/opengl32/unix_wgl.c
 +++ b/dlls/opengl32/unix_wgl.c
-@@ -983,32 +983,80 @@
+@@ -983,32 +983,82 @@
          return (void *)-1;
      }
  
-+    /* The dispatch table is shared, but capabilities belong to the current
-+     * context. Recheck them before using a cached native entry point. */
-+    if (!is_any_extension_supported( ctx, found->extension ))
++    /* GL dispatch pointers are shared, but GL capabilities belong to the
++     * current context. Recheck them before using a cached native entry point.
++     * WGL uses its own extension string and prepopulated Wine dispatch slots;
++     * preserve that path instead of checking WGL requirements as GL extensions. */
++    if (!strncmp( name, "gl", 2 ) && !is_any_extension_supported( ctx, found->extension ))
 +    {
 +        unsigned int i;
 +        static const struct { const char *name, *alt; } alternatives[] =

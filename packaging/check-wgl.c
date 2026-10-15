@@ -27,6 +27,8 @@ typedef void (APIENTRY *bind_framebuffer_fn)(GLenum, GLuint);
 typedef void (APIENTRY *framebuffer_texture_fn)(GLenum, GLenum, GLenum, GLuint, GLint);
 typedef GLenum (APIENTRY *check_framebuffer_fn)(GLenum);
 typedef HGLRC (WINAPI *create_context_fn)(HDC, HGLRC, const int *);
+typedef const char *(WINAPI *wgl_extensions_arb_fn)(HDC);
+typedef const char *(WINAPI *wgl_extensions_ext_fn)(void);
 
 static int has_extension(const char *list, const char *name)
 {
@@ -37,6 +39,32 @@ static int has_extension(const char *list, const char *name)
         if ((match == list || match[-1] == ' ') &&
             (match[length] == 0 || match[length] == ' ')) return 1;
         list = match + length;
+    }
+    return 0;
+}
+
+static int probe_wgl_dispatch(HDC dc, const char *phase)
+{
+    wgl_extensions_arb_fn arb = (wgl_extensions_arb_fn)(uintptr_t)
+        wglGetProcAddress("wglGetExtensionsStringARB");
+    wgl_extensions_ext_fn ext = (wgl_extensions_ext_fn)(uintptr_t)
+        wglGetProcAddress("wglGetExtensionsStringEXT");
+    create_context_fn create = (create_context_fn)(uintptr_t)
+        wglGetProcAddress("wglCreateContextAttribsARB");
+    const char *extensions;
+    printf("%swglGetExtensionsStringARB=%s wglGetExtensionsStringEXT=%s wglCreateContextAttribsARB=%s\n",
+           phase, arb ? "present" : "absent", ext ? "present" : "absent", create ? "present" : "absent");
+    if (!arb || !ext) {
+        fprintf(stderr, "%sWine's WGL extension-string dispatch is unavailable.\n", phase);
+        return 1;
+    }
+    extensions = arb(dc);
+    if (!extensions || !ext()) return 1;
+    printf("%sWGL_ARB_create_context=%s\n", phase,
+           has_extension(extensions, "WGL_ARB_create_context") ? "yes" : "no");
+    if (has_extension(extensions, "WGL_ARB_create_context") && !create) {
+        fprintf(stderr, "%sAdvertised WGL context creation was rejected by dispatch.\n", phase);
+        return 1;
     }
     return 0;
 }
@@ -234,6 +262,7 @@ int main(int argc, char **argv)
     if (!SetPixelFormat(dc, ChoosePixelFormat(dc, &format), &format)) return 1;
     context = wglCreateContext(dc);
     if (!context || !wglMakeCurrent(dc, context)) return 1;
+    failed |= probe_wgl_dispatch(dc, "");
 
     snprintf(legacy_version, sizeof(legacy_version), "%s", glGetString(GL_VERSION));
     printf("GL_VERSION=%s\n", legacy_version);
@@ -283,6 +312,7 @@ int main(int argc, char **argv)
         core_context = create_context(dc, NULL, attributes);
     }
     if (core_context && wglMakeCurrent(dc, core_context)) {
+        failed |= probe_wgl_dispatch(dc, "core_");
         printf("core_GL_VERSION=%s\n", glGetString(GL_VERSION));
         PROC core_stringi = wglGetProcAddress("glGetStringi");
         PROC core_pointer = wglGetProcAddress("glVertexAttribIPointer");
@@ -296,6 +326,7 @@ int main(int argc, char **argv)
         if (require_alias && (!core_arrays || !core_elements)) failed = 1;
         if (!wglMakeCurrent(dc, context)) failed = 1;
         else {
+            failed |= probe_wgl_dispatch(dc, "after_switch_");
             const char *after = (const char *)glGetString(GL_VERSION);
             printf("returned_legacy_GL_VERSION=%s\n", after);
             if (strcmp(legacy_version, after)) failed = 1;

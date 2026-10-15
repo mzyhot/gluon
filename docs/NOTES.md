@@ -697,8 +697,22 @@ unconfirmed shutdown as failure. The host has a separate outer deadline.
 The local offline suite ran 103 tests: 100 passed and three existing macOS
 platform fixtures were skipped. Native host compilation, Cocoa fixtures, and the complete naming runtime
 are assigned to GitHub Actions; source checks already passed the exact naming
-helper's 24 cases and rejected the original suffix bug. Actual Steam Stop and
-Dock appearance require a normal owner-run session after installation.
+helper's 24 cases and rejected the original suffix bug. The owner confirmed Steam
+Stop works on a fresh session. The launch log records the native host receiving
+Cocoa quit, forwarding TERM, and the child entering prefix cleanup. The tested
+host/launcher/session module were installed with rollback under
+`build/local-install-backups/<id>/`. Dock appearance
+still requires the rebuilt naming runtime.
+
+The same owner-run Primordialis retry passed the previous lookup and stopped at
+`wglCreateContextAttribsARB` (`code\\gl_functions_list.h:118`). This revealed a
+regression in the pre-cache capability check: it checked WGL dispatch entries
+against GL extensions. Wine already advertises and implements context creation
+through its separate WGL path. The guard is now scoped to GL names, with an exact
+resolver fixture and explicit WGL lookups in the runtime probe. The superseded
+naming build 38723411770 was canceled; the corrected patch requires a fresh
+complete build. The early legacy trace does not prove the game cannot request
+its own modern context after function loading.
 
 ## Open items
 
@@ -711,8 +725,8 @@ Dock appearance require a normal owner-run session after installation.
 2. **Library UI.** Tested through `app_install` and `steam://rungameid`. The Install
    button was confirmed enabled by the owner after Happy Wheels installation recovery.
    Platform icons and the remaining library flows are untested.
-3. **Steam's Stop button.** Validate the native host's Cocoa-quit handoff through
-   the actual Steam UI after the tested cloud build is installed.
+3. **Steam's Stop button.** Fixed through the native host; owner-confirmed on
+   a fresh session, with the Cocoa-quit handoff recorded in the launcher log.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
    "init error gone" with People Playground; local achievement caches confirm persisted
    unlocks. The owner confirmed Valve's real overlay and achievement popup in Happy
