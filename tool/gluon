@@ -17,12 +17,20 @@
 #   GLUON_RUNTIME     runtime folder to use; default is $GLUON_HOME/runtime/current
 #   GLUON_EXTRA_ARGS  extra arguments appended to the game's command line
 #   GLUON_DRY_RUN     if set, log what would be started and exit 0
-#   GLUON_CAFFEINATE  0 lets the Mac and display sleep during a session (default 1)
-#   WINEMSYNC         0 turns off msync for a plain Wine runtime (default 1)
 #
-# Per-game settings: $GLUON_HOME/games/<appid>.env, one NAME=value per line, applied as
-# environment before anything else is decided (e.g. GLUON_RUNTIME=wine-stable,
-# WINEMSYNC=0, GLUON_GL_COMPAT_AS_CORE=1, PROTON_NO_MSYNC=1, PROTON_MAC_GFX=wined3d).
+# Switches (all on by default; set to 0 to turn one off):
+#   GLUON_APP_BUNDLE         start each game from its own app bundle (focus, name, Game Mode)
+#   GLUON_FOCUS              bring the game to the front when its window appears
+#   GLUON_CAFFEINATE         keep the Mac and display awake during a session
+#   GLUON_OVERLAY            load Steam's overlay into the game
+#   GLUON_STEAM_BRIDGE       let the game reach the Steam client (achievements, overlay)
+#   GLUON_GL_COMPAT_AS_CORE  map OpenGL 3.x compatibility requests to the core profile
+#   WINEMSYNC                msync for plain Wine runtimes
+#
+# Settings are NAME=value lines in $GLUON_HOME/settings.env (every game) and
+# $GLUON_HOME/games/<appid>.env (one game), or "%command% NAME=value" in a game's
+# Steam Launch Options. They apply before anything else is decided (e.g.
+# GLUON_RUNTIME=wine-stable, PROTON_NO_MSYNC=1, PROTON_MAC_GFX=wined3d).
 
 # Steam preserves its intended list separately in STEAM_DYLD_INSERT_LIBRARIES.
 # Keep the launcher's first helper commands free of native insertions as well.
@@ -83,8 +91,10 @@ source_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
 helper_lib="$GLUON_HOME/lib"
 [ -f "$helper_lib/gluon/runtime.py" ] || helper_lib="$source_root"
 
-settings="$GLUON_HOME/games/$appid.env"
-if [ -f "$settings" ]; then
+# Settings, later ones winning: every game ($GLUON_HOME/settings.env), this game
+# ($GLUON_HOME/games/<appid>.env), then the game's Steam launch options.
+for settings in "$GLUON_HOME/settings.env" "$GLUON_HOME/games/$appid.env"; do
+    [ -f "$settings" ] || continue
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
             '' | '#'*) ;;
@@ -94,7 +104,29 @@ if [ -f "$settings" ]; then
                 ;;
         esac
     done < "$settings"
-fi
+done
+
+# Steam's Properties > Launch Options is each game's settings field: for example
+# "%command% GLUON_FOCUS=0 WINEMSYNC=0". Recognized settings after the program
+# are applied and removed before the game sees its arguments, as is a literal
+# %command% that Steam did not replace. Only these names are accepted.
+setting_name='^(GLUON_[A-Z0-9_]+|WINEMSYNC|WINEDEBUG|WINEDLLOVERRIDES|ROSETTA_ADVERTISE_AVX|DXMT_[A-Z0-9_]+|MVK_CONFIG_[A-Z0-9_]+|PROTON_[A-Z0-9_]+)='
+game_arguments=()
+position=0
+for argument in "$@"; do
+    position=$((position + 1))
+    if [ "$position" -gt 2 ]; then
+        if [ "$argument" = "%command%" ]; then
+            continue
+        elif [[ "$argument" =~ $setting_name ]]; then
+            export "$argument"
+            log "  launch option $argument"
+            continue
+        fi
+    fi
+    game_arguments+=("$argument")
+done
+set -- "${game_arguments[@]}"
 
 # Rosetta settings every Windows runtime here benefits from (both are documented
 # switches; set a variable to 0 in the per-game settings to turn it off).
@@ -177,6 +209,10 @@ export WINEDEBUG="${WINEDEBUG:-fixme-all}"
 # setup and shutdown, inherits it, and an earlier server is waited for first.
 # WINEMSYNC=0 in a game's settings turns it off; other runtimes ignore it.
 [ "$kind" != wine ] || export WINEMSYNC="${WINEMSYNC:-1}"
+# Map OpenGL 3.0-4.1 compatibility-profile requests, which macOS cannot create,
+# to its core profile instead of failing them. Applies to every game; set
+# GLUON_GL_COMPAT_AS_CORE=0 to keep Wine's original rejection.
+export GLUON_GL_COMPAT_AS_CORE="${GLUON_GL_COMPAT_AS_CORE:-1}"
 if [ -d "$runtime/lib/gstreamer-1.0" ]; then
     export GST_PLUGIN_SYSTEM_PATH_1_0="$runtime/lib/gstreamer-1.0"
     export GST_PLUGIN_SCANNER_1_0="$runtime/libexec/gstreamer-1.0/gst-plugin-scanner"
@@ -224,7 +260,8 @@ fi
 # so that the game's steam_api finds the running Mac Steam client.
 steam_bridge=""
 if [ "$kind" = wine ] && [ -f "$runtime/lib/wine/x86_64-windows/lsteamclient.dll" ] \
-    && [ -f "$runtime/lib/wine/x86_64-windows/steam.exe" ] && [ -z "$GLUON_NO_STEAM_BRIDGE" ]; then
+    && [ -f "$runtime/lib/wine/x86_64-windows/steam.exe" ] && [ -z "$GLUON_NO_STEAM_BRIDGE" ] \
+    && [ "${GLUON_STEAM_BRIDGE:-1}" != 0 ]; then
     steam_bridge=1
     if [ -n "$STEAM_CLIENT_CONFIG_FILE" ]; then
         client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
@@ -310,6 +347,19 @@ trap request_stop TERM INT HUP
 # Controller play produces no keyboard or mouse activity, so keep the system
 # and display awake for the whole session. caffeinate ends with this script.
 # GLUON_CAFFEINATE=0 in a game's settings turns it off.
+# The game command as Wine itself runs it, without an app bundle. Gluon's Wine
+# gives Steam's overlay to game processes only; an older runtime gets it
+# through dyld for the first process and everything that process starts.
+start_wine_directly() {
+    if [ -n "$overlay_insert" ] && [ -n "$overlay_scoped" ]; then
+        GLUON_OVERLAY_INSERT="$overlay_insert" "$runtime/bin/wine" "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+    elif [ -n "$overlay_insert" ]; then
+        DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+    else
+        "$runtime/bin/wine" "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+    fi
+}
+
 keep_awake() {
     [ "${GLUON_CAFFEINATE:-1}" != 0 ] && [ -x /usr/bin/caffeinate ] || return 0
     /usr/bin/caffeinate -d -i -w "$$" >/dev/null 2>&1 &
@@ -347,7 +397,8 @@ else
         run_wait "$wineserver" -w || fail "Could not wait for the previous session (see $WINE_LOG)"
     fi
     overlay_insert=""
-    if [ "${SteamClientLaunch:-}" = 1 ] && [ -n "${STEAM_DYLD_INSERT_LIBRARIES:-}" ]; then
+    if [ "${GLUON_OVERLAY:-1}" != 0 ] && [ "${SteamClientLaunch:-}" = 1 ] \
+        && [ -n "${STEAM_DYLD_INSERT_LIBRARIES:-}" ]; then
         overlay_lib="$GLUON_HOME/lib"
         [ -f "$overlay_lib/gluon/overlay.py" ] || overlay_lib="$source_root"
         if [ -f "$overlay_lib/gluon/overlay.py" ]; then
@@ -385,26 +436,37 @@ else
             : > "$compat/.gluon-steam-bridge"
             log "  steam bridge: registry entries written"
         fi
-        keep_awake
-        log "  starting Wine through the Steam helper (output in $WINE_LOG)"
-        launching=1
-        if [ -n "$overlay_insert" ]; then
-            log "  passing Steam's native overlay libraries to the Wine game host"
-            DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" \
-                'c:\windows\system32\steam.exe' "$exe" "$@" >> "$WINE_LOG" 2>&1 &
-        else
-            "$runtime/bin/wine" 'c:\windows\system32\steam.exe' "$exe" "$@" >> "$WINE_LOG" 2>&1 &
-        fi
+        game_command=('c:\windows\system32\steam.exe' "$exe" "$@")
     else
-        keep_awake
+        game_command=("$exe" "$@")
+    fi
+    keep_awake
+    overlay_scoped=""
+    if grep -qx wine-macos-overlay-scope "$runtime/licenses/gluon-wine-patches/APPLIED.txt" 2>/dev/null; then
+        overlay_scoped=1
+    fi
+    # Each game runs from its own app bundle, started through LaunchServices: macOS
+    # brings it to the front, names it and lets Game Mode recognize it. Wine keeps
+    # every process of the game in that bundle. GLUON_APP_BUNDLE=0 starts Wine
+    # directly instead; so does a bundle that LaunchServices never starts.
+    bundle=""
+    loader="$runtime/lib/wine/x86_64-unix/wine"
+    if [ "${GLUON_APP_BUNDLE:-1}" != 0 ] && [ -x "$loader" ] && [ -f "$runtime/lib/wine/x86_64-unix/ntdll.so" ] \
+        && [ -f "$helper_lib/gluon/appbundle.py" ]; then
+        bundle="$(PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
+            -m gluon.appbundle --home "$GLUON_HOME" --appid "$appid" --steamapps "${library:+$library/steamapps}" \
+            --fallback-name "$(basename "${install_dir:-$exe}" .exe)" --loader "$loader" \
+            --ntdll "$runtime/lib/wine/x86_64-unix/ntdll.so" --cwd "$(pwd)" --wine-log "$WINE_LOG" \
+            --overlay "$overlay_insert" ${overlay_scoped:+--overlay-scoped} 2>> "$LOG")" || bundle=""
+    fi
+    [ -z "$overlay_insert" ] || log "  passing Steam's native overlay libraries to the Wine game host"
+    launching=1
+    if [ -n "$bundle" ]; then
+        log "  starting ${bundle##*/} through LaunchServices (output in $WINE_LOG)"
+        /usr/bin/open -n -W -a "$bundle" --args "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+    else
         log "  starting Wine (output in $WINE_LOG)"
-        launching=1
-        if [ -n "$overlay_insert" ]; then
-            log "  passing Steam's native overlay libraries to the Wine game host"
-            DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
-        else
-            "$runtime/bin/wine" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
-        fi
+        start_wine_directly
     fi
     child_pid=$!
     launching=""
@@ -412,6 +474,20 @@ else
     wait "$child_pid"
     status=$?
     child_pid=""
+    if [ -n "$bundle" ] && [ -f "${bundle%/*}/session.env" ]; then
+        # The bundle never ran: its one-time session file is still unused.
+        rm -f "${bundle%/*}/session.env"
+        bundle=""
+        log "  the app bundle did not start (open exit status $status); starting Wine directly"
+        launching=1
+        start_wine_directly
+        child_pid=$!
+        launching=""
+        [ -z "$stop_requested" ] || stop_session
+        wait "$child_pid"
+        status=$?
+        child_pid=""
+    fi
     # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
     run_wait "$wineserver" -w
     server_status=$?
@@ -425,13 +501,19 @@ log "  session ended (exit status $status, ${elapsed}s)"
 
 # A game that dies right after starting would otherwise just vanish. Say so, with the
 # most telling line from this session's output and where the full log is.
-if [ "$status" -ne 0 ] && [ "$elapsed" -lt 90 ]; then
+# LaunchServices does not report a bundle's exit status, so a bundle launch
+# counts as a crash only when the log shows one.
+crash_lines='err:|error|assert|Unhandled|fatal'
+[ -z "$bundle" ] || crash_lines='assert|Unhandled|fatal'
+if { [ "$status" -ne 0 ] || [ -n "$bundle" ]; } && [ "$elapsed" -lt 90 ]; then
     reason="$(tail -n +"$((log_start + 1))" "$WINE_LOG" \
-        | grep -a -E 'err:|error|assert|Unhandled|fatal' \
+        | grep -a -E "$crash_lines" \
         | grep -a -v -E 'try_map_free_area|winediag|winebth|xalia|vrclient|Error while copying' \
         | tail -1 | cut -c1-160)"
-    log "  reported to the user: ${reason:-no error line found}"
-    notify "$(basename "$exe" .exe) stopped after ${elapsed}s" \
-        "${reason:-No error message was logged.} Log: $WINE_LOG"
+    if [ "$status" -ne 0 ] || [ -n "$reason" ]; then
+        log "  reported to the user: ${reason:-no error line found}"
+        notify "$(basename "$exe" .exe) stopped after ${elapsed}s" \
+            "${reason:-No error message was logged.} Log: $WINE_LOG"
+    fi
 fi
 exit "$status"

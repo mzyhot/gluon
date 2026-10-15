@@ -30,7 +30,9 @@ class LauncherStartupTests(unittest.TestCase):
 
         self.stub = "#!%s\n" % sys.executable + """import json, os, pathlib, sys
 event = {'role': pathlib.Path(sys.argv[0]).name,
-         'args': sys.argv[1:], 'dllpath': os.environ.get('WINEDLLPATH')}
+         'args': sys.argv[1:], 'dllpath': os.environ.get('WINEDLLPATH'),
+         'focus': os.environ.get('GLUON_FOCUS'), 'gl': os.environ.get('GLUON_GL_COMPAT_AS_CORE'),
+         'dyld': os.environ.get('DYLD_INSERT_LIBRARIES')}
 if event['role'] == 'notify':
     event['script'] = sys.stdin.read()
 with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
@@ -38,12 +40,26 @@ with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
 """
         self.notifier = self.root / "notify"
         self.executable(self.notifier)
+        # LaunchServices stand-in: it starts the bundle's executable without the
+        # caller's environment and waits, like open -n -W -a.
+        self.opener = self.root / "open"
+        self.opener.write_text("#!%s\n" % sys.executable + """import json, os, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
+    out.write(json.dumps({'role': 'open', 'args': args, 'dllpath': None}) + '\\n')
+if os.environ.get('FIXTURE_OPEN_FAILS') or args[:3] != ['-n', '-W', '-a'] or args[4] != '--args':
+    sys.exit(1)
+sys.exit(subprocess.call([os.path.join(args[3], 'Contents/MacOS/gluon-game'), *args[5:]],
+                         env={'PATH': '/usr/bin:/bin', 'HOME': os.environ.get('HOME', '')}))
+""")
+        self.opener.chmod(0o755)
         self.launcher = self.root / "bin/gluon"
         self.launcher.parent.mkdir()
         source = (ROOT / "tool/gluon").read_text()
         self.launcher.write_text(source.replace(
             "/usr/bin/arch -arm64 /usr/bin/python3", shlex.quote(sys.executable)
-        ).replace("/usr/bin/osascript", shlex.quote(str(self.notifier))))
+        ).replace("/usr/bin/osascript", shlex.quote(str(self.notifier))
+        ).replace("/usr/bin/open", shlex.quote(str(self.opener))))
         self.launcher.chmod(0o755)
 
         # Run the real bootstrap module from an isolated installation. It only
@@ -80,8 +96,8 @@ with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
         (runtime / "licenses").mkdir()
         return runtime
 
-    def run_launcher(self, **environment):
-        result = subprocess.run([str(self.launcher), "run", str(self.game)],
+    def run_launcher(self, *arguments, **environment):
+        result = subprocess.run([str(self.launcher), "run", str(self.game), *arguments],
                                 env=dict(self.environment, **environment),
                                 capture_output=True, text=True, timeout=5)
         events = ([json.loads(line) for line in self.trace.read_text().splitlines()]
@@ -136,6 +152,72 @@ with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
                       (self.home / "logs/launch-123.log").read_text())
         backup = next((self.home / "backups").glob("runtime-*/selection.json"))
         self.assertIsNone(json.loads(backup.read_text())["previous"])
+
+    def install_bundle_helpers(self):
+        for name in ("appbundle.py", "vdf.py"):
+            shutil.copy2(ROOT / "gluon" / name, self.home / "lib/gluon" / name)
+
+    def test_game_starts_from_its_app_bundle_through_launchservices(self):
+        self.install_bundle_helpers()
+        runtime = self.runtime()
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        opens = [event for event in events if event["role"] == "open"]
+        self.assertEqual(len(opens), 1, events)
+        bundle = Path(opens[0]["args"][3])
+        self.assertEqual(bundle.parent, self.home / "apps.noindex/123")
+        self.assertEqual(opens[0]["args"][5:], [str(self.game)])
+        # The loader inside the bundle ran with the session's environment.
+        self.assert_launch(events, str(runtime / "lib/wine"))
+        self.assertFalse((bundle.parent / "session.env").exists())
+
+    def test_bundle_that_never_starts_falls_back_to_wine(self):
+        self.install_bundle_helpers()
+        runtime = self.runtime()
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), FIXTURE_OPEN_FAILS="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len([event for event in events if event["role"] == "open"]), 1, events)
+        self.assert_launch(events, str(runtime / "lib/wine"))
+        self.assertFalse((self.home / "apps.noindex/123/session.env").exists())
+        self.assertIn("the app bundle did not start", (self.home / "logs/launch-123.log").read_text())
+
+    def test_app_bundle_can_be_turned_off(self):
+        self.install_bundle_helpers()
+        runtime = self.runtime()
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), GLUON_APP_BUNDLE="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(event["role"] == "open" for event in events), events)
+        self.assert_launch(events, str(runtime / "lib/wine"))
+
+    def test_steam_launch_options_set_switches_and_leave_game_arguments(self):
+        self.install_bundle_helpers()
+        runtime = self.runtime()
+        result, events = self.run_launcher(
+            "--windowed", "%command%", "GLUON_APP_BUNDLE=0", "GLUON_FOCUS=0",
+            "DYLD_INSERT_LIBRARIES=/not/a/setting.dylib", GLUON_RUNTIME=str(runtime))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(event["role"] == "open" for event in events), events)
+        game = [event for event in events if event["role"] == "wine"][-1]
+        self.assertEqual(game["args"], [str(self.game), "--windowed", "DYLD_INSERT_LIBRARIES=/not/a/setting.dylib"])
+        self.assertEqual(game["focus"], "0")
+        self.assertIsNone(game["dyld"])
+        log = (self.home / "logs/launch-123.log").read_text()
+        self.assertIn("launch option GLUON_APP_BUNDLE=0", log)
+        self.assertNotIn("launch option DYLD_", log)
+
+    def test_settings_for_every_game_and_compatibility_mapping_default(self):
+        runtime = self.runtime()
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime))
+        self.assertEqual([event["gl"] for event in events if event["role"] == "wine"][-1], "1")
+        (self.home / "settings.env").write_text("# every game\nGLUON_GL_COMPAT_AS_CORE=0\nGLUON_FOCUS=0\n")
+        (self.home / "games").mkdir()
+        (self.home / "games/123.env").write_text("GLUON_FOCUS=1\n")
+        self.trace.unlink()
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        game = [event for event in events if event["role"] == "wine"][-1]
+        self.assertEqual(game["gl"], "0")
+        self.assertEqual(game["focus"], "1", "a game's own settings must win over settings for every game")
 
     def test_dry_run_does_not_bootstrap_or_start_pending_runtime(self):
         runtime = self.runtime()
