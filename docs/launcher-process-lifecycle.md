@@ -8,21 +8,22 @@ Steam's first termination request.
 ## Evidence and limits
 
 The installed Steam UI's Stop confirmation calls
-`SteamClient.Apps.TerminateApp(gameid, false)`. Its focused REA JavaScript evidence
-is `[evidence ID removed]`.
-Earlier calls to that API and `app_stop` did not produce a delivered-signal entry
-in Gluon's launcher log; injected TERM fixtures did reach the shell trap. These
+`SteamClient.Apps.TerminateApp(gameid, false)`. Earlier calls to that API and
+`app_stop` did not produce a delivered-signal entry in Gluon's launcher log; injected TERM fixtures did reach the shell trap. These
 observations establish a delivery gap, without identifying the native cause by
 themselves.
 
-Read-only native inspection used Steam's shipped `steamclient.dylib`, SHA-256
-`[hash removed]`, arm64 slice. REA Mach-O inventory evidence is
-`[evidence ID removed]`.
-The following addresses are unslid arm64 image addresses, observed in static
-instruction disassembly and Objective-C selector-reference bytes:
+Read-only static inspection of the arm64 slice of Steam's shipped
+`steamclient.dylib` found this sequence:
 
-| Location | Observation |
-|---|---|
+- The app stop path selects an active tracked PID from the game's process record
+  and inserts a process-kill request for it. Flags can select alternate or hard-stop
+  behavior.
+- The request's normal soft-stop path asks Cocoa to quit that PID through
+  `NSRunningApplication`'s `terminate` and returns its Boolean result.
+- If that result is false, the request is removed instead of being retained.
+- Only retained requests reach the later stages, which send INT (2), TERM (15),
+  then a hard termination.
 
 The native path provides a concrete explanation for a shell PID rejecting Stop:
 a failed initial Cocoa quit can discard the request before POSIX escalation.
@@ -30,11 +31,8 @@ This is a static explanation consistent with the logs; it is not a recording of
 the user's Stop click or proof that every Steam termination path uses the same
 flags. Symbol presence alone was not used to infer the path.
 
-An additional REA CLI function query selected Ghidra 12.1.4 explicitly, with a
-512 MB heap, one available CPU, reduced priority, a 45-second startup deadline and
-a 60-second external deadline. Its sandboxed headless launch failed before
-analysis. No decompiler result is claimed. Hopper was not used, and no Steam,
-Wine or game executable was launched by this investigation.
+An additional decompiler query failed before analysis, so no decompiler result
+is claimed. No Steam, Wine or game executable was launched by this investigation.
 
 ## Native host
 

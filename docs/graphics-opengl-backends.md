@@ -100,13 +100,14 @@ and loader path, not Primordialis rendering or compatibility-profile support.
 
 ## Primordialis context request
 
-The installed current/AVX executable has SHA-256
-`[hash removed]`.
-Its 32-byte attribute list at file offset [address removed] contains
-`{0x2091, 3, 0x2092, 3, 0x2094, 0, 0x9126, 2}`. Function [address removed]
-copies this list to its stack, appends zero, and passes it to the indirect call
-at [address removed]. The loader stores `wglGetProcAddress("wglCreateContextAttribsARB")`
-in that same pointer slot, [address removed]. The SSE3 variant has the same list.
+Static inspection of the installed current/AVX executable found one context
+attribute list: major version 3, minor version 3, flags 0 and the
+compatibility-profile bit (`WGL_CONTEXT_MAJOR_VERSION_ARB`,
+`WGL_CONTEXT_MINOR_VERSION_ARB`, `WGL_CONTEXT_FLAGS_ARB`,
+`WGL_CONTEXT_PROFILE_MASK_ARB`). The context-creation routine passes it, zero
+terminated, to the pointer the loader obtains from
+`wglGetProcAddress("wglCreateContextAttribsARB")`. The SSE3 variant has the
+same list.
 This ties OpenGL 3.3, flags zero, and the compatibility profile to the actual
 context-creation call site; it is not a runtime observation.
 
@@ -121,7 +122,7 @@ but a default VAO alone does not restore fixed-function drawing, client-memory
 arrays, quads, line behavior, or all sharing semantics. General
 compatibility-profile support is unfinished. The static investigation did not
 execute the game. Whole-binary Ghidra analysis was stopped twice (timeout, then
-host heat); the call-site audit below uses linear disassembly only.
+local resource limits); the call-site audit below uses linear disassembly only.
 
 ## Opt-in compatibility-as-core mapping (2026-10-15)
 
