@@ -3,6 +3,7 @@
 #
 # It installs into ~/Library/Application Support/Gluon:
 #   bin/gluon            launcher Steam starts for Windows games
+#   bin/gluon-launcher-host  receives macOS application quit requests for the launcher
 #   bin/gluon-agent      background helper (run by launchd every minute)
 #   bin/gluon-uninstall
 #   lib/gluon/           the Python package
@@ -20,6 +21,8 @@ case "$version" in
 esac
 here="$(cd "$(dirname "$0")/.." && pwd)"
 . "$here/packaging/require-cloud.sh"
+launcher_host="${GLUON_PKG_LAUNCHER_HOST:-$here/build/launcher-host/gluon-launcher-host}"
+[ -x "$launcher_host" ] || { echo "tested native launcher host missing: $launcher_host" >&2; exit 1; }
 runtime_src="${GLUON_PKG_RUNTIME:-$(cd "$HOME/Library/Application Support/Gluon/runtime/current" && pwd -P)}"
 [ -x "$runtime_src/proton" ] || [ -x "$runtime_src/bin/wine" ] || { echo "no runtime at $runtime_src" >&2; exit 1; }
 [ -d "$runtime_src/licenses" ] || { echo "runtime at $runtime_src has no licenses folder; refusing to package it" >&2; exit 1; }
@@ -36,6 +39,7 @@ root="$stage/root/Library/Application Support/Gluon"
 mkdir -p "$root/bin" "$root/lib/gluon" "$root/runtime" "$here/dist"
 
 install -m 755 "$here/tool/gluon" "$here/packaging/gluon-agent" "$here/packaging/gluon-uninstall" "$root/bin/"
+install -m 755 "$launcher_host" "$root/bin/gluon-launcher-host"
 install -m 644 "$here"/gluon/*.py "$root/lib/gluon/"
 # Left out: prefix templates and locks a runtime creates on first use, and a bundled
 # runtime's own separate launcher program (Gluon is driven by Steam, not by an app).

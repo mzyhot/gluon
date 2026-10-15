@@ -74,6 +74,12 @@ GitHub-hosted macOS runner. Runtime build results and compile-only probe evidenc
 belong to that workflow. Check its logs before interpreting a package as ready;
 source checks do not replace a successful macOS build or rendering validation.
 
+Before the runtime build, a separate macOS job compiles a universal native
+launcher host and checks Cocoa quit delivery, inherited signal state, argument
+and status propagation, and independent concurrent hosts. It uses harmless shell
+fixtures under a 30-second deadline; no Wine or game runs in that job. Packaging
+requires that tested host and installs it beside the shell launcher.
+
 The macOS job additionally runs each complete-runtime probe with a 30-second
 deadline (60 seconds for first prefix setup), uses one disposable CI prefix and
 stops its server afterward. Module/loader checks can pass without a GPU; missing

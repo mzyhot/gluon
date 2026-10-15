@@ -27,7 +27,7 @@ record('started')
 
 def block():
     def finish(number, frame):
-        if phase == 'proton-ignores-term' and number == signal.SIGTERM:
+        if phase in ('proton-ignores-term', 'shutdown-timeout') and number == signal.SIGTERM:
             record('ignored', signal=number)
             return
         record('exited', signal=number)
@@ -43,6 +43,11 @@ if role == 'notify':
     sys.exit(0)
 elif role == 'wineserver':
     if args == ['-k']:
+        if phase == 'shutdown-timeout':
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            record('shutdown-blocked')
+            while True:
+                signal.pause()
         (root / 'stopped').touch()
         try:
             active = json.loads((root / 'active.json').read_text())
@@ -50,10 +55,13 @@ elif role == 'wineserver':
         except (FileNotFoundError, ProcessLookupError):
             pass
     elif args == ['-w'] and not (root / 'stopped').exists():
+        if phase == 'final-wait-failure':
+            print('err:fixture: final server wait failed', file=sys.stderr)
+            sys.exit(42)
         if phase in ('registry-wait', 'prelaunch-wait', 'final-wait'):
             block()
 elif role == 'proton':
-    if phase in ('proton', 'proton-ignores-term'):
+    if phase in ('proton', 'proton-ignores-term', 'shutdown-timeout'):
         block()
 elif args[:2] == ['wineboot', '--init']:
     if phase == 'wineboot':
@@ -126,9 +134,15 @@ class LauncherLifecycleTests(unittest.TestCase):
         notifier = self.root / "notify"
         notifier.write_text("#!%s\n%s" % (sys.executable, STUB))
         notifier.chmod(0o755)
+        package = self.home / "lib/gluon"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "session.py").write_text((source.parents[1] / "gluon/session.py").read_text())
         launcher = self.root / "launcher"
         # Preserve launcher behavior while recording notifications without using macOS UI.
-        launcher.write_text(source.read_text().replace("/usr/bin/osascript", shlex.quote(str(notifier))))
+        launcher.write_text(source.read_text().replace(
+            "/usr/bin/arch -arm64 /usr/bin/python3", shlex.quote(sys.executable)
+        ).replace("/usr/bin/osascript", shlex.quote(str(notifier))))
         launcher.chmod(0o755)
         self.process = subprocess.Popen([str(launcher), verb, str(self.game)],
                                         env=self.environment, stdout=subprocess.PIPE,
@@ -211,6 +225,34 @@ class LauncherLifecycleTests(unittest.TestCase):
 
     def test_stop_reaps_owned_proton_wrapper_that_ignores_term(self):
         self.assert_cancelled("proton-ignores-term", proton=True)
+
+    def test_failed_final_server_wait_reports_launch_failure(self):
+        self.prepare("final-wait-failure")
+        self.start()
+        output = self.process.communicate(timeout=4)
+        self.assertEqual(self.process.returncode, 42, output)
+        events = self.events()
+        self.assertTrue(any(event["event"] == "game" for event in events), events)
+        notices = [event for event in events if event["role"] == "notify"]
+        self.assertEqual(len(notices), 1, events)
+        self.assertIn("final server wait failed", notices[0]["args"][2])
+        self.assertIn(str(self.home / "logs/wine-12345.log"), notices[0]["args"][2])
+
+    def test_shutdown_timeout_reports_failure_and_reaps_owned_wrapper(self):
+        self.prepare("shutdown-timeout", proton=True)
+        self.start()
+        blocked = self.wait_for_blocked()
+        self.process.send_signal(signal.SIGTERM)
+        output = self.process.communicate(timeout=8)
+        self.assertEqual(self.process.returncode, 1, output)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(blocked["pid"], 0)
+        shutdown = [event for event in self.events() if event["role"] == "wineserver"
+                    and event["event"] == "started"]
+        self.assertEqual([event["args"] for event in shutdown], [["-k"], ["-w"]])
+        self.assertTrue(all(event["prefix"] == str(self.prefix) for event in shutdown))
+        self.assertIn("wineserver -k timed out after 5s", (self.home / "logs/wine-12345.log").read_text())
+        self.assertIn("prefix shutdown could not be confirmed", (self.home / "logs/launch-12345.log").read_text())
 
     def test_registry_failure_does_not_mark_bridge_initialized_or_start_game(self):
         self.prepare("registry-failure", bridge=True)

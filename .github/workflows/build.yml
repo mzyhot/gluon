@@ -27,14 +27,42 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  launcher-host:
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and check native launcher host
+        run: packaging/check-launcher-host.sh
+
+      - name: Preserve tested launcher host
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-host
+          path: build/launcher-host/gluon-launcher-host
+          if-no-files-found: error
+          retention-days: 7
+
   build:
     if: ${{ !inputs.recheck_run_id }}
+    needs: launcher-host
     runs-on: macos-15
     timeout-minutes: 240
     env:
       JOBS: "4"
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher-host
+          path: build/launcher-host
+
+      - name: Restore launcher host mode
+        run: chmod 755 build/launcher-host/gluon-launcher-host
 
       - name: Version
         id: version
@@ -153,6 +181,7 @@ jobs:
 
   recheck:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.recheck_run_id != '' }}
+    needs: launcher-host
     permissions:
       actions: read
       contents: read
@@ -163,6 +192,14 @@ jobs:
       GLUON_RECHECK_VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher-host
+          path: build/launcher-host
+
+      - name: Restore launcher host mode
+        run: chmod 755 build/launcher-host/gluon-launcher-host
 
       - name: Validate request and original build provenance
         env:

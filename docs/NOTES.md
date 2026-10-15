@@ -665,8 +665,40 @@ The fixture also checks that the input path remains unchanged and rejects a
 mutation reproducing the original suffix bug. Local validation applied and
 reverse-checked the patch against the pinned source and checked the source
 contract, three negative mutations and the local compilation guard. No helper was
-compiled locally. Cloud helper execution, a complete runtime rebuild and actual
-Dock appearance still require validation.
+compiled locally. Cloud source checks 38722851299 passed all 24 cases and rejected
+the original suffix bug. A complete runtime rebuild and actual Dock appearance
+still require validation.
+
+## OpenGL instancing build and native Stop handling (2026-10-15)
+
+The owner supplied Primordialis's next assertion: `glDrawArraysInstanced could
+not be loaded`. The promoted-alias patch now tries the registry-defined ARB and
+EXT instancing aliases with their existing extension checks. It continues after
+a failed candidate and preserves Wine's valid zero-index resolver result.
+Complete build 38677914371 at `29b562c` passed module, dependency, Vulkan loader,
+Vulkan device, and Direct3D 9 checks for both Windows ABIs. Native OpenGL and WGL
+rendering checks were skipped because the hosted runner lacks the CGL prerequisite.
+The package artifact digest and its contained package checksum were verified.
+Its complete runtime was staged alongside the old runtime and selected only in
+`games/3011360.env`; rollback is recorded under
+`build/local-install-backups/<id>/`. Rendering still
+needs an owner-run retry. No local Wine or native graphics probe was run.
+
+Native static inspection found a Steam process-kill path that starts with
+`NSRunningApplication terminate`; a false result can discard the request before
+later Unix signal stages. The evidence and its limits are recorded in
+`launcher-process-lifecycle.md`. A native accessory application host now keeps
+Steam's tracked PID through `exec`, accepts Cocoa quit, resets inherited child
+signals, and forwards cancellation only to its owned launcher child. Each host
+remains independent. The shell's prefix-specific shutdown helper gives each
+server command a five-second deadline, reaps its own helper, and reports an
+unconfirmed shutdown as failure. The host has a separate outer deadline.
+
+The local offline suite ran 103 tests: 100 passed and three existing macOS
+platform fixtures were skipped. Native host compilation, Cocoa fixtures, and the complete naming runtime
+are assigned to GitHub Actions; source checks already passed the exact naming
+helper's 24 cases and rejected the original suffix bug. Actual Steam Stop and
+Dock appearance require a normal owner-run session after installation.
 
 ## Open items
 
@@ -679,8 +711,8 @@ Dock appearance still require validation.
 2. **Library UI.** Tested through `app_install` and `steam://rungameid`. The Install
    button was confirmed enabled by the owner after Happy Wheels installation recovery.
    Platform icons and the remaining library flows are untested.
-3. **Steam's Stop button.** `app_stop` and `SteamClient.Apps.TerminateApp` did not
-   signal the launcher. Find out how the Mac client stops a game.
+3. **Steam's Stop button.** Validate the native host's Cocoa-quit handoff through
+   the actual Steam UI after the tested cloud build is installed.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
    "init error gone" with People Playground; local achievement caches confirm persisted
    unlocks. The owner confirmed Valve's real overlay and achievement popup in Happy

@@ -33,6 +33,16 @@ LOG="$LOG_DIR/launch-$appid.log"
 WINE_LOG="$LOG_DIR/wine-$appid.log"
 mkdir -p "$LOG_DIR"
 
+# Keep Steam's tracked PID while registering it as a macOS application. Steam
+# first sends that PID a Cocoa quit request, which a shell cannot receive.
+# The host gives this script a fresh signal state and owns it until cleanup ends.
+if [ "${GLUON_LAUNCHER_HOST:-}" != 1 ] && [ -z "$GLUON_DRY_RUN" ]; then
+    launcher_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    if [ -x "$launcher_dir/gluon-launcher-host" ]; then
+        exec "$launcher_dir/gluon-launcher-host" "$launcher_dir/${0##*/}" "$@" 2>> "$LOG"
+    fi
+fi
+
 log() {
     printf '%s [%s] %s\n' "${log_timestamp:-$(date '+%Y-%m-%d %H:%M:%S')}" "$$" "$*" >> "$LOG"
 }
@@ -262,15 +272,21 @@ stop_session() {
     # Terminate only the helper we own and the server selected by WINEPREFIX.
     # Wine children may outlive the helper, so confirm server shutdown too.
     signal_child TERM
-    "$wineserver" -k >> "$WINE_LOG" 2>&1 &
+    session_lib="$GLUON_HOME/lib"
+    [ -f "$session_lib/gluon/session.py" ] || session_lib="$source_root"
+    PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
+        /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session --wineserver "$wineserver" >> "$WINE_LOG" 2>&1 &
     wait $!
-    "$wineserver" -w >> "$WINE_LOG" 2>&1 &
-    wait $!
+    shutdown_status=$?
     if [ -n "$child_pid" ]; then
-        # The prefix is down; a wrapper that ignores TERM must not hold Steam's
-        # tracked launcher open indefinitely.
+        # Cleanup has finished or reached its deadline. A wrapper that ignores
+        # TERM must not hold Steam's tracked launcher open indefinitely.
         signal_child KILL
         wait "$child_pid" 2>/dev/null
+    fi
+    if [ "$shutdown_status" -ne 0 ]; then
+        log "ERROR: prefix shutdown could not be confirmed (see $WINE_LOG)"
+        exit 1
     fi
     exit 143
 }
@@ -379,6 +395,11 @@ else
     child_pid=""
     # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
     run_wait "$wineserver" -w
+    server_status=$?
+    if [ "$server_status" -ne 0 ]; then
+        log "  session wait failed (exit status $server_status)"
+        [ "$status" -ne 0 ] || status=$server_status
+    fi
 fi
 elapsed=$(( $(date +%s) - started ))
 log "  session ended (exit status $status, ${elapsed}s)"
