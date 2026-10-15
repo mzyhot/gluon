@@ -58,7 +58,8 @@ elif role == 'wineserver':
         if phase == 'final-wait-failure':
             print('err:fixture: final server wait failed', file=sys.stderr)
             sys.exit(42)
-        if phase in ('registry-wait', 'prelaunch-wait', 'final-wait'):
+        # shutdown-timeout: the server never releases its lock after -k hangs.
+        if phase in ('registry-wait', 'prelaunch-wait', 'final-wait', 'shutdown-timeout'):
             block()
 elif role == 'proton':
     if phase in ('proton', 'proton-ignores-term', 'shutdown-timeout'):
@@ -243,7 +244,7 @@ class LauncherLifecycleTests(unittest.TestCase):
         self.start()
         blocked = self.wait_for_blocked()
         self.process.send_signal(signal.SIGTERM)
-        output = self.process.communicate(timeout=8)
+        output = self.process.communicate(timeout=14)
         self.assertEqual(self.process.returncode, 1, output)
         with self.assertRaises(ProcessLookupError):
             os.kill(blocked["pid"], 0)
@@ -252,6 +253,7 @@ class LauncherLifecycleTests(unittest.TestCase):
         self.assertEqual([event["args"] for event in shutdown], [["-k"], ["-w"]])
         self.assertTrue(all(event["prefix"] == str(self.prefix) for event in shutdown))
         self.assertIn("wineserver -k timed out after 5s", (self.home / "logs/wine-12345.log").read_text())
+        self.assertIn("wineserver -w timed out after 5s", (self.home / "logs/wine-12345.log").read_text())
         self.assertIn("prefix shutdown could not be confirmed", (self.home / "logs/launch-12345.log").read_text())
 
     def test_registry_failure_does_not_mark_bridge_initialized_or_start_game(self):

@@ -23,11 +23,12 @@ event = dict(argument=argument, pid=os.getpid(), prefix=os.environ.get('WINEPREF
              blocked=[int(number) for number in signal.pthread_sigmask(signal.SIG_BLOCK, [])])
 with open(os.environ['GLUON_SESSION_TRACE'], 'a') as stream:
     stream.write(json.dumps(event) + '\n')
-if argument == 'sibling' or os.environ.get('GLUON_SESSION_MODE') == 'hang':
+mode = os.environ.get('GLUON_SESSION_MODE')
+if argument == 'sibling' or mode == 'hang' or (argument == '-w' and mode == 'fail-k-hang-w'):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     while True:
         time.sleep(1)
-if argument == '-k' and os.environ.get('GLUON_SESSION_MODE') == 'fail-k':
+if argument == '-k' and mode in ('fail-k', 'fail-k-hang-w'):
     sys.exit(23)
 '''
 
@@ -89,13 +90,23 @@ class SessionShutdownTests(unittest.TestCase):
         self.assertIn("wineserver -w timed out", output.getvalue())
         self.assertIn("prefix shutdown could not be confirmed", output.getvalue())
 
-    def test_failed_kill_still_checks_server_exit_and_reports_failure(self):
+    def test_kill_status_defers_to_confirmed_server_exit(self):
+        # wineserver -k exits 1 when no server is running; -w decides.
         os.environ["GLUON_SESSION_MODE"] = "fail-k"
+        output = io.StringIO()
+        with redirect_stderr(output):
+            self.assertTrue(session.stop_prefix(str(self.server), timeout=1))
+        self.assertEqual([event["argument"] for event in self.events()], ["-k", "-w"])
+        self.assertIn("wineserver -k exited with status 23", output.getvalue())
+        self.assertNotIn("could not be confirmed", output.getvalue())
+
+    def test_failed_kill_with_running_server_reports_failure(self):
+        os.environ["GLUON_SESSION_MODE"] = "fail-k-hang-w"
         output = io.StringIO()
         with redirect_stderr(output):
             self.assertFalse(session.stop_prefix(str(self.server), timeout=1))
         self.assertEqual([event["argument"] for event in self.events()], ["-k", "-w"])
-        self.assertIn("wineserver -k failed (exit status 23)", output.getvalue())
+        self.assertIn("wineserver -w timed out", output.getvalue())
         self.assertIn("prefix shutdown could not be confirmed", output.getvalue())
 
 

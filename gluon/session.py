@@ -16,39 +16,45 @@ def _reset_child_signals():
     signal.pthread_sigmask(signal.SIG_SETMASK, [])
 
 
+def _run_helper(wineserver: str, argument: str, timeout: float):
+    """Return the helper's exit status, or None if it could not start or timed out."""
+    try:
+        child = subprocess.Popen([wineserver, argument], preexec_fn=_reset_child_signals)
+    except OSError as error:
+        print("gluon: cannot start wineserver %s: %s" % (argument, error), file=sys.stderr, flush=True)
+        return None
+    try:
+        return child.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        print("gluon: wineserver %s timed out after %gs; ending its shutdown helper" %
+              (argument, timeout), file=sys.stderr, flush=True)
+        child.kill()
+        child.wait()
+        return None
+
+
 def stop_prefix(wineserver: str, timeout: float = 5.0) -> bool:
     """Run -k and -w under the inherited WINEPREFIX, each with its own deadline.
 
+    `wineserver -k` exits 1 both when no server is running and when it could not
+    signal one, so only a -w that returns in time confirms the prefix stopped.
     Only this process's direct shutdown helpers are killed on timeout. Keeping
     child ownership through kill/wait prevents signaling a subsequently reused
     PID; no Wine process discovery or process-group signaling is involved.
     """
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("shutdown timeout must be finite and positive")
-    successful = True
-    for argument in ("-k", "-w"):
-        try:
-            child = subprocess.Popen([wineserver, argument], preexec_fn=_reset_child_signals)
-        except OSError as error:
-            print("gluon: cannot start wineserver %s: %s" % (argument, error), file=sys.stderr, flush=True)
-            successful = False
-            continue
-        try:
-            status = child.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            print("gluon: wineserver %s timed out after %gs; ending its shutdown helper" %
-                  (argument, timeout), file=sys.stderr, flush=True)
-            child.kill()
-            child.wait()
-            successful = False
-            continue
-        if status:
-            print("gluon: wineserver %s failed (exit status %s)" % (argument, status),
-                  file=sys.stderr, flush=True)
-            successful = False
-    if not successful:
+    status = _run_helper(wineserver, "-k", timeout)
+    if status:
+        print("gluon: wineserver -k exited with status %s (no running server, or it could not "
+              "be signalled); confirming with -w" % status, file=sys.stderr, flush=True)
+    status = _run_helper(wineserver, "-w", timeout)
+    if status:
+        print("gluon: wineserver -w failed (exit status %s)" % status, file=sys.stderr, flush=True)
+    if status != 0:
         print("gluon: prefix shutdown could not be confirmed", file=sys.stderr, flush=True)
-    return successful
+        return False
+    return True
 
 
 def main(argv=None) -> int:
