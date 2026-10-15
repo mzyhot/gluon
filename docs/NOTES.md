@@ -799,6 +799,26 @@ object per mapped context. Details, limits and checks are in
 `games/3011360.env`; rendering and the one unsized `GL_SRGB_ALPHA` upload need
 an owner-run launch.
 
+## Menu bar name with Steam's overlay (2026-10-15)
+
+The owner saw Happy Wheels' menu bar title as `CrossOver-Hosted Application`,
+the default `CFBundleName` in the loader's embedded Info.plist. Wine starts
+each program through a per-program hard link to that loader and renames the
+bundle in memory at the start of `main()`. Steam's overlay is inserted with
+`DYLD_INSERT_LIBRARIES`; `gameoverlayrenderer.dylib` links AppKit, Foundation
+and CoreFoundation, which therefore initialize before `main()`, while the Wine
+loader itself links only libSystem. The in-memory rename then comes too late.
+This explains why only overlay-injected launches show the default name; it was
+inferred from linked libraries and imports, not by tracing the overlay.
+
+`wine-macos-loader-name.patch` writes a per-program copy of the unsigned
+loader whose embedded plist already carries the program name, using the same
+rewrite and truncation as the in-memory rename, and replaces an earlier hard
+link. Any failure falls back to Wine's original hard link. Source checks pin
+the patch and, on Actions Linux, run the exact functions on fake loaders;
+Wine's original hard-link behavior must fail that fixture. A complete build
+and an owner-run overlay launch are still required.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number

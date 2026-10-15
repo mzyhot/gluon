@@ -1,0 +1,92 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -612,9 +612,72 @@
+ }
+ 
+ 
+-static char *create_preloader_link(const char *wineloader_path, const char *exe_name)
++/* Gluon: libraries inserted with DYLD_INSERT_LIBRARIES, such as Steam's overlay,
++ * can load AppKit before the loader's main() rewrites the bundle name in memory,
++ * and the application menu then keeps the default name. Write a copy of the
++ * loader whose embedded Info.plist already carries the program's name, using
++ * the same rewrite as apple_override_bundle_name. */
++static BOOL write_named_loader(const char *wineloader_path, const char *linkpath, const char *exe_name)
+ {
++    static const char prefix[] = "<key>CFBundleName</key>\n    <string>";
++    static const char suffix[] = "</string>";
++    static const char padding[] = "<!-- bundle name padding -->";
++    const size_t prefix_len = strlen(prefix), suffix_len = strlen(suffix), padding_len = strlen(padding);
++    size_t name_len = strlen(exe_name), size = 0, max_len, copy_len, remaining, pos;
++    char *data = NULL, *name, *end, *temp = NULL;
+     struct stat st;
++    ssize_t count;
++    BOOL ret = FALSE;
++    int fd;
++
++    if ((fd = open(wineloader_path, O_RDONLY)) == -1) return FALSE;
++    if (!fstat(fd, &st) && st.st_size > 0 && st.st_size <= 64 * 1024 * 1024) size = st.st_size;
++    if (size && (data = malloc(size)))
++    {
++        for (pos = 0; pos < size; pos += count)
++            if ((count = read(fd, data + pos, size - pos)) <= 0) break;
++        if (pos < size) size = 0;
++    }
++    close(fd);
++    fd = -1;
++    if (!data || !size || !name_len) goto out;
++
++    if (!(name = memmem(data, size, prefix, prefix_len))) goto out;
++    name += prefix_len;
++    remaining = data + size - name;
++    if (!(end = memmem(name, remaining, suffix, suffix_len))) goto out;
++    max_len = end - name;
++    remaining -= max_len + suffix_len;
++    if (padding_len <= remaining && !memcmp(end + suffix_len, padding, padding_len))
++        max_len += padding_len;
++    copy_len = name_len < max_len ? name_len : max_len;
++    memcpy(name, exe_name, copy_len);
++    memcpy(name + copy_len, suffix, suffix_len);
++    memset(name + copy_len + suffix_len, ' ', max_len - copy_len);
++
++    if (asprintf(&temp, "%s.XXXXXX", linkpath) == -1)
++    {
++        temp = NULL;
++        goto out;
++    }
++    if ((fd = mkstemp(temp)) == -1) goto out;
++    for (pos = 0; pos < size; pos += count)
++        if ((count = write(fd, data + pos, size - pos)) <= 0) goto out;
++    if (fchmod(fd, 0755)) goto out;
++    ret = !close(fd) && !rename(temp, linkpath);
++    fd = -1;
++
++out:
++    if (fd != -1) close(fd);
++    if (temp && !ret) unlink(temp);
++    free(temp);
++    free(data);
++    return ret;
++}
++
++static char *create_preloader_link(const char *wineloader_path, const char *exe_name)
++{
++    struct stat st, loader_st;
+     char *linkpath = create_tempdir(wineloader_path);
+ 
+     if (!linkpath)
+@@ -625,6 +688,15 @@
+ 
+     /* If the link already exists, use it (if it's in this dir, it points to the right place). */
+     if (!stat(linkpath, &st))
++    {
++        /* Gluon: an earlier run's link to the loader still has the default name. */
++        if (!stat(wineloader_path, &loader_st) &&
++            st.st_dev == loader_st.st_dev && st.st_ino == loader_st.st_ino)
++            write_named_loader(wineloader_path, linkpath, exe_name);
++        return linkpath;
++    }
++
++    if (write_named_loader(wineloader_path, linkpath, exe_name))
+         return linkpath;
+ 
+     /* Try a hard link first, to avoid the little "alias" arrow that the Dock puts on the icon.

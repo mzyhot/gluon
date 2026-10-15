@@ -69,6 +69,7 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/opengl32/unix_thunks.c \
     sources/wine/dlls/win32u/vulkan.c \
     sources/wine/dlls/ntdll/unix/loader.c \
+    sources/wine/loader/main.c \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
     sources/dxvk/src/d3d9/d3d9_include.h \
@@ -92,6 +93,13 @@ if [ "${GITHUB_ACTIONS:-}" = true ]; then
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-display-name.py" "$GLUON_SOURCE_TEMP/wine" --self-test
 else
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-display-name.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
+
+echo "Checking named per-program Wine loader copies"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-loader-name.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-loader-name.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
 fi
 
 echo "Checking the opt-in macdrv OpenGL compatibility-as-core mapping"
