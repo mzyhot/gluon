@@ -30,6 +30,7 @@ CASES = (
 
 REQUIRED = (
     "# include <mach-o/getsect.h>\n# include <mach-o/dyld.h>\n",
+    "main_argc = argc; main_argv = argv; #ifdef __APPLE__ enter_game_directory(); #endif init_paths();",
     "char *bundled = bundled_wineloader(); if (bundled) { free( argv[1] ); argv[1] = bundled; } "
     "else if (getenv(\"WINEDLLPATH\")) replace_wineloader_path_with_link( &(argv[1]), image_path ); }",
 )
@@ -68,6 +69,15 @@ def extract_helper(source):
     return matches[0]
 
 
+def extract_cwd_helper(source):
+    matches = re.findall(r"^static void enter_game_directory\(void\)\n\{.*?^\}", source, re.MULTILINE | re.DOTALL)
+    if len(matches) != 1:
+        raise ValueError("expected exactly one enter_game_directory helper")
+    if 'unsetenv( "GLUON_GAME_CWD" );' not in matches[0]:
+        raise ValueError("the game directory must be used by the first process only")
+    return matches[0]
+
+
 def check_source(source):
     flat = normalized(source)
     for fragment in REQUIRED:
@@ -80,7 +90,7 @@ def check_source(source):
     block = re.search(r"#if defined\(__APPLE__\) && !defined\(HAVE_WINE_PRELOADER\)(.*?)#endif", source, re.DOTALL)
     if not block or "bundled_wineloader()" not in block.group(1):
         raise ValueError("the bundled loader must be used in the macOS loader branch")
-    return helper
+    return helper + "\n\n" + extract_cwd_helper(source)
 
 
 def fixture_source(helper):
@@ -91,6 +101,7 @@ def fixture_source(helper):
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 static const char *fixture_path;
 static int _NSGetExecutablePath(char *buffer, uint32_t *size)
 {
@@ -120,6 +131,25 @@ int main(void)
         }
         free(result);
     }
+    {
+        char here[PATH_MAX], cwd[PATH_MAX];
+        if (!getcwd(here, sizeof(here))) return 2;
+        setenv("GLUON_GAME_CWD", "/", 1);
+        enter_game_directory();
+        if (!getcwd(cwd, sizeof(cwd)) || strcmp(cwd, "/") || getenv("GLUON_GAME_CWD"))
+        {
+            fprintf(stderr, "game directory not entered once: %s\n", cwd);
+            failed++;
+        }
+        setenv("GLUON_GAME_CWD", "/no/such/game/directory", 1);
+        enter_game_directory();
+        if (!getcwd(cwd, sizeof(cwd)) || strcmp(cwd, "/") || getenv("GLUON_GAME_CWD"))
+        {
+            fprintf(stderr, "missing game directory changed state\n");
+            failed++;
+        }
+        if (chdir(here)) return 2;
+    }
     return !!failed;
 }
 """
@@ -148,6 +178,8 @@ def main():
             source.replace("        if (bundled)\n", "        if (0)\n"),
             source.replace('".app/Contents/MacOS/"', '".app/"'),
             source.replace("# include <mach-o/dyld.h>\n", ""),
+            source.replace("    enter_game_directory();\n", ""),
+            source.replace('    unsetenv( "GLUON_GAME_CWD" );\n', ""),
         ):
             if broken == source:
                 raise ValueError("a self-test mutation did not change the source")

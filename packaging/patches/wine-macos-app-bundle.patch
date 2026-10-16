@@ -8,7 +8,7 @@
  # include <crt_externs.h>
  # ifndef _POSIX_SPAWN_DISABLE_ASLR
  #  define _POSIX_SPAWN_DISABLE_ASLR 0x0100
-@@ -636,6 +637,18 @@
+@@ -636,8 +637,32 @@
  fail:
      free(linkpath);
      return NULL;
@@ -26,8 +26,22 @@
 +    return strdup( path );
  }
  
++/* Gluon: LaunchServices starts a game's app bundle in "/"; the launcher passes
++ * the game's working directory instead. Only the first process uses it, and
++ * Windows programs it starts inherit their directory as usual. */
++static void enter_game_directory(void)
++{
++    const char *dir = getenv( "GLUON_GAME_CWD" );
++
++    if (!dir) return;
++    if (chdir( dir )) fprintf( stderr, "wine: cannot enter the game directory %s\n", dir );
++    unsetenv( "GLUON_GAME_CWD" );
++}
++
  static void replace_wineloader_path_with_link(char **wineloader_path, const char *image_path)
-@@ -686,8 +699,17 @@
+ {
+     char *app_name = extract_exe_name(image_path);
+@@ -686,8 +711,17 @@
       * When the preloader is not being used, WINEDLLPATH needs to be set correctly for
       * the loader to find ntdll.so, so don't even attempt this unless WINEDLLPATH is set.
       */
@@ -47,6 +61,16 @@
  #endif
  
      execv( argv[1], argv + 1 );
+@@ -2622,6 +2656,9 @@
+     main_argc = argc;
+     main_argv = argv;
+ 
++#ifdef __APPLE__
++    enter_game_directory();
++#endif
+     init_paths();
+     if (!getenv( "WINELOADERNOEXEC" ) || argc <= 1) check_command_line( argc, argv );
+     unsetenv( "WINELOADERNOEXEC" );
 --- a/dlls/winemac.drv/cocoa_app.m
 +++ b/dlls/winemac.drv/cocoa_app.m
 @@ -2169,6 +2169,41 @@

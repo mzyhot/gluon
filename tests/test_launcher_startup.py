@@ -32,7 +32,9 @@ class LauncherStartupTests(unittest.TestCase):
 event = {'role': pathlib.Path(sys.argv[0]).name,
          'args': sys.argv[1:], 'dllpath': os.environ.get('WINEDLLPATH'),
          'focus': os.environ.get('GLUON_FOCUS'), 'gl': os.environ.get('GLUON_GL_COMPAT_AS_CORE'),
-         'dyld': os.environ.get('DYLD_INSERT_LIBRARIES')}
+         'dyld': os.environ.get('DYLD_INSERT_LIBRARIES'), 'game_cwd': os.environ.get('GLUON_GAME_CWD'),
+         'prefix': os.environ.get('WINEPREFIX'), 'app': os.environ.get('SteamAppId')}
+print('fixture output from', event['role'])
 if event['role'] == 'notify':
     event['script'] = sys.stdin.read()
 with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
@@ -43,14 +45,26 @@ with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
         # LaunchServices stand-in: it starts the bundle's executable without the
         # caller's environment and waits, like open -n -W -a.
         self.opener = self.root / "open"
-        self.opener.write_text("#!%s\n" % sys.executable + """import json, os, subprocess, sys
+        self.opener.write_text("#!%s\n" % sys.executable + """import json, os, plistlib, subprocess, sys
 args = sys.argv[1:]
 with open(os.environ['LAUNCHER_STARTUP_TRACE'], 'a') as out:
     out.write(json.dumps({'role': 'open', 'args': args, 'dllpath': None}) + '\\n')
-if os.environ.get('FIXTURE_OPEN_FAILS') or args[:3] != ['-n', '-W', '-a'] or args[4] != '--args':
+if os.environ.get('FIXTURE_OPEN_FAILS') or args[:3] != ['-n', '-W', '-a']:
     sys.exit(1)
-sys.exit(subprocess.call([os.path.join(args[3], 'Contents/MacOS/gluon-game'), *args[5:]],
-                         env={'PATH': '/usr/bin:/bin', 'HOME': os.environ.get('HOME', '')}))
+bundle, rest, env, output = args[3], args[4:], {'PATH': '/usr/bin:/bin', 'HOME': os.environ.get('HOME', '')}, None
+while rest and rest[0] != '--args':
+    option, value, rest = rest[0], rest[1], rest[2:]
+    if option == '--env':
+        key, _, item = value.partition('=')
+        env[key] = item
+    elif option in ('--stdout', '--stderr'):
+        output = value
+# The real environment variables reach the game only through --env.
+env['LAUNCHER_STARTUP_TRACE'] = os.environ['LAUNCHER_STARTUP_TRACE']
+executable = plistlib.load(open(os.path.join(bundle, 'Contents/Info.plist'), 'rb'))['CFBundleExecutable']
+with open(output, 'a') as log:
+    sys.exit(subprocess.call([os.path.join(bundle, 'Contents/MacOS', executable), *rest[1:]],
+                             env=env, cwd='/', stdout=log, stderr=log))
 """)
         self.opener.chmod(0o755)
         self.launcher = self.root / "bin/gluon"
@@ -153,45 +167,62 @@ sys.exit(subprocess.call([os.path.join(args[3], 'Contents/MacOS/gluon-game'), *a
         backup = next((self.home / "backups").glob("runtime-*/selection.json"))
         self.assertIsNone(json.loads(backup.read_text())["previous"])
 
-    def install_bundle_helpers(self):
+    def install_bundle_helpers(self, runtime):
         for name in ("appbundle.py", "vdf.py"):
             shutil.copy2(ROOT / "gluon" / name, self.home / "lib/gluon" / name)
+        notices = runtime / "licenses/gluon-wine-patches"
+        notices.mkdir(parents=True)
+        (notices / "APPLIED.txt").write_text("wine-macos-app-bundle\nwine-macos-overlay-scope\n")
 
     def test_game_starts_from_its_app_bundle_through_launchservices(self):
-        self.install_bundle_helpers()
         runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
         result, events = self.run_launcher(GLUON_RUNTIME=str(runtime))
         self.assertEqual(result.returncode, 0, result.stderr)
         opens = [event for event in events if event["role"] == "open"]
         self.assertEqual(len(opens), 1, events)
         bundle = Path(opens[0]["args"][3])
         self.assertEqual(bundle.parent, self.home / "apps.noindex/123")
-        self.assertEqual(opens[0]["args"][5:], [str(self.game)])
-        # The loader inside the bundle ran with the session's environment.
+        self.assertEqual(opens[0]["args"][opens[0]["args"].index("--args") + 1:], [str(self.game)])
+        # The bundle's loader ran with this session's settings, passed through open.
         self.assert_launch(events, str(runtime / "lib/wine"))
-        self.assertFalse((bundle.parent / "session.env").exists())
+        game = [event for event in events if event["role"] == "wine"][-1]
+        self.assertEqual(game["game_cwd"], str(self.game.parent))
+        self.assertEqual(game["app"], "123")
+        self.assertTrue(game["prefix"].endswith("pfx-wine"))
+        wine_log = (self.home / "logs/wine-123.log").read_text()
+        self.assertIn("fixture output from wine", wine_log)
+        self.assertFalse((self.home / "logs/wine-123-session.log").exists())
+
+    def test_runtime_without_bundle_support_starts_wine_directly(self):
+        runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
+        (runtime / "licenses/gluon-wine-patches/APPLIED.txt").write_text("wine-macos-display-name\n")
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(event["role"] == "open" for event in events), events)
+        self.assert_launch(events, str(runtime / "lib/wine"))
 
     def test_bundle_that_never_starts_falls_back_to_wine(self):
-        self.install_bundle_helpers()
         runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
         result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), FIXTURE_OPEN_FAILS="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len([event for event in events if event["role"] == "open"]), 1, events)
         self.assert_launch(events, str(runtime / "lib/wine"))
-        self.assertFalse((self.home / "apps.noindex/123/session.env").exists())
         self.assertIn("the app bundle did not start", (self.home / "logs/launch-123.log").read_text())
 
     def test_app_bundle_can_be_turned_off(self):
-        self.install_bundle_helpers()
         runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
         result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), GLUON_APP_BUNDLE="0")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(event["role"] == "open" for event in events), events)
         self.assert_launch(events, str(runtime / "lib/wine"))
 
     def test_steam_launch_options_set_switches_and_leave_game_arguments(self):
-        self.install_bundle_helpers()
         runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
         result, events = self.run_launcher(
             "--windowed", "%command%", "GLUON_APP_BUNDLE=0", "GLUON_FOCUS=0",
             "DYLD_INSERT_LIBRARIES=/not/a/setting.dylib", GLUON_RUNTIME=str(runtime))

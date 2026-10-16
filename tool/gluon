@@ -323,6 +323,10 @@ stop_session() {
         /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session --wineserver "$wineserver" >> "$WINE_LOG" 2>&1 &
     wait $!
     shutdown_status=$?
+    if [ -n "${game_log:-}" ] && [ -f "$game_log" ]; then
+        cat "$game_log" >> "$WINE_LOG" 2>/dev/null
+        rm -f "$game_log"
+    fi
     if [ -n "$child_pid" ]; then
         # Cleanup has finished or reached its deadline. A wrapper that ignores
         # TERM must not hold Steam's tracked launcher open indefinitely.
@@ -441,29 +445,42 @@ else
         game_command=("$exe" "$@")
     fi
     keep_awake
+    patches="$runtime/licenses/gluon-wine-patches/APPLIED.txt"
     overlay_scoped=""
-    if grep -qx wine-macos-overlay-scope "$runtime/licenses/gluon-wine-patches/APPLIED.txt" 2>/dev/null; then
-        overlay_scoped=1
-    fi
+    ! grep -qx wine-macos-overlay-scope "$patches" 2>/dev/null || overlay_scoped=1
     # Each game runs from its own app bundle, started through LaunchServices: macOS
-    # brings it to the front, names it and lets Game Mode recognize it. Wine keeps
-    # every process of the game in that bundle. GLUON_APP_BUNDLE=0 starts Wine
-    # directly instead; so does a bundle that LaunchServices never starts.
+    # brings it to the front, names it and lets Game Mode recognize it. The bundle's
+    # executable is the runtime's loader, which Gluon's Wine keeps for every process
+    # of the game and starts in GLUON_GAME_CWD. GLUON_APP_BUNDLE=0 starts Wine
+    # directly instead; so do other runtimes and a bundle LaunchServices refuses.
     bundle=""
     loader="$runtime/lib/wine/x86_64-unix/wine"
-    if [ "${GLUON_APP_BUNDLE:-1}" != 0 ] && [ -x "$loader" ] && [ -f "$runtime/lib/wine/x86_64-unix/ntdll.so" ] \
+    if [ "${GLUON_APP_BUNDLE:-1}" != 0 ] && [ -n "$overlay_scoped" ] && grep -qx wine-macos-app-bundle "$patches" \
+        && [ -x "$loader" ] && [ -f "$runtime/lib/wine/x86_64-unix/ntdll.so" ] \
         && [ -f "$helper_lib/gluon/appbundle.py" ]; then
         bundle="$(PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
             -m gluon.appbundle --home "$GLUON_HOME" --appid "$appid" --steamapps "${library:+$library/steamapps}" \
             --fallback-name "$(basename "${install_dir:-$exe}" .exe)" --loader "$loader" \
-            --ntdll "$runtime/lib/wine/x86_64-unix/ntdll.so" --cwd "$(pwd)" --wine-log "$WINE_LOG" \
-            --overlay "$overlay_insert" ${overlay_scoped:+--overlay-scoped} 2>> "$LOG")" || bundle=""
+            --ntdll "$runtime/lib/wine/x86_64-unix/ntdll.so" 2>> "$LOG")" || bundle=""
     fi
     [ -z "$overlay_insert" ] || log "  passing Steam's native overlay libraries to the Wine game host"
     launching=1
     if [ -n "$bundle" ]; then
+        # LaunchServices starts the bundle with the user's login environment; pass
+        # this session's Wine, Gluon, Steam and graphics settings explicitly.
+        launch_environment=(--env "GLUON_GAME_CWD=$(pwd)")
+        [ -z "$overlay_insert" ] || launch_environment+=(--env "GLUON_OVERLAY_INSERT=$overlay_insert")
+        while IFS= read -r name; do
+            [[ "$name" =~ ^(WINE[A-Z0-9_]*|GLUON_[A-Z0-9_]+|STEAM_[A-Za-z0-9_]+|Steam[A-Za-z0-9_]*|GST_[A-Z0-9_]+|DXMT_[A-Z0-9_]+|DXVK_[A-Z0-9_]+|MVK_[A-Z0-9_]+|MTL_[A-Z0-9_]+|ROSETTA_[A-Z0-9_]+|DOTNET_[A-Za-z0-9_]+|PROTON_[A-Z0-9_]+|SDL_[A-Z0-9_]+|LANG|LC_[A-Z]+)$ ]] || continue
+            [ "$name" != GLUON_LAUNCHER_HOST ] || continue
+            launch_environment+=(--env "$name=${!name}")
+        done < <(compgen -e)
+        game_log="$LOG_DIR/wine-$appid-session.log"
+        : > "$game_log"
         log "  starting ${bundle##*/} through LaunchServices (output in $WINE_LOG)"
-        /usr/bin/open -n -W -a "$bundle" --args "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+        bundle_started=$SECONDS
+        /usr/bin/open -n -W -a "$bundle" --stdout "$game_log" --stderr "$game_log" \
+            "${launch_environment[@]}" --args "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
     else
         log "  starting Wine (output in $WINE_LOG)"
         start_wine_directly
@@ -474,19 +491,22 @@ else
     wait "$child_pid"
     status=$?
     child_pid=""
-    if [ -n "$bundle" ] && [ -f "${bundle%/*}/session.env" ]; then
-        # The bundle never ran: its one-time session file is still unused.
-        rm -f "${bundle%/*}/session.env"
-        bundle=""
-        log "  the app bundle did not start (open exit status $status); starting Wine directly"
-        launching=1
-        start_wine_directly
-        child_pid=$!
-        launching=""
-        [ -z "$stop_requested" ] || stop_session
-        wait "$child_pid"
-        status=$?
-        child_pid=""
+    if [ -n "$bundle" ]; then
+        cat "$game_log" >> "$WINE_LOG" 2>/dev/null
+        if [ "$status" -ne 0 ] && [ ! -s "$game_log" ] && [ $((SECONDS - bundle_started)) -lt 5 ]; then
+            # LaunchServices refused the bundle: open failed at once and nothing ran.
+            bundle=""
+            log "  the app bundle did not start (open exit status $status); starting Wine directly"
+            launching=1
+            start_wine_directly
+            child_pid=$!
+            launching=""
+            [ -z "$stop_requested" ] || stop_session
+            wait "$child_pid"
+            status=$?
+            child_pid=""
+        fi
+        rm -f "$game_log"
     fi
     # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
     run_wait "$wineserver" -w
