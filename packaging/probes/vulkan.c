@@ -1,6 +1,8 @@
 /* Gluon Vulkan packaging probe. Uses the published Wine Vulkan declarations.
- * Native: vulkan-probe /absolute/path/libMoltenVK.dylib [--device]
- * Windows: vulkan-probe.exe [--device]
+ * Native: vulkan-probe /absolute/path/libMoltenVK.dylib [--device|--device-1.0|--device-1.3]
+ * Windows: vulkan-probe.exe [--device|--device-1.0|--device-1.3]
+ * --device-1.3 also requires a Vulkan 1.3 device with dynamic rendering and
+ * synchronization2; a device below that is reported as unavailable, not failed.
  * The default checks library loading and instance extensions without needing a GPU.
  */
 #ifdef WINE_UNIX_LIB
@@ -23,7 +25,7 @@ static int has_extension(const VkExtensionProperties *properties, uint32_t count
     return 0;
 }
 
-static int check_device(PFN_vkGetInstanceProcAddr get, int api_1_0)
+static int check_device(PFN_vkGetInstanceProcAddr get, uint32_t requested)
 {
     VkInstance instance = NULL;
     VkPhysicalDevice *devices = NULL;
@@ -34,10 +36,11 @@ static int check_device(PFN_vkGetInstanceProcAddr get, int api_1_0)
     uint32_t count = 0, extension_count = 0, family_count = 0, family;
     const char *subset = "VK_KHR_portability_subset";
     float priority = 1.0f;
-    int status = 1;
+    int status = 1, enable_1_3 = 0;
+    VkPhysicalDeviceVulkan13Features features_1_3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                             .pApplicationName = "Gluon Vulkan probe",
-                            .apiVersion = api_1_0 ? VK_API_VERSION_1_0 : VK_API_VERSION_1_1};
+                            .apiVersion = requested};
     VkInstanceCreateInfo instance_info = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                                          .pApplicationInfo = &app};
     PFN_vkCreateInstance create = (PFN_vkCreateInstance)get(NULL, "vkCreateInstance");
@@ -77,6 +80,31 @@ static int check_device(PFN_vkGetInstanceProcAddr get, int api_1_0)
     properties(devices[0], &props);
     printf("Device: %s, Vulkan %u.%u.%u\n", props.deviceName, VK_VERSION_MAJOR(props.apiVersion),
            VK_VERSION_MINOR(props.apiVersion), VK_VERSION_PATCH(props.apiVersion));
+    if (requested >= VK_API_VERSION_1_3)
+    {
+        VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                              .pNext = &features_1_3};
+        PFN_vkGetPhysicalDeviceFeatures2 get_features =
+            (PFN_vkGetPhysicalDeviceFeatures2)get(instance, "vkGetPhysicalDeviceFeatures2");
+        if (props.apiVersion < VK_API_VERSION_1_3)
+        {
+            fprintf(stderr, "GLUON_PROBE_UNAVAILABLE: device offers Vulkan %u.%u, below 1.3\n",
+                    VK_VERSION_MAJOR(props.apiVersion), VK_VERSION_MINOR(props.apiVersion));
+            status = 77;
+            goto done;
+        }
+        if (!get_features) { fputs("Missing vkGetPhysicalDeviceFeatures2\n", stderr); goto done; }
+        get_features(devices[0], &features);
+        printf("Vulkan 1.3 features: dynamicRendering=%u synchronization2=%u\n",
+               features_1_3.dynamicRendering, features_1_3.synchronization2);
+        if (!features_1_3.dynamicRendering || !features_1_3.synchronization2)
+        {
+            fputs("GLUON_PROBE_UNAVAILABLE: device lacks Vulkan 1.3 dynamic rendering or synchronization2\n", stderr);
+            status = 77;
+            goto done;
+        }
+        enable_1_3 = 1;
+    }
     if ((result = enumerate_extensions(devices[0], NULL, &extension_count, NULL)) != VK_SUCCESS) goto done;
     if (extension_count)
     {
@@ -93,6 +121,9 @@ static int check_device(PFN_vkGetInstanceProcAddr get, int api_1_0)
                                          .queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority};
     VkDeviceCreateInfo device_info = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                                      .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue_info};
+    VkPhysicalDeviceVulkan13Features enabled_1_3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                                    .dynamicRendering = VK_TRUE, .synchronization2 = VK_TRUE};
+    if (enable_1_3) device_info.pNext = &enabled_1_3;
     /* Required by the portability subset specification when the host advertises it. */
     if (has_extension(extensions, extension_count, subset))
     {
@@ -107,7 +138,7 @@ static int check_device(PFN_vkGetInstanceProcAddr get, int api_1_0)
     destroy_device(device, NULL);
     device = NULL;
     if (result != VK_SUCCESS) goto done;
-    puts("Vulkan device creation and wait passed");
+    puts(enable_1_3 ? "Vulkan 1.3 device creation and wait passed" : "Vulkan device creation and wait passed");
     status = 0;
 done:
     if (status == 1) fprintf(stderr, "Vulkan device probe failed (last VkResult %d)\n", result);
@@ -128,25 +159,28 @@ int main(int argc, char **argv)
     PFN_vkEnumerateInstanceVersion version;
     VkExtensionProperties *extensions = NULL;
     VkResult result;
-    uint32_t count = 0, api = VK_API_VERSION_1_0;
-    int device_check = 0, api_1_0 = 0, status = 1;
+    uint32_t count = 0, api = VK_API_VERSION_1_0, requested = VK_API_VERSION_1_1;
+    const char *mode = NULL;
+    int status = 1;
 #ifdef WINE_UNIX_LIB
-    if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "--device") && strcmp(argv[2], "--device-1.0"))) return 2;
+    if (argc < 2 || argc > 3) return 2;
+    mode = argc == 3 ? argv[2] : NULL;
+    if (mode && strcmp(mode, "--device") && strcmp(mode, "--device-1.0") && strcmp(mode, "--device-1.3")) return 2;
     puts("Vulkan probe: loading native library");
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!library) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 1; }
     get = (PFN_vkGetInstanceProcAddr)dlsym(library, "vkGetInstanceProcAddr");
-    device_check = argc == 3;
-    api_1_0 = argc == 3 && !strcmp(argv[2], "--device-1.0");
 #else
-    if (argc > 2 || (argc == 2 && strcmp(argv[1], "--device") && strcmp(argv[1], "--device-1.0"))) return 2;
+    if (argc > 2) return 2;
+    mode = argc == 2 ? argv[1] : NULL;
+    if (mode && strcmp(mode, "--device") && strcmp(mode, "--device-1.0") && strcmp(mode, "--device-1.3")) return 2;
     puts("Vulkan probe: loading vulkan-1.dll");
     HMODULE library = LoadLibraryA("vulkan-1.dll");
     if (!library) { fprintf(stderr, "LoadLibrary(vulkan-1.dll): %lu\n", (unsigned long)GetLastError()); return 1; }
     get = (PFN_vkGetInstanceProcAddr)GetProcAddress(library, "vkGetInstanceProcAddr");
-    device_check = argc == 2;
-    api_1_0 = argc == 2 && !strcmp(argv[1], "--device-1.0");
 #endif
+    if (mode && !strcmp(mode, "--device-1.0")) requested = VK_API_VERSION_1_0;
+    if (mode && !strcmp(mode, "--device-1.3")) requested = VK_API_VERSION_1_3;
     puts("Vulkan probe: library loaded");
     if (!get) { fputs("Missing vkGetInstanceProcAddr\n", stderr); goto done; }
     enumerate = (PFN_vkEnumerateInstanceExtensionProperties)get(NULL, "vkEnumerateInstanceExtensionProperties");
@@ -178,7 +212,7 @@ int main(int argc, char **argv)
 #endif
     printf("Vulkan %u.%u.%u: %u instance extensions, required surface extensions present\n",
            VK_VERSION_MAJOR(api), VK_VERSION_MINOR(api), VK_VERSION_PATCH(api), count);
-    status = device_check ? check_device(get, api_1_0) : 0;
+    status = mode ? check_device(get, requested) : 0;
 done:
     if (status) fputs("Vulkan probe failed\n", stderr);
     free(extensions);

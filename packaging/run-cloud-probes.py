@@ -111,12 +111,22 @@ def main():
                                        [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.0"],
                                        overrides={"WINEDEBUG": "fixme-all,+vulkan", "MVK_CONFIG_LOG_LEVEL": "3"})
                 require_native_portability(device, contents)
+                # A game asking for Vulkan 1.3 gets a 1.3 device with dynamic rendering
+                # and synchronization2. Hosted runners' paravirtual GPU may stop below
+                # 1.3; the probe then reports itself unavailable and this is a skip.
+                modern, contents = run(f"vulkan-device-1.3-{arch}",
+                                       [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.3"],
+                                       allow_unavailable=True,
+                                       overrides={"WINEDEBUG": "fixme-all,+vulkan", "MVK_CONFIG_LOG_LEVEL": "3"})
+                if modern["status"] == "passed":
+                    require_native_portability(modern, contents)
                 rendered, contents = run(f"d3d9-render-{arch}", [wine, str(probes / f"d3d9-{arch}.exe")],
                                          overrides={"MVK_CONFIG_LOG_LEVEL": "3"})
                 require_native_portability(rendered, contents)
             else:
-                results.append(dict(name=f"vulkan-device-1.0-{arch}", status="skipped",
-                                    reason="Native Metal device prerequisite did not pass."))
+                for name in (f"vulkan-device-1.0-{arch}", f"vulkan-device-1.3-{arch}"):
+                    results.append(dict(name=name, status="skipped",
+                                        reason="Native Metal device prerequisite did not pass."))
                 results.append(dict(name=f"d3d9-render-{arch}", status="skipped",
                                     reason="Native Metal device prerequisite did not pass."))
     except (ProbeFailed, OSError) as error:
