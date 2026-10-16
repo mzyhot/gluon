@@ -144,14 +144,14 @@ int main(void)
         enter_game_directory();
         if (!getcwd(cwd, sizeof(cwd)) || strcmp(cwd, "/") || getenv("GLUON_GAME_CWD"))
         {
-            fprintf(stderr, "game directory not entered once: %s\n", cwd);
+            fprintf(stderr, "game directory not entered once: %s\\n", cwd);
             failed++;
         }
         setenv("GLUON_GAME_CWD", "/no/such/game/directory", 1);
         enter_game_directory();
         if (!getcwd(cwd, sizeof(cwd)) || strcmp(cwd, "/") || getenv("GLUON_GAME_CWD"))
         {
-            fprintf(stderr, "missing game directory changed state\n");
+            fprintf(stderr, "missing game directory changed state\\n");
             failed++;
         }
         if (chdir(here)) return 2;
