@@ -12,6 +12,7 @@ import os
 import stat
 import struct
 import subprocess
+import time
 import uuid
 from typing import Any, Callable, Dict, Iterable, List
 
@@ -174,11 +175,65 @@ def restore_updates(appids: Iterable[int]) -> List[str]:
     return notes
 
 
-def watch_refresh(state: Dict[str, Any], planned_changes: Callable) -> List[str]:
-    """Read changed cache files and warn once per refreshed managed entry.
+def _game_running() -> bool:
+    """A Gluon session or any Wine server is running."""
+    for pattern in (["pgrep", "-x", "wineserver"], ["pgrep", "-f", "/gluon-launcher-host "]):
+        try:
+            if subprocess.run(pattern, capture_output=True, timeout=5).returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            return True
+    return False
+
+
+def _ask_restart(message: str) -> bool:
+    """Ask once; no answer within five minutes counts as Later."""
+    script = ("on run argv\n"
+              " set reply to display dialog (item 1 of argv) with title \"Gluon\" "
+              "buttons {\"Later\", \"Restart Steam\"} default button \"Restart Steam\" giving up after 300\n"
+              " return button returned of reply\n"
+              "end run")
+    try:
+        result = subprocess.run(["/usr/bin/osascript", "-e", script, message],
+                                capture_output=True, text=True, timeout=330)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "Restart Steam"
+
+
+def _notify(message: str) -> None:
+    try:
+        subprocess.run(["/usr/bin/osascript", "-e",
+                        "on run argv\n display notification (item 1 of argv) with title \"Gluon\"\nend run",
+                        message], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _restart_steam(repair: Callable[[], List[str]], wait: float = 120.0,
+                   sleep: Callable[[float], None] = time.sleep) -> List[str]:
+    """Quit Steam through its own exit URL, repair while it is closed, reopen it."""
+    subprocess.run(["/usr/bin/open", "steam://exit"], capture_output=True, timeout=10)
+    waited = 0.0
+    while steam.is_running():
+        if waited >= wait:
+            _notify("Steam did not quit, so Gluon changed nothing. Quit and reopen Steam yourself.")
+            return ["Steam did not quit within %ds; nothing was repaired" % wait]
+        sleep(1.0)
+        waited += 1.0
+    lines = repair()
+    subprocess.run(["/usr/bin/open", "-b", "com.valvesoftware.steam"], capture_output=True, timeout=10)
+    return ["restarted Steam to restore refreshed Gluon games"] + lines
+
+
+def watch_refresh(state: Dict[str, Any], planned_changes: Callable,
+                  repair: Callable[[], List[str]] | None = None) -> List[str]:
+    """Read changed cache files and offer, once per refreshed set, to restart Steam.
 
     The helper may run while Steam is open: it writes Gluon's own observation
-    state and issues a native notification, never Steam's cache or manifests.
+    state and never Steam's cache or manifests. Restarting is offered only when
+    no game is running, and only Steam's own exit closes it; the repair runs
+    after Steam has quit.
     """
     if not state:
         return []
@@ -188,27 +243,29 @@ def watch_refresh(state: Dict[str, Any], planned_changes: Callable) -> List[str]
         observed = _load(OBSERVED)
         managed = sorted(state)
         if observed.get("cache") == signature and observed.get("managed") == managed:
-            return []
-        cache = appinfo.AppInfoFile(steam.APPINFO)
-        if install._identity(os.stat(steam.APPINFO)) != install._identity(before):
-            return []
-        drift = []
-        for key in managed:
-            entry = cache.get(int(key))
-            if entry is None or planned_changes(entry.kv["appinfo"]):
-                drift.append([key, entry.change_number if entry is not None else None])
-        _save(OBSERVED, {"cache": signature, "managed": managed, "drift": drift})
+            drift = observed.get("drift", [])
+        else:
+            cache = appinfo.AppInfoFile(steam.APPINFO)
+            if install._identity(os.stat(steam.APPINFO)) != install._identity(before):
+                return []
+            drift = []
+            for key in managed:
+                entry = cache.get(int(key))
+                if entry is None or planned_changes(entry.kv["appinfo"]):
+                    drift.append([key, entry.change_number if entry is not None else None])
+            observed.update(cache=signature, managed=managed, drift=drift)
+            if not drift:
+                observed.pop("offered", None)
+            _save(OBSERVED, observed)
     except (OSError, ValueError, TypeError, KeyError, IndexError, struct.error):
         return []
-    if not drift or drift == observed.get("drift"):
+    if not drift or drift == observed.get("offered") or _game_running():
         return []
-    message = ("Steam refreshed metadata for %d Gluon game(s). Quit and reopen Steam "
-               "before updating, verifying files or launching them." % len(drift))
-    try:
-        subprocess.run(["/usr/bin/osascript", "-e",
-                        "on run argv\n display notification (item 1 of argv) with title \"Gluon\"\nend run",
-                        message], capture_output=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return ["metadata refresh detected for apps %s; %s" %
-            (", ".join(item[0] for item in drift), message)]
+    observed["offered"] = drift
+    _save(OBSERVED, observed)
+    games = ", ".join(item[0] for item in drift)
+    message = ("Steam refreshed the details of %d Gluon game(s), so it may no longer install, "
+               "update or start them correctly. Restart Steam now so Gluon can restore them?" % len(drift))
+    if repair is None or not _ask_restart(message):
+        return ["metadata refresh detected for apps %s; restart offered and postponed" % games]
+    return ["metadata refresh detected for apps %s" % games] + _restart_steam(repair)

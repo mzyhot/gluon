@@ -129,33 +129,75 @@ class MetadataProtectionTests(unittest.TestCase):
         self.manifest.write_text(original.replace('"appid"\t\t"123"', '"appid"\t\t"123"\n\t"APPID"\t\t"123"'))
         self.assertEqual(self.guard(), [])
 
-    def test_refresh_warning_is_mtime_gated_and_only_notifies_once(self):
-        entry = SimpleNamespace(change_number=5, kv={"appinfo": {"needs_repair": True}})
+    def refreshed_cache(self, change=5):
+        entry = SimpleNamespace(change_number=change, kv={"appinfo": {"needs_repair": True}})
         cache = Mock()
         cache.get.return_value = entry
+        return entry, cache
+
+    def test_restart_is_offered_once_per_refreshed_set(self):
+        entry, cache = self.refreshed_cache()
         needed = lambda value: value.get("needs_repair")
         with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache) as reader, \
-                patch.object(metadata.subprocess, "run") as notification:
-            self.assertEqual(len(metadata.watch_refresh({"123": {}}, needed)), 1)
-            self.assertEqual(metadata.watch_refresh({"123": {}}, needed), [])
-            self.assertEqual(reader.call_count, 1)
+                patch.object(metadata, "_game_running", return_value=False), \
+                patch.object(metadata, "_ask_restart", return_value=False) as ask:
+            self.assertEqual(len(metadata.watch_refresh({"123": {}}, needed, repair=Mock())), 1)
+            self.assertEqual(metadata.watch_refresh({"123": {}}, needed, repair=Mock()), [])
+            self.assertEqual(reader.call_count, 1, "an unchanged cache was read again")
             self.cache.write_bytes(b"another cache write")
-            self.assertEqual(metadata.watch_refresh({"123": {}}, needed), [])
-            self.assertEqual(notification.call_count, 1)
+            self.assertEqual(metadata.watch_refresh({"123": {}}, needed, repair=Mock()), [])
+            self.assertEqual(ask.call_count, 1)
             entry.kv["appinfo"]["needs_repair"] = False
             self.cache.write_bytes(b"healed cache")
-            metadata.watch_refresh({"123": {}}, needed)
+            metadata.watch_refresh({"123": {}}, needed, repair=Mock())
             entry.kv["appinfo"]["needs_repair"] = True
             self.cache.write_bytes(b"refreshed again")
-            self.assertEqual(len(metadata.watch_refresh({"123": {}}, needed)), 1)
-            self.assertEqual(notification.call_count, 2)
+            self.assertEqual(len(metadata.watch_refresh({"123": {}}, needed, repair=Mock())), 1)
+            self.assertEqual(ask.call_count, 2)
+
+    def test_offer_waits_until_no_game_is_running(self):
+        _, cache = self.refreshed_cache()
+        running = [True]
+        with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache), \
+                patch.object(metadata, "_game_running", side_effect=lambda: running[0]), \
+                patch.object(metadata, "_ask_restart", return_value=False) as ask:
+            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda _: True, repair=Mock()), [])
+            ask.assert_not_called()
+            running[0] = False
+            self.assertEqual(len(metadata.watch_refresh({"123": {}}, lambda _: True, repair=Mock())), 1)
+            ask.assert_called_once()
+
+    def test_restart_quits_steam_repairs_then_reopens_it(self):
+        _, cache = self.refreshed_cache()
+        order = []
+        repair = Mock(side_effect=lambda: order.append("repair") or ["re-applied 123"])
+        quitting = iter([True, True, False])
+        run = Mock(side_effect=lambda command, **_: order.append(" ".join(command[1:])))
+        with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache), \
+                patch.object(metadata, "_game_running", return_value=False), \
+                patch.object(metadata, "_ask_restart", return_value=True), \
+                patch.object(metadata.steam, "is_running", side_effect=lambda: next(quitting)), \
+                patch.object(metadata.time, "sleep"), patch.object(metadata.subprocess, "run", run):
+            lines = metadata.watch_refresh({"123": {}}, lambda _: True, repair=repair)
+        self.assertEqual(order, ["steam://exit", "repair", "-b com.valvesoftware.steam"])
+        self.assertIn("re-applied 123", lines)
+
+    def test_steam_that_does_not_quit_is_left_alone(self):
+        repair = Mock()
+        with patch.object(metadata.steam, "is_running", return_value=True), \
+                patch.object(metadata.subprocess, "run") as run, patch.object(metadata, "_notify") as notify:
+            lines = metadata._restart_steam(repair, wait=3, sleep=lambda _: None)
+        repair.assert_not_called()
+        notify.assert_called_once()
+        self.assertEqual([call.args[0] for call in run.call_args_list], [["/usr/bin/open", "steam://exit"]])
+        self.assertIn("did not quit", lines[0])
 
     def test_incomplete_cache_is_not_recorded_as_a_refresh(self):
         with patch.object(metadata.appinfo, "AppInfoFile", side_effect=ValueError("incomplete")), \
-                patch.object(metadata.subprocess, "run") as notification:
-            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda _: True), [])
+                patch.object(metadata, "_ask_restart") as ask:
+            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda _: True, repair=Mock()), [])
         self.assertFalse(self.observed.exists())
-        notification.assert_not_called()
+        ask.assert_not_called()
 
 
 if __name__ == "__main__":

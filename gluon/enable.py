@@ -314,7 +314,9 @@ def sync(dry_run: bool = False) -> List[str]:
         if dry_run:
             return []
         from . import metadata
-        return metadata.watch_refresh(load_state(), planned_changes)
+        # Offer a Steam restart for refreshed entries; the repair below runs
+        # through this same function once Steam has quit.
+        return metadata.watch_refresh(load_state(), planned_changes, repair=lambda: sync())
     wanted = sorted({a for a, _ in candidates()} | {int(k) for k in load_state()})
     pending = [r["appid"] for r in status() if not r["in_effect"]]
     todo = sorted({a for a, _ in candidates()} | set(pending))
