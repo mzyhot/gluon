@@ -32,7 +32,8 @@ https://media.codeweavers.com/pub/crossover/source/crossover-sources-26.3.0.tar.
 Gluon's Wine OpenGL dispatch changes are under LGPL-2.1-or-later, with the patch
 installed as `licenses/Gluon-Wine-OpenGL.patch`. They resolve Khronos-defined
 `GL_EXT_gpu_shader4` aliases when the active context supports that extension.
-ANGLE and MGL were evaluated from their public source and are not shipped.
+ANGLE, MGL, and Mesa's Zink and KosmicKrisp were evaluated from their public
+source and are not shipped.
 
 Wine application display-name changes are also LGPL-2.1-or-later. All applied
 Gluon Wine patches, including `wine-macos-display-name.patch`, are bundled under
