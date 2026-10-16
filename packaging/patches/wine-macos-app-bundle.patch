@@ -73,11 +73,19 @@
      unsetenv( "WINELOADERNOEXEC" );
 --- a/dlls/winemac.drv/cocoa_app.m
 +++ b/dlls/winemac.drv/cocoa_app.m
-@@ -2169,6 +2169,41 @@
-         [NSApp yieldActivationToApplication:otherApp];
+@@ -23,6 +23,8 @@
+ #import "cocoa_event.h"
+ #import "cocoa_window.h"
+ #import "cocoa_icon_utils.h"
++#include <libproc.h>
++#include <signal.h>
+ 
+ #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+ 
+@@ -2170,7 +2172,42 @@
          [otherApp activateFromApplication:[NSRunningApplication currentApplication]
                                    options:0];
-+    }
+     }
 +
 +    /* Gluon: Steam, not another Wine app, is usually active when a game window
 +       first appears, and it does not yield. A game started from its own app
@@ -89,7 +97,7 @@
 +        static BOOL attempted;
 +        NSURL *bundleURL = [[NSBundle mainBundle] bundleURL];
 +        const char *focus = getenv("GLUON_FOCUS");
-+
+ 
 +        if (attempted || (focus && !strcmp(focus, "0"))) return;
 +        if (![[bundleURL pathExtension] isEqualToString:@"app"]) return;
 +        attempted = YES;
@@ -112,10 +120,12 @@
 +                });
 +            }];
 +        });
-     }
- 
++    }
++
      - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore
-@@ -2206,6 +2241,7 @@
+     {
+         NSProcessInfo *processInfo;
+@@ -2206,6 +2243,7 @@
  
          /* This is racy. See the note in otherWineAppWillActivate:. */
          [NSApp activate];
@@ -123,3 +133,48 @@
       }
  
      /* CW Hack 22310, 24199 */
+@@ -2513,7 +2551,29 @@
+         [self unminimizeWindowIfNoneVisible];
+         return YES;
+     }
++
++    /* Gluon: quitting a game's app (Cmd-Q, its menu or the Dock) ends its whole
++       Steam session, as Steam's Stop does: Gluon's launcher host stops every
++       process of the game. A game that ignores WM_QUERYENDSESSION, or the
++       game's other processes, would otherwise keep running. */
++    - (BOOL) stopGluonSession
++    {
++        const char *value = getenv("GLUON_HOST_PID");
++        char path[PROC_PIDPATHINFO_MAXSIZE];
++        const char *name;
++        char *end;
++        long pid;
+ 
++        if (!value || !*value) return FALSE;
++        pid = strtol(value, &end, 10);
++        if (*end || pid <= 1) return FALSE;
++        /* Never signal a reused PID: it must still be Gluon's launcher host. */
++        if (proc_pidpath((pid_t)pid, path, sizeof(path)) <= 0) return FALSE;
++        name = strrchr(path, '/');
++        if (!name || strcmp(name + 1, "gluon-launcher-host")) return FALSE;
++        return !kill((pid_t)pid, SIGTERM);
++    }
++
+     - (NSApplicationTerminateReply) applicationShouldTerminate:(NSApplication *)sender
+     {
+         NSApplicationTerminateReply ret = NSTerminateNow;
+@@ -2521,7 +2581,14 @@
+         NSAppleEventDescriptor* desc = [m currentAppleEvent];
+         macdrv_event* event;
+         WineEventQueue* queue;
++        OSType quitReason = (OSType)[[desc attributeDescriptorForKeyword:kAEQuitReason] int32Value];
+ 
++        /* Logout, restart and shutdown keep Wine's own handling. */
++        if (quitReason != kAELogOut && quitReason != kAEReallyLogOut &&
++            quitReason != kAEShowRestartDialog && quitReason != kAEShowShutdownDialog &&
++            [self stopGluonSession])
++            return NSTerminateCancel;
++
+         event = macdrv_create_event(APP_QUIT_REQUESTED, nil);
+         event->deliver = 1;
+         switch ([[desc attributeDescriptorForKeyword:kAEQuitReason] int32Value])

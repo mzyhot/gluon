@@ -43,6 +43,12 @@ MACDRV_REQUIRED = (
     "configuration.activates = YES; configuration.createsNewApplicationInstance = NO;",
     "if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES];",
     "[NSApp activate]; [self activateBundleOnceIfStillInactive]; }",
+    # Quitting the game's app ends the whole session through Gluon's host, which
+    # must be verified by path so a reused PID is never signalled.
+    "if (proc_pidpath((pid_t)pid, path, sizeof(path)) <= 0) return FALSE; name = strrchr(path, '/'); "
+    "if (!name || strcmp(name + 1, \"gluon-launcher-host\")) return FALSE; return !kill((pid_t)pid, SIGTERM);",
+    "if (quitReason != kAELogOut && quitReason != kAEReallyLogOut && quitReason != kAEShowRestartDialog && "
+    "quitReason != kAEShowShutdownDialog && [self stopGluonSession]) return NSTerminateCancel;",
 )
 
 
@@ -192,6 +198,8 @@ def main():
             macdrv.replace("configuration.createsNewApplicationInstance = NO;", ""),
             macdrv.replace('if (attempted || (focus && !strcmp(focus, "0"))) return;', "if (attempted) return;"),
             macdrv.replace("        [self activateBundleOnceIfStillInactive];\n", ""),
+            macdrv.replace("        if (!name || strcmp(name + 1, \"gluon-launcher-host\")) return FALSE;\n", ""),
+            macdrv.replace("quitReason != kAEShowShutdownDialog &&", ""),
         ):
             if broken == macdrv:
                 raise ValueError("a macdrv self-test mutation did not change the source")

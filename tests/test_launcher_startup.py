@@ -33,7 +33,8 @@ event = {'role': pathlib.Path(sys.argv[0]).name,
          'args': sys.argv[1:], 'dllpath': os.environ.get('WINEDLLPATH'),
          'focus': os.environ.get('GLUON_FOCUS'), 'gl': os.environ.get('GLUON_GL_COMPAT_AS_CORE'),
          'dyld': os.environ.get('DYLD_INSERT_LIBRARIES'), 'game_cwd': os.environ.get('GLUON_GAME_CWD'),
-         'prefix': os.environ.get('WINEPREFIX'), 'app': os.environ.get('SteamAppId')}
+         'prefix': os.environ.get('WINEPREFIX'), 'app': os.environ.get('SteamAppId'),
+         'host': os.environ.get('GLUON_HOST_PID')}
 print('fixture output from', event['role'])
 if event['role'] == 'notify':
     event['script'] = sys.stdin.read()
@@ -57,14 +58,16 @@ while rest and rest[0] != '--args':
     if option == '--env':
         key, _, item = value.partition('=')
         env[key] = item
-    elif option in ('--stdout', '--stderr'):
+    elif option == '--stdout':
         output = value
+    elif option == '--stderr':
+        errors = value
 # The real environment variables reach the game only through --env.
 env['LAUNCHER_STARTUP_TRACE'] = os.environ['LAUNCHER_STARTUP_TRACE']
 executable = plistlib.load(open(os.path.join(bundle, 'Contents/Info.plist'), 'rb'))['CFBundleExecutable']
-with open(output, 'a') as log:
+with open(output, 'w') as out, open(errors, 'w') as err:
     sys.exit(subprocess.call([os.path.join(bundle, 'Contents/MacOS', executable), *rest[1:]],
-                             env=env, cwd='/', stdout=log, stderr=log))
+                             env=env, cwd='/', stdout=out, stderr=err))
 """)
         self.opener.chmod(0o755)
         self.launcher = self.root / "bin/gluon"
@@ -190,9 +193,10 @@ with open(output, 'a') as log:
         self.assertEqual(game["game_cwd"], str(self.game.parent))
         self.assertEqual(game["app"], "123")
         self.assertTrue(game["prefix"].endswith("pfx-wine"))
+        self.assertIsNone(game["host"], "a launch without the native host must not name one")
         wine_log = (self.home / "logs/wine-123.log").read_text()
         self.assertIn("fixture output from wine", wine_log)
-        self.assertFalse((self.home / "logs/wine-123-session.log").exists())
+        self.assertEqual(sorted(p.name for p in (self.home / "logs").glob("wine-123-session.*")), [])
 
     def test_runtime_without_bundle_support_starts_wine_directly(self):
         runtime = self.runtime()
@@ -235,6 +239,16 @@ with open(output, 'a') as log:
         log = (self.home / "logs/launch-123.log").read_text()
         self.assertIn("launch option GLUON_APP_BUNDLE=0", log)
         self.assertNotIn("launch option DYLD_", log)
+
+    def test_host_pid_comes_only_from_the_launcher_host(self):
+        runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
+        result, events = self.run_launcher("GLUON_HOST_PID=1", GLUON_RUNTIME=str(runtime),
+                                           GLUON_LAUNCHER_HOST="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        game = [event for event in events if event["role"] == "wine"][-1]
+        # The fixture runs the launcher directly, so its parent is this test.
+        self.assertEqual(game["host"], str(os.getpid()))
 
     def test_settings_for_every_game_and_compatibility_mapping_default(self):
         runtime = self.runtime()

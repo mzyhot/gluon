@@ -128,6 +128,14 @@ for argument in "$@"; do
 done
 set -- "${game_arguments[@]}"
 
+# Quitting the game's own app asks this session's launcher host to stop it, as
+# Steam's Stop does. Only the host's real PID is passed; settings cannot set it.
+if [ "${GLUON_LAUNCHER_HOST:-}" = 1 ]; then
+    export GLUON_HOST_PID="$PPID"
+else
+    unset GLUON_HOST_PID
+fi
+
 # Rosetta settings every Windows runtime here benefits from (both are documented
 # switches; set a variable to 0 in the per-game settings to turn it off).
 [ "${ROSETTA_ADVERTISE_AVX-1}" = 0 ] && unset ROSETTA_ADVERTISE_AVX || export ROSETTA_ADVERTISE_AVX=1
@@ -324,8 +332,8 @@ stop_session() {
     wait $!
     shutdown_status=$?
     if [ -n "${game_log:-}" ] && [ -f "$game_log" ]; then
-        cat "$game_log" >> "$WINE_LOG" 2>/dev/null
-        rm -f "$game_log"
+        cat "$game_log" "$game_out" >> "$WINE_LOG" 2>/dev/null
+        rm -f "$game_log" "$game_out"
     fi
     if [ -n "$child_pid" ]; then
         # Cleanup has finished or reached its deadline. A wrapper that ignores
@@ -475,11 +483,15 @@ else
             [ "$name" != GLUON_LAUNCHER_HOST ] || continue
             launch_environment+=(--env "$name=${!name}")
         done < <(compgen -e)
-        game_log="$LOG_DIR/wine-$appid-session.log"
+        # Separate files: open does not append, so one shared file would let the
+        # game's two output streams overwrite each other.
+        game_log="$LOG_DIR/wine-$appid-session.err"
+        game_out="$LOG_DIR/wine-$appid-session.out"
         : > "$game_log"
+        : > "$game_out"
         log "  starting ${bundle##*/} through LaunchServices (output in $WINE_LOG)"
         bundle_started=$SECONDS
-        /usr/bin/open -n -W -a "$bundle" --stdout "$game_log" --stderr "$game_log" \
+        /usr/bin/open -n -W -a "$bundle" --stdout "$game_out" --stderr "$game_log" \
             "${launch_environment[@]}" --args "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
     else
         log "  starting Wine (output in $WINE_LOG)"
@@ -492,8 +504,9 @@ else
     status=$?
     child_pid=""
     if [ -n "$bundle" ]; then
-        cat "$game_log" >> "$WINE_LOG" 2>/dev/null
-        if [ "$status" -ne 0 ] && [ ! -s "$game_log" ] && [ $((SECONDS - bundle_started)) -lt 5 ]; then
+        cat "$game_log" "$game_out" >> "$WINE_LOG" 2>/dev/null
+        if [ "$status" -ne 0 ] && [ ! -s "$game_log" ] && [ ! -s "$game_out" ] \
+            && [ $((SECONDS - bundle_started)) -lt 5 ]; then
             # LaunchServices refused the bundle: open failed at once and nothing ran.
             bundle=""
             log "  the app bundle did not start (open exit status $status); starting Wine directly"
@@ -506,7 +519,7 @@ else
             status=$?
             child_pid=""
         fi
-        rm -f "$game_log"
+        rm -f "$game_log" "$game_out"
     fi
     # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
     run_wait "$wineserver" -w
