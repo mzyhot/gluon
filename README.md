@@ -19,11 +19,16 @@ Everything below applies to every game Gluon runs. Each part can be switched off
 game or for all games (see [Settings](#settings)).
 
 - **Steam integration.** Windows-only games become installable, and Play starts them
-  through Gluon. Steam's Stop button and quitting Steam end the game and its Windows
-  processes.
-- **Each game is its own Mac app.** It opens in front of Steam, shows its own name in the
-  menu bar and Dock, and macOS Game Mode can recognize it. Quitting it from its menu or
-  the Dock ends the game the way Steam's Stop does.
+  through Gluon. Steam's Stop button and quitting Steam, from the desktop or Big Picture,
+  end the game and its Windows processes as soon as you ask.
+- **Each game is its own Mac app.** It opens in front of Steam, in Big Picture too, shows
+  its own name in the menu bar and Dock, and macOS Game Mode can recognize it. Quitting it
+  from its menu or the Dock ends the game the way Steam's Stop does.
+- **Steam Cloud.** Saves sync through Steam Cloud. Gluon points each cloud rule's Windows
+  save folder at the matching folder inside the game's Wine prefix, and backs up the
+  game's local cloud files once before the first sync. See
+  [Compatibility and limitations](#compatibility-and-limitations) for the rules Steam
+  keeps to Windows.
 - **Steam overlay and achievements** through your installed Steam client. The overlay
   runs only in the game's own processes.
 - **Graphics.** Direct3D 9 through DXVK, Direct3D 10/11 through DXMT, Vulkan up to 1.4
@@ -64,9 +69,12 @@ Launch options win over a game's file, which wins over the file for every game.
 | `GLUON_STEAM_BRIDGE` | `1` | hide the Steam client from the game (no achievements or overlay) |
 | `GLUON_GL_COMPAT_AS_CORE` | `1` | reject OpenGL 3.x compatibility contexts as Wine normally does |
 | `GLUON_CAFFEINATE` | `1` | let the Mac and display sleep during play |
+| `GLUON_CLOUD` | `1` | keep Steam Cloud off for the game on this Mac (settings files only) |
 | `WINEMSYNC` | `1` | use the Wine server for synchronization instead of msync |
 
 `GLUON_RUNTIME=<folder>` picks another runtime from `~/Library/Application Support/Gluon/runtime/`.
+`GLUON_CLOUD` changes Steam's local details for the game, so it takes effect the next time
+Steam is closed and reopened, and it is read only from the settings files.
 
 ## Tested games
 
@@ -145,6 +153,12 @@ need more compatibility work, and some may not work at all.
 
 Gluon modifies local Steam metadata to enable Windows-only titles. These changes are
 experimental and may interfere with Steam's normal behavior.
+
+Steam Cloud rules that a game's developer restricted to Windows stay Windows-only: Steam
+keeps those files for Windows PCs and does not download them to a Mac, so those saves do
+not sync here. Steam Cloud stays off on this Mac for a game whose rules Gluon cannot
+place, such as one installed in a Steam library outside your home folder. Gluon keeps
+its cloud file backups in `~/Library/Application Support/Gluon/backups/cloud/`.
 
 ## Disclaimer
 

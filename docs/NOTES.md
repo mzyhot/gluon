@@ -181,7 +181,7 @@ Launcher changes made in response:
   runtime by name (`GLUON_RUNTIME=wine-stable`) and pass runtime options.
 - A plain Wine runtime uses `<compat>/pfx-wine`; `<compat>/pfx` belongs to the Steam Play tool.
 
-### Steam Cloud finding - why cloud safe mode exists
+### Steam Cloud finding - why cloud was off until 2026-10-16
 
 People Playground's cloud rules cover only `Contraptions` (root `gameinstall`). On first
 sync the Mac client downloaded every cloud file, including four under `Mods/`. In the
@@ -193,12 +193,57 @@ Local copies were untouched; they and the contraptions were backed up locally.
 Of the managed apps, 38 have auto-cloud rules; most rules use Windows roots
 (`WinAppDataLocalLow`, `WinMyDocuments`, ...) and 29 are marked Windows-only. As a macOS
 client Steam cannot resolve those, so saves do not sync, and the same "forget" could hit
-them. Until that is solved `enable.CLOUD_SAFE_MODE` removes the `ufs` section from every
-managed entry (original kept in the state file, restored exactly by `disable`), which
-turns Steam Cloud off for those apps on this Mac only.
+them. Until 2026-10-16 Gluon removed the `ufs` section from every managed entry
+(original kept in the state file, restored exactly by `disable`), which turned Steam
+Cloud off for those apps on this Mac only, including games that use only the Steam API
+for cloud files.
 
-Real fix to build and test carefully: add macOS to each rule's platforms and add
-`rootoverrides` that map each Windows root to the matching folder inside the game's prefix.
+### Steam Cloud mapping (2026-10-16)
+
+Steam's cloud log shows what the Mac client does with each kind of rule:
+
+- A rule restricted to another OS (`platforms` = Windows or Linux) is logged as
+  `Skipping rule N because it does not run on our platform`, and its cloud files as
+  `Skipping download of file ... to our platform`; nothing is forgotten (seen for
+  POSTAL 2 and Primordialis). Steamworks documents that files of an OS-restricted rule
+  are locked to that OS, so these saves cannot sync to a Mac.
+- A cross-platform rule with the install-folder root resolves to the same folder on a
+  Mac (`Evaluating rule 0 with root="GameInstall"` for People Playground).
+- A cross-platform rule with a Windows root has no Mac location; that is where files
+  can be forgotten.
+
+`gluon/cloud.py` therefore rewrites the section instead of removing it, using
+Steamworks root overrides ("the new location that the Original Root maps to on the
+specified OS"; an Add Path is inserted between the new root and the rule's path):
+
+- Every cross-platform rule gets a macOS override for its root. The Windows location
+  is the rule's root, or the root a Windows override moves it to (with that override's
+  path and transforms), mapped to the game's Wine profile: `Documents`,
+  `AppData/Local`, `AppData/LocalLow`, `AppData/Roaming` and `Saved Games` under
+  `<library>/steamapps/compatdata/<appid>/pfx-wine/drive_c/users/crossover` (or `pfx`
+  and `steamuser` for a Steam Play tool runtime). The override uses `MacAppSupport` or
+  `MacHome` plus the profile's path below it.
+- The developer's own macOS overrides are dropped (they describe a native Mac build the
+  Windows game does not use); Windows and Linux overrides are kept unchanged.
+- OS-restricted rules are left as they are. Sections without rules (Steam API files)
+  are kept as they are.
+- A rule Gluon cannot place (an unknown root, an unknown override key or comparison, a
+  move into the install folder, a prefix outside the home folder or a prefix with two
+  user profiles) keeps the whole section out, as before. `GLUON_CLOUD=0` in the
+  settings files does the same for one game or all games.
+- The mapping is idempotent; Gluon recognizes its own overrides (a macOS override into
+  `drive_c/users/`), so the state file always keeps Steam's section for `disable`.
+  A section left out by an earlier Gluon is brought back mapped until Steam refreshes
+  the entry, which supplies Steam's current section.
+- Before the first mapped sync, the helper copies Steam's cloud records
+  (`userdata/<user>/<appid>`) and each mapped rule's local folder to
+  `$GLUON_HOME/backups/cloud/<appid>-<time>/`, up to 256 MB per game; larger folders are
+  skipped and named in the helper log. A failed backup keeps cloud off for that game.
+
+A dry run over this Mac's 49 managed games with cloud sections mapped 13, kept 28 with
+install-folder or OS-restricted rules only, kept 8 that use only the Steam API, and left
+none off. Needs an owner run: a mapped game's first launch (download into the prefix)
+and exit (upload) in Steam's cloud log.
 
 ### Selection rule
 
@@ -876,9 +921,26 @@ own; returning 4.1 for them would break games that then use 4.2+ features. More
 than 4.1 needs a different OpenGL implementation (for example Mesa's Zink on a
 Vulkan driver), which is a separate project.
 
-No Big Picture session has been recorded in Steam's logs yet. Launches from Big
-Picture use the same LaunchServices activation and Stop path; an owner run is
-needed to find Big Picture-specific problems.
+### Big Picture (owner run, 2026-10-16)
+
+Big Picture launched Happy Wheels (`SSGL: UI mode 7`) and called
+`Apps.RaiseWindowForGame` for about one second while the only tracked process was
+the launcher host; the game did not come to the front. Quitting Steam logged
+`ExecuteSteamURL: "steam://open/steam://exit"` at once, Steam stopped tracking the
+game 12 seconds later, and the host received TERM after 18 seconds; the shutdown
+callback did not arrive. Fixes:
+
+- The host reads Steam's console log for the exit request and stops the session one
+  second after it, unless Steam refuses the exit (see
+  [launcher-process-lifecycle.md](launcher-process-lifecycle.md)).
+- When Steam activates the host, it passes the activation to the game's app.
+- macdrv keeps asking LaunchServices to activate the game's bundle, at most three times
+  within four seconds, until one of its windows is active on the current Space, so a
+  window behind Big Picture's full-screen window or on another Space comes forward.
+- The metadata helper checks again for a running game after its restart question is
+  answered, so "Restart Steam" never quits Steam under a game started meanwhile.
+
+Needs an owner run in Big Picture.
 
 ## Open items
 
@@ -895,8 +957,8 @@ needed to find Big Picture-specific problems.
 3. **Steam's Stop button.** Fixed through the native host; owner-confirmed on
    a fresh session, with the Cocoa-quit handoff recorded in the launcher log.
    Quitting Steam with games open stops each game when Steam exits (owner-
-   confirmed, about 13 s). The host now also requests SteamUtils so Steam's
-   shutdown callback can stop games sooner; that needs an owner-run Steam quit.
+   confirmed, about 13 s). The host now also stops its game as soon as Steam logs
+   its exit request (about one second); that needs an owner-run Steam quit.
 4. **Steamworks inside Wine.** The bridge is wired in (see above). Verified only as
    "init error gone" with People Playground; local achievement caches confirm persisted
    unlocks. The owner confirmed Valve's real overlay and achievement popup in Happy

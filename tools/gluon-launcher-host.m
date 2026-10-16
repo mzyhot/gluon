@@ -7,6 +7,8 @@
 #import <signal.h>
 #import <errno.h>
 #import <dlfcn.h>
+#import <fcntl.h>
+#import <sys/stat.h>
 #import <stdio.h>
 #import <stdlib.h>
 #import <string.h>
@@ -33,6 +35,23 @@ static NSString *steam_client_directory(void)
     else if (compat && *compat) directory = [NSString stringWithUTF8String:compat];
     if (!directory.isAbsolutePath) return nil;
     return directory.stringByStandardizingPath.stringByResolvingSymlinksInPath;
+}
+
+/* The client runs from <Steam root>/Steam.AppBundle/Steam/Contents/MacOS, and
+ * Steam writes its console log under <Steam root>/logs. */
+static NSString *steam_console_log(NSString *directory)
+{
+    NSArray<NSString *> *parts = directory.pathComponents;
+    NSUInteger count = parts.count;
+    if (count < 6 || ![parts[count - 1] isEqual:@"MacOS"] || ![parts[count - 2] isEqual:@"Contents"] ||
+        ![parts[count - 3] isEqual:@"Steam"] || ![parts[count - 4] isEqual:@"Steam.AppBundle"]) return nil;
+    NSString *root = [NSString pathWithComponents:[parts subarrayWithRange:NSMakeRange(0, count - 4)]];
+    return [root stringByAppendingPathComponent:@"logs/console_log.txt"];
+}
+
+static BOOL line_contains(NSData *line, const char *text)
+{
+    return memmem(line.bytes, line.length, text, strlen(text)) != NULL;
 }
 
 static NSString *steam_executable(NSString *bundle)
@@ -84,10 +103,21 @@ static NSRunningApplication *steam_owner(NSString *directory)
 @property(nonatomic, strong) NSString *steamDirectory;
 @property(nonatomic, strong) NSRunningApplication *steamOwner;
 @property(nonatomic, strong) dispatch_semaphore_t steamWatcherDone;
+@property(nonatomic) int steamLog;
+@property(nonatomic) off_t steamLogOffset;
+@property(nonatomic, strong) NSMutableData *steamLogLine;
+@property(nonatomic) double steamExitDeadline;
+@property(nonatomic) BOOL handedActivation;
 - (void)poll;
 @end
 
 @implementation GluonLauncherHost
+- (instancetype)init
+{
+    if ((self = [super init])) _steamLog = -1;
+    return self;
+}
+
 - (void)finish:(int)status
 {
     if (self.finished) return;
@@ -139,9 +169,82 @@ static NSRunningApplication *steam_owner(NSString *directory)
         fprintf(stderr, "gluon: launcher host could not signal child: %s\n", strerror(errno));
 }
 
+/* Steam logs an exit request as soon as the user quits it, then waits for
+ * running games before it exits or signals them. Only lines written after this
+ * host started count. */
+- (void)watchSteamConsole:(NSString *)path
+{
+    if (!path) return;
+    int log = open(path.fileSystemRepresentation, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (log < 0) return;
+    struct stat info;
+    if (fstat(log, &info) || !S_ISREG(info.st_mode))
+    {
+        close(log);
+        return;
+    }
+    self.steamLog = log;
+    self.steamLogOffset = info.st_size;
+    self.steamLogLine = [NSMutableData data];
+    fprintf(stderr, "gluon: Steam's exit request will stop this session\n");
+}
+
+- (void)steamConsoleLine:(NSData *)line
+{
+    /* Steam refuses an exit during its own startup and says so right after. */
+    if (line_contains(line, "ExecuteSteamURL exit : not allowed yet"))
+    {
+        if (self.steamExitDeadline)
+            fprintf(stderr, "gluon: Steam refused its exit request; session continues\n");
+        self.steamExitDeadline = 0;
+    }
+    else if (line_contains(line, "ExecuteSteamURL: \"") && line_contains(line, "steam://exit"))
+        self.steamExitDeadline = NSProcessInfo.processInfo.systemUptime + 1.0;
+}
+
+- (void)readSteamConsole
+{
+    struct stat info;
+    if (self.steamLog < 0 || fstat(self.steamLog, &info)) return;
+    if (info.st_size < self.steamLogOffset)
+    {
+        self.steamLogOffset = 0;
+        self.steamLogLine.length = 0;
+    }
+    char buffer[16384];
+    /* A large burst is finished on the following polls. */
+    for (int reads = 0; reads < 8 && self.steamLogOffset < info.st_size; reads++)
+    {
+        ssize_t count = pread(self.steamLog, buffer, sizeof(buffer), self.steamLogOffset);
+        if (count <= 0) break;
+        self.steamLogOffset += count;
+        const char *start = buffer, *end = buffer + count;
+        while (start < end)
+        {
+            const char *newline = memchr(start, '\n', (size_t)(end - start));
+            const char *stop = newline ? newline : end;
+            if (self.steamLogLine.length < 65536)
+                [self.steamLogLine appendBytes:start length:(NSUInteger)(stop - start)];
+            if (!newline) break;
+            [self steamConsoleLine:self.steamLogLine];
+            self.steamLogLine.length = 0;
+            start = newline + 1;
+        }
+    }
+}
+
 - (void)poll
 {
     if (self.finished || [self reap]) return;
+    if (!self.stopping)
+    {
+        [self readSteamConsole];
+        if (self.steamExitDeadline && NSProcessInfo.processInfo.systemUptime >= self.steamExitDeadline)
+        {
+            fprintf(stderr, "gluon: Steam is exiting; stopping session\n");
+            [self requestStop:SIGTERM];
+        }
+    }
     if (self.steamOwner.terminated && !self.stopping)
     {
         fprintf(stderr, "gluon: owning Steam application exited; stopping session\n");
@@ -296,6 +399,34 @@ static NSRunningApplication *steam_owner(NSString *directory)
     [self watchSteamShutdown];
 }
 
+/* Steam raises a running game through the process it tracks, which is this
+ * host. Pass that activation on to the game's own app so its window comes
+ * forward, in Big Picture as on the desktop. */
+- (void)applicationDidBecomeActive:(NSNotification *)notification
+{
+    (void)notification;
+    const char *value = getenv("SteamAppId");
+    NSString *appid = value && *value ? [NSString stringWithUTF8String:value] : nil;
+    if (!appid || self.finished) return;
+    NSString *identifier = [@"org.gluon.game." stringByAppendingString:appid];
+    for (NSRunningApplication *app in [NSRunningApplication
+        runningApplicationsWithBundleIdentifier:identifier])
+    {
+        /* Only the game's window process is a regular app; Wine's helpers are not. */
+        if (app.terminated || app.activationPolicy != NSApplicationActivationPolicyRegular) continue;
+        if (@available(macOS 14.0, *))
+        {
+            [NSApp yieldActivationToApplication:app];
+            [app activateFromApplication:NSRunningApplication.currentApplication options:0];
+        }
+        else [app activateWithOptions:0];
+        if (!self.handedActivation)
+            fprintf(stderr, "gluon: passing Steam's activation to the game's app\n");
+        self.handedActivation = YES;
+        return;
+    }
+}
+
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
 {
     (void)sender;
@@ -342,6 +473,7 @@ int main(int argc, char **argv)
         [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
         host.steamDirectory = steam_client_directory();
         host.steamOwner = steam_owner(host.steamDirectory);
+        [host watchSteamConsole:steam_console_log(host.steamDirectory)];
         if (host.steamOwner)
             fprintf(stderr, "gluon: Steam application %d exit will stop this session\n",
                 host.steamOwner.processIdentifier);

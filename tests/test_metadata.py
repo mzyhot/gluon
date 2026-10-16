@@ -137,7 +137,7 @@ class MetadataProtectionTests(unittest.TestCase):
 
     def test_restart_is_offered_once_per_refreshed_set(self):
         entry, cache = self.refreshed_cache()
-        needed = lambda value: value.get("needs_repair")
+        needed = lambda value, *_: value.get("needs_repair")
         with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache) as reader, \
                 patch.object(metadata, "_game_running", return_value=False), \
                 patch.object(metadata, "_ask_restart", return_value=False) as ask:
@@ -161,10 +161,10 @@ class MetadataProtectionTests(unittest.TestCase):
         with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache), \
                 patch.object(metadata, "_game_running", side_effect=lambda: running[0]), \
                 patch.object(metadata, "_ask_restart", return_value=False) as ask:
-            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda _: True, repair=Mock()), [])
+            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda *_: True, repair=Mock()), [])
             ask.assert_not_called()
             running[0] = False
-            self.assertEqual(len(metadata.watch_refresh({"123": {}}, lambda _: True, repair=Mock())), 1)
+            self.assertEqual(len(metadata.watch_refresh({"123": {}}, lambda *_: True, repair=Mock())), 1)
             ask.assert_called_once()
 
     def test_restart_quits_steam_repairs_then_reopens_it(self):
@@ -178,9 +178,23 @@ class MetadataProtectionTests(unittest.TestCase):
                 patch.object(metadata, "_ask_restart", return_value=True), \
                 patch.object(metadata.steam, "is_running", side_effect=lambda: next(quitting)), \
                 patch.object(metadata.time, "sleep"), patch.object(metadata.subprocess, "run", run):
-            lines = metadata.watch_refresh({"123": {}}, lambda _: True, repair=repair)
+            lines = metadata.watch_refresh({"123": {}}, lambda *_: True, repair=repair)
         self.assertEqual(order, ["steam://exit", "repair", "-b com.valvesoftware.steam"])
         self.assertIn("re-applied 123", lines)
+
+    def test_game_started_during_the_question_postpones_the_restart(self):
+        _, cache = self.refreshed_cache()
+        running = iter([False, True, False])
+        with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache), \
+                patch.object(metadata, "_game_running", side_effect=lambda: next(running)), \
+                patch.object(metadata, "_ask_restart", return_value=True) as ask, \
+                patch.object(metadata, "_restart_steam") as restart:
+            lines = metadata.watch_refresh({"123": {}}, lambda *_: True, repair=Mock())
+            self.assertIn("restart postponed", lines[0])
+            restart.assert_not_called()
+            ask.return_value = False
+            metadata.watch_refresh({"123": {}}, lambda *_: True, repair=Mock())
+            self.assertEqual(ask.call_count, 2, "the restart was not offered again")
 
     def test_steam_that_does_not_quit_is_left_alone(self):
         repair = Mock()
@@ -195,7 +209,7 @@ class MetadataProtectionTests(unittest.TestCase):
     def test_incomplete_cache_is_not_recorded_as_a_refresh(self):
         with patch.object(metadata.appinfo, "AppInfoFile", side_effect=ValueError("incomplete")), \
                 patch.object(metadata, "_ask_restart") as ask:
-            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda _: True, repair=Mock()), [])
+            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda *_: True, repair=Mock()), [])
         self.assertFalse(self.observed.exists())
         ask.assert_not_called()
 

@@ -77,7 +77,18 @@ installed `steamclient.dylib` from the `STEAM_CLIENT_CONFIG_FILE` directory (or
 pipe, at most 32 callbacks per 100 ms. On 704 the main thread performs the same
 TERM request as a Cocoa quit. The game's callbacks remain on its own pipe.
 
-As a fallback, the host identifies the running `com.valvesoftware.steam`
+Steam writes its exit request to `<Steam root>/logs/console_log.txt` at once
+(`ExecuteSteamURL: "steam://open/steam://exit"`, for the desktop and Big Picture),
+then waits for running games: in a Big Picture session on 2026-10-16 its game
+tracking gave up 12 seconds later and the host received TERM after 18 seconds,
+and the shutdown callback above never arrived. The host derives the Steam root from
+the client directory (`<root>/Steam.AppBundle/Steam/Contents/MacOS`), opens the log
+at its current end and reads only new lines on its 100 ms poll, with partial lines
+kept until complete. An exit request stops the session one second later unless
+Steam logs `ExecuteSteamURL exit : not allowed yet`, which it does when it refuses
+an exit during its own startup.
+
+As a further fallback, the host identifies the running `com.valvesoftware.steam`
 application whose executable is that client's `steam_osx` (or the bootstrapper
 named by `STEAM_APP_BUNDLE_PATH`). It never guesses between two matches. If that
 application terminates, the host stops its session. Each game has its own host,
@@ -89,6 +100,18 @@ second for the watcher to release its pipe, then exits without running image
 destructors, because Steam's own threads may still be active. Gluon distributes
 no Steam library; `tools/gluon-steam-client.h` declares only the ABI prefix used.
 
+## Bringing the game forward
+
+Steam raises a running game through the processes it tracks, the first of which
+is this host. When the host becomes active, it passes the activation to the
+game's own app (`org.gluon.game.<SteamAppId>`, the instance with a regular
+activation policy) through macOS 14's cooperative activation, or a plain activate
+on older systems. The game's macdrv side asks LaunchServices to activate its
+bundle until one of its windows is active on the current Space, at most three
+times within four seconds of its first activation request (`GLUON_FOCUS=0` turns
+this off). Big Picture's full-screen window can otherwise keep the game's first
+window behind it or on another Space.
+
 ## Cloud fixtures
 
 `packaging/check-launcher-host.sh` compiles both native architectures and runs
@@ -99,6 +122,7 @@ through `NSRunningApplication`, and two independent concurrent hosts.
 A controlled `steamclient.dylib` and a fake Steam bundle then cover Steam quit:
 three concurrent games where one is stopped first, an unrelated callback that
 must not stop games, the shutdown callback stopping the rest, Steam exiting
-without a callback, a blocked IPC call, missing or failing interfaces, and a
-callback flood. The fixture process group has a 60-second external deadline.
+without a callback, an exit request in Steam's console log (with earlier lines,
+a refused exit and a line written in two parts), a blocked IPC call, missing or
+failing interfaces, and a callback flood. The fixture process group has a 60-second external deadline.
 These checks run no Steam, Wine or games.

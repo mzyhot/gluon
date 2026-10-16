@@ -20,16 +20,16 @@ import shutil
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import appinfo, steam, vdf
+from . import appinfo, cloud, steam, vdf
 
 STATE = os.path.join(steam.GLUON_HOME, "state", "apps.json")
 
-# Steam Cloud is switched off (on this Mac only) for apps we enable, by leaving the cloud
-# section out of the cached entry. As a macOS client Steam evaluates an app's cloud rules
-# for macOS: Windows save locations do not resolve, and files that match no rule get
-# removed from the user's cloud after a session (seen with People Playground, 2026-10-13).
-# Turn this off only once Windows save locations are mapped into the game's prefix.
-CLOUD_SAFE_MODE = True
+# Steam Cloud: as a macOS client Steam evaluates an app's cloud rules for macOS, where
+# Windows save locations do not resolve, and files that match no rule get removed from
+# the user's cloud after a session (seen with People Playground, 2026-10-13). gluon.cloud
+# maps each cross-platform rule's Windows location into the game's Wine prefix with a
+# macOS root override; an app it cannot map keeps its cloud section out of the cached
+# entry, which turns Steam Cloud off for it on this Mac only.
 
 # App types offered for install. Left out: tools (SDKs, dedicated servers), DLC (its files
 # come through the base game), music, config.
@@ -74,9 +74,24 @@ def _set(d: Dict[str, Any], path: Path, value: Any) -> None:
         d[path[-1]] = value
 
 
-def planned_changes(ai: Dict[str, Any]) -> List[Tuple[Path, Any, str]]:
-    """(path, current value, new value) for everything that has to mention macOS."""
-    out: List[Tuple[Path, Any, str]] = []
+def _cloud_source(ai: Dict[str, Any], appid: int, change_number: Optional[int],
+                  state: Optional[Dict[str, Any]]) -> Any:
+    """Steam's own cloud section for the app."""
+    if "ufs" in ai:
+        return ai["ufs"]
+    # An earlier Gluon left the section out entirely; Steam's copy is in the state
+    # until Steam refreshes the entry, which brings back its current section.
+    rec = (state if state is not None else load_state()).get(str(appid)) or {}
+    if change_number is None or rec.get("change_number") != change_number:
+        return None
+    return _unpack(rec.get("original", {}).get("ufs"))
+
+
+def planned_changes(ai: Dict[str, Any], appid: Optional[int] = None, change_number: Optional[int] = None,
+                    state: Optional[Dict[str, Any]] = None) -> List[Tuple[Path, Any, Any]]:
+    """(path, current value, new value) for everything that has to mention macOS and for
+    the app's cloud section on this Mac. Without an app id the cloud section is left out."""
+    out: List[Tuple[Path, Any, Any]] = []
 
     def want(path: Path, new: str) -> None:
         cur = _get(ai, path)
@@ -94,8 +109,14 @@ def planned_changes(ai: Dict[str, Any]) -> List[Tuple[Path, Any, str]]:
             oslist = _get(item, ("config", "oslist"))
             if _has(oslist, "windows"):
                 want(section + (key, "config", "oslist"), _with(oslist, "macos"))
-    if CLOUD_SAFE_MODE and "ufs" in ai:
-        out.append((("ufs",), ai["ufs"], None))
+    if appid is None:
+        if "ufs" in ai:
+            out.append((("ufs",), ai["ufs"], None))
+        return out
+    source = _cloud_source(ai, appid, change_number, state)
+    target = cloud.mapped(source, appid) if source is not None else None
+    if target != ai.get("ufs"):
+        out.append((("ufs",), ai.get("ufs"), target))
     return out
 
 
@@ -211,19 +232,35 @@ def enable(appids: List[int]) -> List[str]:
         if rec is None and _has(_get(ai, ("common", "oslist")), "macos"):
             notes.append("%d (%s): already has a macOS build, left alone" % (appid, name))
             continue
-        changes = planned_changes(ai)
+        changes = planned_changes(ai, appid, entry.change_number, state)
         if not changes:
             notes.append("%d (%s): already enabled" % (appid, name))
             continue
         original = dict((rec or {}).get("original", {}))
+        record = {"name": name, "change_number": entry.change_number, "original": original}
+        if rec and "cloud_backup" in rec:
+            record["cloud_backup"] = rec["cloud_backup"]
         for path, cur, new in changes:
-            if isinstance(cur, dict):
+            if path == ("ufs",) and isinstance(new, dict) and new.get("savefiles") \
+                    and "cloud_backup" not in record:
+                # Before Steam first syncs these saves on this Mac.
+                try:
+                    lines = cloud.backup(new, appid)
+                except OSError as exc:
+                    notes.append("%d (%s): Steam Cloud left off; backup failed: %s" % (appid, name, exc))
+                    new = lines = None  # cloud off, as before; retried on the next sync
+                if lines is not None:
+                    notes += lines
+                    record["cloud_backup"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            if path == ("ufs",) and cloud.is_gluon_mapping(cur):
+                pass  # Gluon's own mapping; the original stays Steam's section
+            elif isinstance(cur, dict):
                 original["/".join(path)] = _pack(cur)  # always the latest copy of a removed section
             else:
                 original.setdefault("/".join(path), cur)
             _set(ai, path, new)
         entry.set_kv(kv)
-        state[str(appid)] = {"name": name, "change_number": entry.change_number, "original": original}
+        state[str(appid)] = record
         dirty = True
         notes.append("%d (%s): enabled (%d values)" % (appid, name, len(changes)))
     if dirty:
@@ -274,7 +311,7 @@ def status() -> List[Dict[str, Any]]:
         pending: Optional[int] = None
         change = None
         if entry is not None:
-            pending = len(planned_changes(entry.kv["appinfo"]))
+            pending = len(planned_changes(entry.kv["appinfo"], int(key), entry.change_number))
             change = entry.change_number
         rows.append({"appid": int(key), "name": rec.get("name"), "in_effect": pending == 0,
                      "enabled_at_change": rec.get("change_number"), "cache_change": change})
@@ -316,7 +353,9 @@ def sync(dry_run: bool = False) -> List[str]:
         from . import metadata
         # Offer a Steam restart for refreshed entries; the repair below runs
         # through this same function once Steam has quit.
-        return metadata.watch_refresh(load_state(), planned_changes, repair=lambda: sync())
+        state = load_state()
+        return metadata.watch_refresh(state, lambda ai, appid, change: planned_changes(ai, appid, change, state),
+                                      repair=lambda: sync())
     wanted = sorted({a for a, _ in candidates()} | {int(k) for k in load_state()})
     pending = [r["appid"] for r in status() if not r["in_effect"]]
     todo = sorted({a for a, _ in candidates()} | set(pending))
@@ -325,4 +364,5 @@ def sync(dry_run: bool = False) -> List[str]:
     notes = enable(wanted) if wanted else []
     from . import install
     recovered = install.recover_missing_installs([int(k) for k in load_state()])
-    return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n or ": deferred background updates" in n] + recovered
+    return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n or ": deferred background updates" in n
+                   or ": cloud backup" in n or "Steam Cloud left off" in n] + recovered

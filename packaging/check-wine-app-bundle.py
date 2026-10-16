@@ -39,10 +39,14 @@ REQUIRED = (
 MACDRV_REQUIRED = (
     "if (attempted || (focus && !strcmp(focus, \"0\"))) return;",
     "if (![[bundleURL pathExtension] isEqualToString:@\"app\"]) return; attempted = YES;",
-    "if ([NSApp isActive]) return;",
+    # Never activate an instance without a shown window; stop once a window is
+    # active on the current Space, so a Big Picture Space is covered too.
+    "if (![self gluonWindowShown:&onActiveSpace]) { [self bringBundleForward:bundleURL attempt:attempt + 1]; return; }",
+    "if ([NSApp isActive] && onActiveSpace) return;",
+    "if (attempt >= sizeof(delays) / sizeof(delays[0])) return;",
     "configuration.activates = YES; configuration.createsNewApplicationInstance = NO;",
-    "if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES];",
-    "[NSApp activate]; [self activateBundleOnceIfStillInactive]; }",
+    "if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES]; [self bringBundleForward:bundleURL attempt:attempt + 1];",
+    "[self bringBundleForwardOnce]; if ([NSApp isActive]) return;",
     # Quitting the game's app ends the whole session through Gluon's host, which
     # must be verified by path so a reused PID is never signalled.
     "if (proc_pidpath((pid_t)pid, path, sizeof(path)) <= 0) return FALSE; name = strrchr(path, '/'); "
@@ -53,8 +57,8 @@ MACDRV_REQUIRED = (
 
 
 def check_macdrv(source):
-    """The activation fallback runs once, only from an app bundle, never starts
-    another instance, and honors GLUON_FOCUS=0."""
+    """The activation fallback starts once, only from an app bundle, is bounded,
+    never starts another instance, and honors GLUON_FOCUS=0."""
     flat = normalized(source)
     for fragment in MACDRV_REQUIRED:
         if normalized(fragment) not in flat:
@@ -197,7 +201,10 @@ def main():
         for broken in (
             macdrv.replace("configuration.createsNewApplicationInstance = NO;", ""),
             macdrv.replace('if (attempted || (focus && !strcmp(focus, "0"))) return;', "if (attempted) return;"),
-            macdrv.replace("        [self activateBundleOnceIfStillInactive];\n", ""),
+            macdrv.replace("        [self bringBundleForwardOnce];\n", ""),
+            macdrv.replace("            if ([NSApp isActive] && onActiveSpace) return;\n",
+                           "            if ([NSApp isActive]) return;\n"),
+            macdrv.replace("        if (attempt >= sizeof(delays) / sizeof(delays[0])) return;\n", ""),
             macdrv.replace("        if (!name || strcmp(name + 1, \"gluon-launcher-host\")) return FALSE;\n", ""),
             macdrv.replace("quitReason != kAEShowShutdownDialog &&", ""),
         ):

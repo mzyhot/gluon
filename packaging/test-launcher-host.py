@@ -227,6 +227,42 @@ while :; do /bin/sleep 0.05; done
             assert output.count("owning Steam application exited; stopping session") == 2, output
             print("launcher-host: Steam exit stopped every running game passed", flush=True)
 
+            # Steam logs an exit request at once, then waits for games before it
+            # exits. Each host stops its game from the request; lines from before
+            # the session and a request Steam refuses do not count.
+            steam, environment = make_steam("console")
+            console = steam.parents[3] / "logs" / "console_log.txt"
+            console.parent.mkdir()
+            exit_line = '[2026-01-01 00:00:0{}] ExecuteSteamURL: "steam://open/steam://exit"\n'
+            console.write_text(exit_line.format(0))
+            games = start_games(steam, environment, "steam-console", 2)
+            assert host_output().count("Steam's exit request will stop this session") == 2
+            time.sleep(min(0.3, left()))
+            with console.open("a") as output:
+                output.write(exit_line.format(1) + "[2026-01-01 00:00:01] src/steamUI/steamurlcontroller.cpp "
+                             "(132) : Assertion Failed: CSteamURLController::ExecuteSteamURL exit : "
+                             "not allowed yet\n")
+            time.sleep(min(1.5, left()))
+            for game, evidence in games:
+                assert game.poll() is None, "An earlier or refused Steam exit stopped a game"
+                assert not evidence.exists()
+            # A log line may arrive in more than one write.
+            line = exit_line.format(2)
+            with console.open("a") as output:
+                output.write(line[:40])
+            time.sleep(min(0.3, left()))
+            with console.open("a") as output:
+                output.write(line[40:])
+            started = time.monotonic()
+            for game, evidence in games:
+                wait(game, 143)
+                assert evidence.read_text() == "TERM\n"
+            assert time.monotonic() - started < 4, "Steam's exit request was not acted on promptly"
+            output = host_output()
+            assert output.count("Steam is exiting; stopping session") == 2, output
+            assert output.count("Steam refused its exit request; session continues") == 2, output
+            print("launcher-host: Steam exit request stopped every running game passed", flush=True)
+
             # A Steam IPC call that never returns must not delay Stop or host exit.
             steam, environment = make_steam("blocked", mode="block-get")
             evidence = root / "steam-blocked"

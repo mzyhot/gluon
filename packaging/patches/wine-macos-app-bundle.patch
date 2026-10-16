@@ -82,30 +82,51 @@
  
  #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
  
-@@ -2170,7 +2172,42 @@
+@@ -2169,6 +2171,74 @@
+         [NSApp yieldActivationToApplication:otherApp];
          [otherApp activateFromApplication:[NSRunningApplication currentApplication]
                                    options:0];
-     }
++    }
 +
 +    /* Gluon: Steam, not another Wine app, is usually active when a game window
-+       first appears, and it does not yield. A game started from its own app
-+       bundle asks LaunchServices once to activate that bundle, then repeats the
-+       request so the bundle's other Wine processes can yield as above.
-+       GLUON_FOCUS=0 turns this off. */
-+    - (void) activateBundleOnceIfStillInactive
++       first appears, and it does not yield. In Big Picture a game can also be
++       active while its window sits on another Space behind Steam's full-screen
++       window. A game started from its own app bundle asks LaunchServices to
++       activate that bundle, as a Dock click does, until one of its windows is
++       active on the current Space: up to three checks within four seconds of its
++       first activation request, each followed by the yield request below for
++       the bundle's other Wine processes. GLUON_FOCUS=0 turns this off. */
++    - (BOOL) gluonWindowShown:(BOOL*)onActiveSpace
 +    {
-+        static BOOL attempted;
-+        NSURL *bundleURL = [[NSBundle mainBundle] bundleURL];
-+        const char *focus = getenv("GLUON_FOCUS");
- 
-+        if (attempted || (focus && !strcmp(focus, "0"))) return;
-+        if (![[bundleURL pathExtension] isEqualToString:@"app"]) return;
-+        attempted = YES;
++        BOOL shown = FALSE;
 +
-+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++        *onActiveSpace = FALSE;
++        for (NSWindow* window in [NSApp windows])
++        {
++            if (![window isKindOfClass:[WineWindow class]] || ![window isVisible] || [window isMiniaturized])
++                continue;
++            shown = TRUE;
++            if ([window isOnActiveSpace]) *onActiveSpace = TRUE;
++        }
++        return shown;
++    }
++
++    - (void) bringBundleForward:(NSURL*)bundleURL attempt:(unsigned int)attempt
++    {
++        static const double delays[] = { 0.3, 1.2, 2.5 };
++
++        if (attempt >= sizeof(delays) / sizeof(delays[0])) return;
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[attempt] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 +            NSWorkspaceOpenConfiguration *configuration;
++            BOOL onActiveSpace;
 +
-+            if ([NSApp isActive]) return;
++            /* A window may not be shown yet; never activate an empty instance. */
++            if (![self gluonWindowShown:&onActiveSpace])
++            {
++                [self bringBundleForward:bundleURL attempt:attempt + 1];
++                return;
++            }
++            if ([NSApp isActive] && onActiveSpace) return;
 +            configuration = [NSWorkspaceOpenConfiguration configuration];
 +            configuration.activates = YES;
 +            configuration.createsNewApplicationInstance = NO;
@@ -117,27 +138,37 @@
 +                (void)error;
 +                dispatch_async(dispatch_get_main_queue(), ^{
 +                    if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES];
++                    [self bringBundleForward:bundleURL attempt:attempt + 1];
 +                });
 +            }];
 +        });
 +    }
 +
++    - (void) bringBundleForwardOnce
++    {
++        static BOOL attempted;
++        NSURL *bundleURL = [[NSBundle mainBundle] bundleURL];
++        const char *focus = getenv("GLUON_FOCUS");
++
++        if (attempted || (focus && !strcmp(focus, "0"))) return;
++        if (![[bundleURL pathExtension] isEqualToString:@"app"]) return;
++        attempted = YES;
++        [self bringBundleForward:bundleURL attempt:0];
+     }
+ 
      - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore
-     {
-         NSProcessInfo *processInfo;
-@@ -2206,6 +2243,7 @@
+@@ -2177,6 +2247,7 @@
+         NSString *configDir, *prefix;
+         NSDictionary *userInfo;
  
-         /* This is racy. See the note in otherWineAppWillActivate:. */
-         [NSApp activate];
-+        [self activateBundleOnceIfStillInactive];
-      }
++        [self bringBundleForwardOnce];
+         if ([NSApp isActive]) return;  /* Nothing to do. */
  
-     /* CW Hack 22310, 24199 */
-@@ -2513,7 +2551,29 @@
-         [self unminimizeWindowIfNoneVisible];
+         if (!ignore ||
+@@ -2514,6 +2585,28 @@
          return YES;
      }
-+
+ 
 +    /* Gluon: quitting a game's app (Cmd-Q, its menu or the Dock) ends its whole
 +       Steam session, as Steam's Stop does: Gluon's launcher host stops every
 +       process of the game. A game that ignores WM_QUERYENDSESSION, or the
@@ -149,7 +180,7 @@
 +        const char *name;
 +        char *end;
 +        long pid;
- 
++
 +        if (!value || !*value) return FALSE;
 +        pid = strtol(value, &end, 10);
 +        if (*end || pid <= 1) return FALSE;
@@ -163,7 +194,7 @@
      - (NSApplicationTerminateReply) applicationShouldTerminate:(NSApplication *)sender
      {
          NSApplicationTerminateReply ret = NSTerminateNow;
-@@ -2521,7 +2581,14 @@
+@@ -2521,7 +2614,14 @@
          NSAppleEventDescriptor* desc = [m currentAppleEvent];
          macdrv_event* event;
          WineEventQueue* queue;

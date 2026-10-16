@@ -251,7 +251,7 @@ def watch_refresh(state: Dict[str, Any], planned_changes: Callable,
             drift = []
             for key in managed:
                 entry = cache.get(int(key))
-                if entry is None or planned_changes(entry.kv["appinfo"]):
+                if entry is None or planned_changes(entry.kv["appinfo"], int(key), entry.change_number):
                     drift.append([key, entry.change_number if entry is not None else None])
             observed.update(cache=signature, managed=managed, drift=drift)
             if not drift:
@@ -264,8 +264,15 @@ def watch_refresh(state: Dict[str, Any], planned_changes: Callable,
     observed["offered"] = drift
     _save(OBSERVED, observed)
     games = ", ".join(item[0] for item in drift)
-    message = ("Steam refreshed the details of %d Gluon game(s), so it may no longer install, "
-               "update or start them correctly. Restart Steam now so Gluon can restore them?" % len(drift))
+    message = ("Steam's details for %d Gluon game(s) need updating, for example after Steam refreshed "
+               "them, so it may not install, update, start or cloud-sync them correctly. Restart Steam "
+               "now so Gluon can update them?" % len(drift))
     if repair is None or not _ask_restart(message):
         return ["metadata refresh detected for apps %s; restart offered and postponed" % games]
+    if _game_running():
+        # A game started while the question was open. Quitting Steam would end
+        # it, so ask again once no game is running.
+        observed.pop("offered", None)
+        _save(OBSERVED, observed)
+        return ["metadata refresh detected for apps %s; a game started, restart postponed" % games]
     return ["metadata refresh detected for apps %s" % games] + _restart_steam(repair)
