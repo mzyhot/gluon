@@ -849,6 +849,37 @@ per-game bundle) were reimplemented independently. proton-macos
 Gluon lacks. kaon (Apache-2.0) relies on a Windows Steam client in a CrossOver
 bottle, which Gluon's native-client approach supersedes.
 
+## Quitting a game's app, graphics versions and Big Picture (2026-10-16)
+
+Quitting a game's app (Cmd-Q, its menu or the Dock) went through Wine's own
+path: `WM_QUERYENDSESSION` to the process's windows, then termination of that
+process only if every window agreed. A game that does not answer, or the game's
+other processes (the Steam helper, launchers), kept running and Steam still
+showed it as running. `wine-macos-app-bundle.patch` now makes macdrv ask Gluon's
+launcher host (`GLUON_HOST_PID`, set only by the launcher when it runs under the
+host and verified with `proc_pidpath` to be `gluon-launcher-host`) to stop the
+session, exactly like Steam's Stop. Logout, restart and shutdown keep Wine's
+handling. LaunchServices output is now written to separate stdout and stderr
+files, because `open` does not append and one shared file let the streams
+overwrite each other.
+
+Vulkan versions are passed through: winevulkan reports the lower of Wine's 1.4
+and the host's version, and MoltenVK 1.4.2 offers 1.4. The cloud probe gains a
+`--device-1.3` mode that requests a 1.3 instance and device with
+`dynamicRendering` and `synchronization2`. The hosted runners' paravirtual GPU
+reported 1.0/1.1 devices for the existing probes; below 1.3 the new probe reports
+itself unavailable and is recorded as skipped, not failed.
+
+OpenGL tops out at the 4.1 core profile Apple ships. Requests for 4.2-4.6 are
+still rejected so that games which try newer versions first fall back on their
+own; returning 4.1 for them would break games that then use 4.2+ features. More
+than 4.1 needs a different OpenGL implementation (for example Mesa's Zink on a
+Vulkan driver), which is a separate project.
+
+No Big Picture session has been recorded in Steam's logs yet. Launches from Big
+Picture use the same LaunchServices activation and Stop path; an owner run is
+needed to find Big Picture-specific problems.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number

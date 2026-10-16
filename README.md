@@ -22,12 +22,13 @@ game or for all games (see [Settings](#settings)).
   through Gluon. Steam's Stop button and quitting Steam end the game and its Windows
   processes.
 - **Each game is its own Mac app.** It opens in front of Steam, shows its own name in the
-  menu bar and Dock, and macOS Game Mode can recognize it.
+  menu bar and Dock, and macOS Game Mode can recognize it. Quitting it from its menu or
+  the Dock ends the game the way Steam's Stop does.
 - **Steam overlay and achievements** through your installed Steam client. The overlay
   runs only in the game's own processes.
-- **Graphics.** Direct3D 9 through DXVK, Direct3D 10/11 through DXMT, Vulkan through
-  MoltenVK, and OpenGL, including games that ask for an OpenGL 3.x compatibility
-  context, which macOS does not offer.
+- **Graphics.** Direct3D 9 through DXVK, Direct3D 10/11 through DXMT, Vulkan up to 1.4
+  through MoltenVK, and OpenGL up to 4.1 (the newest macOS offers), including games that
+  ask for an OpenGL 3.x compatibility context, which macOS does not provide.
 - **Performance.** Wine's Mach-semaphore synchronization (msync) is on, and the Mac and
   display stay awake while you play with a controller.
 - **Safe updates.** New runtimes are switched in only while Steam is closed, and the
