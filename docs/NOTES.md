@@ -777,21 +777,29 @@ Each game now gets its own bundle,
 `~/Library/Application Support/Gluon/apps.noindex/<appid>/<name>.app`
 (`gluon/appbundle.py`), named from the game's app manifest, with
 `LSApplicationCategoryType` set to games and `LSUIElement` kept so Wine's helper
-processes stay agents. Its executable loads a one-time session file written by
-the launcher (refusing to start without it) and starts a hard link of the
-runtime's loader from `Contents/MacOS`. The launcher opens the bundle with
-`open -n -W -a`, which waits like the previous child process; Stop and Steam quit
-still end the session through the prefix's server. If LaunchServices never
-starts the bundle, the launcher starts Wine directly.
+processes stay agents. Its executable is a hard link of the runtime's loader:
+the owner's first run showed games in front and named in the Dock, but the menu
+bar still read `CrossOver-Hosted Application`, because Core Foundation treats a
+process as part of a bundle only when it runs the bundle's declared executable,
+and the first design declared a launch script. The launcher opens the bundle with
+`open -n -W -a`, passing allow-listed Wine, Gluon, Steam and graphics settings
+with `--env` and game output through `--stdout`/`--stderr` (merged into the Wine
+log afterwards); `-W` waits like the previous child process, and Stop and Steam
+quit still end the session through the prefix's server. A bundle opened by hand
+starts the loader without a program, which exits. If LaunchServices refuses the
+bundle at once, the launcher starts Wine directly.
+
 `wine-macos-app-bundle.patch` makes Wine keep a loader that runs from a bundle,
 instead of re-executing through its temporary per-program link, so every
-process of the game stays in the bundle. If a window still appears while the
-game is inactive, macdrv asks LaunchServices once to activate the bundle and
-repeats Wine's cooperative handover (`GLUON_FOCUS=0` turns this off).
-LaunchServices does not report a bundle's exit status, so a crash notification
-after a bundle launch requires a crash line in the log. The superseded
-loader-copy and plist-category patches were removed. Front-most launch, menu bar
-name and Game Mode need an owner run with the new runtime.
+process of the game stays in the bundle; it also enters `GLUON_GAME_CWD`, since
+LaunchServices starts apps in `/`. If a window still appears while the game is
+inactive, macdrv asks LaunchServices once to activate the bundle and repeats
+Wine's cooperative handover (`GLUON_FOCUS=0` turns this off). LaunchServices
+does not report a bundle's exit status, so a crash notification after a bundle
+launch requires a crash line in the log. Bundles are used only with runtimes
+carrying this patch and the overlay-scope patch. Owner-confirmed so far: games
+open in front and the Dock shows their names; the menu bar name with the loader
+as executable and Game Mode need the next build.
 
 ## Steam's overlay limited to game processes (2026-10-15)
 
@@ -844,11 +852,12 @@ bottle, which Gluon's native-client approach supersedes.
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
-   moves on the server. The app then reverts to Windows-only and Steam would remove its
-   depots at the next update. `gluon sync` (run by the packaged agent) re-applies it
-   whenever Steam is closed. Managed installed games now defer background updates
-   until launch, and a disk-cache refresh produces a restart notification. Manual
-   verification or launch-time reconciliation after a refresh remains a limitation.
+   moves on the server, and the app reverts to Windows-only in the running client.
+   Gluon cannot correct a running client's memory. Installed managed games update
+   only on launch, and when the helper sees refreshed entries on disk it asks once
+   (after any game has ended) to restart Steam; on "Restart Steam" it quits Steam
+   through `steam://exit`, re-applies the entries while Steam is closed and reopens
+   it. Declining keeps the earlier behavior: the repair happens at the next quit.
 2. **Library UI.** Tested through `app_install` and `steam://rungameid`. The Install
    button was confirmed enabled by the owner after Happy Wheels installation recovery.
    Platform icons and the remaining library flows are untested.

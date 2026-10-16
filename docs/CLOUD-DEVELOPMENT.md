@@ -51,7 +51,8 @@ Codespaces runs only its source contract.
 
 The app-bundle fixture compiles Wine's exact bundled-loader check against a
 stubbed executable-path lookup: loaders inside `.app/Contents/MacOS` are kept,
-temporary links and look-alike paths are not. The overlay-scope fixture runs the
+temporary links and look-alike paths are not; the first process enters the
+game directory passed by the launcher once and clears it. The overlay-scope fixture runs the
 exact patched functions to check that only game programs receive Steam's overlay
 and that the server's environment never does; giving the overlay to every
 program or to the server must fail.

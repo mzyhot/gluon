@@ -31,7 +31,8 @@ game or for all games (see [Settings](#settings)).
 - **Performance.** Wine's Mach-semaphore synchronization (msync) is on, and the Mac and
   display stay awake while you play with a controller.
 - **Safe updates.** New runtimes are switched in only while Steam is closed, and the
-  previous one is kept for rollback.
+  previous one is kept for rollback. When Steam refreshes a game's details and undoes
+  Gluon's changes, Gluon offers to restart Steam and restores them while it is closed.
 
 ## Installation
 
