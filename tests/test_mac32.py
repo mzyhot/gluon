@@ -73,7 +73,6 @@ class Mac32EnableTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         root = Path(self.directory.name)
         patches = [patch.object(enable, "STATE", str(root / "apps.json")),
-                   patch.object(enable, "installed_appids", return_value=set()),
                    patch.object(enable, "_backup_cache", return_value="cache-backup"),
                    patch.object(enable, "_edit_launch_options", return_value=[]),
                    patch("gluon.metadata.guard_updates", return_value=[]),

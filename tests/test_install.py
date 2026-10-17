@@ -169,9 +169,11 @@ class SyncRecoveryTests(unittest.TestCase):
                 mock.patch.object(enable, "status", return_value=[]), \
                 mock.patch.object(enable, "enable", side_effect=lambda ids: order.append("enable") or []), \
                 mock.patch.object(install, "recover_missing_installs", side_effect=lambda ids:
-                                  order.append(("recover", ids)) or ["recovered"]):
-            self.assertEqual(enable.sync(), ["recovered"])
-        self.assertEqual(order, ["enable", ("recover", [4705510])])
+                                  order.append(("recover", ids)) or ["recovered"]), \
+                mock.patch.object(metadata, "settle_update_flags", side_effect=lambda ids:
+                                  order.append(("settle", ids)) or ["settled"]):
+            self.assertEqual(enable.sync(), ["recovered", "settled"])
+        self.assertEqual(order, ["enable", ("recover", [4705510]), ("settle", [4705510])])
 
     def test_dry_run_does_not_recover(self):
         with mock.patch.object(steam, "is_running", return_value=False), \
@@ -193,13 +195,15 @@ class SyncRecoveryTests(unittest.TestCase):
             reenable.assert_not_called()
             recover.assert_not_called()
 
-    def test_only_installed_games_reach_the_restart_offer(self):
+    def test_running_steam_is_only_watched(self):
         with mock.patch.object(steam, "is_running", return_value=True), \
                 mock.patch.object(enable, "load_state", return_value={"123": {}, "456": {}}), \
-                mock.patch.object(enable, "installed_appids", return_value={123}), \
-                mock.patch.object(metadata, "watch_refresh", return_value=[]) as observe:
+                mock.patch.object(metadata, "watch_refresh", return_value=[]) as observe, \
+                mock.patch.object(metadata, "settle_update_flags") as settle:
             enable.sync()
-        self.assertEqual(list(observe.call_args.args[0]), ["123"])
+        self.assertEqual(sorted(observe.call_args.args[0]), ["123", "456"])
+        self.assertEqual(len(observe.call_args.args), 2, "the watcher takes no repair or restart callback")
+        settle.assert_not_called()
 
 
 if __name__ == "__main__":

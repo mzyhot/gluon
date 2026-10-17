@@ -90,29 +90,6 @@ def _set(d: Dict[str, Any], path: Path, value: Any) -> None:
         d[path[-1]] = value
 
 
-def installed_appids(appids: Any) -> set:
-    """Managed games with installed files in any Steam library."""
-    wanted = {int(a) for a in appids}
-    found = set()
-    try:
-        libraries = steam.library_dirs()
-    except (OSError, ValueError, TypeError):
-        return found
-    for library in libraries:
-        for appid in wanted - found:
-            try:
-                app = vdf.load(os.path.join(library, "steamapps", "appmanifest_%d.acf" % appid)).get("AppState", {})
-                flags = int(vdf.iget(app, "StateFlags") or 0)
-                leaf = vdf.iget(app, "installdir")
-            except (OSError, ValueError, TypeError, AttributeError):
-                continue
-            # Fully installed, including while Steam wants an update.
-            if flags & 4 and isinstance(leaf, str) and leaf and "/" not in leaf and \
-                    os.path.isdir(os.path.join(library, "steamapps", "common", leaf)):
-                found.add(appid)
-    return found
-
-
 def _cloud_source(ai: Dict[str, Any], appid: int, change_number: Optional[int],
                   state: Optional[Dict[str, Any]]) -> Any:
     """Steam's own cloud section for the app."""
@@ -398,21 +375,19 @@ def sync(dry_run: bool = False) -> List[str]:
         if dry_run:
             return []
         from . import metadata
-        # Only an installed game is affected while Steam runs; other refreshed
-        # entries are repaired quietly at the next Steam quit. The repair runs
-        # through this same function once Steam has quit.
+        # Refreshed games keep launching; Gluon re-applies its details at the
+        # next Steam quit, through this same function.
         state = load_state()
-        installed = installed_appids(state)
-        watched = {k: v for k, v in state.items() if int(k) in installed}
-        return metadata.watch_refresh(watched, lambda ai, appid, change: planned_changes(ai, appid, change, state),
-                                      repair=lambda: sync())
+        return metadata.watch_refresh(state, lambda ai, appid, change: planned_changes(ai, appid, change, state))
     wanted = sorted({a for a, _ in candidates()} | {int(k) for k in load_state()})
     pending = [r["appid"] for r in status() if not r["in_effect"]]
     todo = sorted({a for a, _ in candidates()} | set(pending))
     if dry_run:
         return ["would enable %d apps, re-apply %d" % (len(todo) - len(pending), len(pending))]
     notes = enable(wanted) if wanted else []
-    from . import install
-    recovered = install.recover_missing_installs([int(k) for k in load_state()])
+    from . import install, metadata
+    managed = [int(k) for k in load_state()]
+    recovered = install.recover_missing_installs(managed)
+    recovered += metadata.settle_update_flags(managed)
     return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n or ": deferred background updates" in n
                    or ": cloud backup" in n or "Steam Cloud left off" in n] + recovered

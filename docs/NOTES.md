@@ -972,15 +972,42 @@ callback did not arrive. Fixes:
 
 Needs an owner run in Big Picture.
 
+## Metadata refreshes without prompts (2026-10-17)
+
+The owner rejected restart prompts, automatic restarts, frozen change numbers and
+update windows, and confirmed that games keep launching after a refresh. What remained
+was an update that does nothing, traced in Steam's `content_log.txt` for Happy Wheels:
+
+    22:40:05  appinfo refresh (appinfo_log: Apps changed: 4705510=39927967)
+    22:40:06  state changed : Update Required,Fully Installed, (Update delayed for 13638 secs)
+    22:40:17  Steam quit; Gluon re-applied its details
+    22:40:42  Running Update, Reconfiguring, Verifying Installed
+    22:40:42  has no changes, 1 active: 4705511 (491856728672780704), 1 target: 4705511 (491856728672780704)
+
+The refresh flags the installed game for an update, the flag is saved in its app
+manifest (`StateFlags` 6 = 4 fully installed + 2 update required, with
+`ScheduledAutoUpdate`), and after Gluon's re-applied details the next start runs an
+update with no changes. `metadata.settle_update_flags` now runs after each sync while
+Steam is closed. For an installed managed game whose manifest is exactly `StateFlags`
+6 on the public branch, and whose installed `buildid` and every installed depot
+manifest equal Steam's details (`depots/branches/public/buildid`,
+`depots/<id>/manifests/public/gid`), it backs up the manifest to
+`backups/update-flags/` and sets `StateFlags` 4 and `ScheduledAutoUpdate` 0. Any
+other build, manifest, branch or download state keeps the flag, so real updates run
+as Steam scheduled them.
+
+The restart prompt and the code that quit and reopened Steam are removed; while Steam
+runs, the helper only logs refreshes. Steam hooks or blocking refreshes are not used.
+Not yet observed: a session where Steam runs the flagged update before it quits.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
-   moves on the server, and the app reverts to Windows-only in the running client.
-   Gluon cannot correct a running client's memory. Installed managed games update
-   only on launch, and when the helper sees refreshed entries on disk it asks once
-   (after any game has ended) to restart Steam; on "Restart Steam" it quits Steam
-   through `steam://exit`, re-applies the entries while Steam is closed and reopens
-   it. Declining keeps the earlier behavior: the repair happens at the next quit.
+   moves on the server, and the running client forgets Gluon's changes for that app.
+   The owner confirmed that refreshed games keep launching. Gluon no longer prompts or
+   restarts Steam: the helper logs the refresh and re-applies its changes at the next
+   Steam quit, then clears the leftover update flag (see "Metadata refreshes without
+   prompts").
 2. **Library UI.** Tested through `app_install` and `steam://rungameid`. The Install
    button was confirmed enabled by the owner after Happy Wheels installation recovery.
    Platform icons and the remaining library flows are untested.
