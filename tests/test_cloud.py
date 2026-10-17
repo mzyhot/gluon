@@ -215,6 +215,7 @@ class EnableCloudTests(unittest.TestCase):
                    patch.object(cloud, "enabled", return_value=True),
                    patch.object(enable, "_backup_cache", return_value="cache-backup"),
                    patch.object(enable, "_edit_launch_options", return_value=[]),
+                   patch.object(enable, "installed_appids", return_value=set()),
                    patch("gluon.metadata.guard_updates", return_value=[])]
         for item in patches:
             item.start()

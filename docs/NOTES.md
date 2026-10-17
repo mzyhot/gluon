@@ -490,8 +490,9 @@ once per changed drift set. It never edits Steam's files while the client runs.
 The incident's `appinfo_log.txt` records a successful refresh write at 10:13:42,
 so this incident is detectable from disk. Detection follows the helper's minute
 interval; immediate detection of an in-memory-only change is not established.
-Hardcoding a future change number or locking the shared cache is not used: those
-would not reliably prevent an in-memory replacement and could affect native games.
+Locking the shared cache is not used. A cached change number above any real one is
+used for installed managed games since 2026-10-16 (see "Metadata refreshes without
+restarts"); native games are never touched.
 
 Gluon's launcher clears Steam's native overlay library before Wine. The Steam API
 bridge stores achievements: local achievement caches confirm persisted unlocks for
@@ -956,10 +957,41 @@ callback did not arrive. Fixes:
 
 Needs an owner run in Big Picture.
 
+## Metadata refreshes without restarts (2026-10-16)
+
+The owner had to restart Steam for refresh prompts several times a day. Steam's
+`logs/appinfo_log.txt` shows the mechanism: `Apps changed: 4705510=39927967,...`,
+`Change number 39927928->39928715, apps: 6/777`, then `Requesting 6 apps` and a cache
+write. The server-side change numbers moved for People Playground four times and for
+Happy Wheels three times in two days, so refreshes cannot be avoided at the source, and
+each one makes the running client treat the game as Windows-only (Play can fail, and on
+2026-10-14 a verification under refreshed details removed Happy Wheels' files). After a
+restart, Steam's leftover "Update Required" flag ran a no-op update ("has no changes").
+
+Gluon now writes a cached change number of 2,000,000,000 for installed managed games
+(manifest fully installed and folder present) and records the real one in its state
+file, so a server change no longer looks newer than the cache. Games without installed
+files keep their real numbers and are repaired quietly at the next Steam quit; the
+restart offer only considers installed games. `disable` restores the real number.
+
+Game updates arrive in an update window: once per `GLUON_GAME_UPDATES` interval
+(`weekly` by default, `daily` or `never`; the first helper run only starts the clock)
+the helper restores the real numbers while Steam is closed. The next Steam session
+downloads current details for games that changed; the offer then says so, and the
+following Steam quit re-applies Gluon's details and freezes them again. The window ends
+only after Steam has run, so it is not closed by helper runs before Steam starts.
+
+Not yet confirmed: whether Steam skips a changed app whose cached change number is
+higher (Steam's appinfo log will show `Apps changed` for it without a request or cache
+write), or requests it anyway. If it requests it anyway, the restart offer still
+appears, now only for installed games, and the helper log records it as before.
+
 ## Open items
 
-1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
-   moves on the server, and the app reverts to Windows-only in the running client.
+1. **Metadata refresh.** Installed games now keep a frozen change number (see above);
+   this needs confirmation in Steam's appinfo log. Previously: Steam replaces an app's
+   cache entry when its change number moves on the server, and the app reverts to
+   Windows-only in the running client.
    Gluon cannot correct a running client's memory. Installed managed games update
    only on launch, and when the helper sees refreshed entries on disk it asks once
    (after any game has ended) to restart Steam; on "Restart Steam" it quits Steam

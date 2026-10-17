@@ -28,6 +28,8 @@
 #   WINEMSYNC                msync for plain Wine runtimes
 #   GLUON_CLOUD              Steam Cloud for the game (settings files only; applied by
 #                            Gluon's helper while Steam is closed, not by this launcher)
+#   GLUON_GAME_UPDATES       weekly, daily or never: how often installed games may pick
+#                            up game updates (settings.env; read by Gluon's helper)
 #
 # Settings are NAME=value lines in $GLUON_HOME/settings.env (every game) and
 # $GLUON_HOME/games/<appid>.env (one game), or "%command% NAME=value" in a game's

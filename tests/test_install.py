@@ -160,6 +160,13 @@ class MissingInstallTests(unittest.TestCase):
 
 
 class SyncRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        updates = mock.patch.object(enable, "UPDATES", os.path.join(directory.name, "game-updates.json"))
+        updates.start()
+        self.addCleanup(updates.stop)
+
     def test_recovery_follows_enable_and_uses_managed_state(self):
         order = []
         state = {"4705510": {}}
@@ -167,7 +174,9 @@ class SyncRecoveryTests(unittest.TestCase):
                 mock.patch.object(enable, "candidates", return_value=[(4705510, "Happy Wheels")]), \
                 mock.patch.object(enable, "load_state", return_value=state), \
                 mock.patch.object(enable, "status", return_value=[]), \
-                mock.patch.object(enable, "enable", side_effect=lambda ids: order.append("enable") or []), \
+                mock.patch.object(enable, "_advance_update_window", return_value=[]), \
+                mock.patch.object(enable, "update_window_open", return_value=False), \
+                mock.patch.object(enable, "enable", side_effect=lambda ids, **_: order.append("enable") or []), \
                 mock.patch.object(install, "recover_missing_installs", side_effect=lambda ids:
                                   order.append(("recover", ids)) or ["recovered"]):
             self.assertEqual(enable.sync(), ["recovered"])

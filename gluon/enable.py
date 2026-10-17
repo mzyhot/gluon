@@ -31,6 +31,17 @@ STATE = os.path.join(steam.GLUON_HOME, "state", "apps.json")
 # macOS root override; an app it cannot map keeps its cloud section out of the cached
 # entry, which turns Steam Cloud off for it on this Mac only.
 
+# Steam downloads an app's details again whenever its change number on Steam's servers
+# moves past the cached one, which happens several times a day for some games. A
+# running client then treats the game as Windows-only until it restarts: Play can fail,
+# and an update or verification can remove the installed files (seen on 2026-10-14).
+# Installed managed games therefore keep a cached change number above any real one, so
+# Steam keeps Gluon's details. Real game updates arrive in an update window: once per
+# GLUON_GAME_UPDATES interval the real numbers are restored for one Steam session.
+FROZEN_CHANGE_NUMBER = 2_000_000_000
+UPDATE_INTERVALS = {"daily": 86400, "weekly": 7 * 86400, "never": None}
+UPDATES = os.path.join(steam.GLUON_HOME, "state", "game-updates.json")
+
 # App types offered for install. Left out: tools (SDKs, dedicated servers), DLC (its files
 # come through the base game), music, config.
 PLAYABLE_TYPES = ("game", "demo", "application", "beta", "mod")
@@ -74,6 +85,68 @@ def _set(d: Dict[str, Any], path: Path, value: Any) -> None:
         d[path[-1]] = value
 
 
+def installed_appids(appids: Any) -> set:
+    """Managed games with installed files in any Steam library."""
+    wanted = {int(a) for a in appids}
+    found = set()
+    try:
+        libraries = steam.library_dirs()
+    except (OSError, ValueError, TypeError):
+        return found
+    for library in libraries:
+        for appid in wanted - found:
+            try:
+                app = vdf.load(os.path.join(library, "steamapps", "appmanifest_%d.acf" % appid)).get("AppState", {})
+                flags = int(vdf.iget(app, "StateFlags") or 0)
+                leaf = vdf.iget(app, "installdir")
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+            # Fully installed, including while Steam wants an update.
+            if flags & 4 and isinstance(leaf, str) and leaf and "/" not in leaf and \
+                    os.path.isdir(os.path.join(library, "steamapps", "common", leaf)):
+                found.add(appid)
+    return found
+
+
+def _server_change(entry: Any, rec: Optional[Dict[str, Any]]) -> int:
+    """The app's real change number: the cache's, unless Gluon froze it."""
+    if entry.change_number != FROZEN_CHANGE_NUMBER:
+        return entry.change_number
+    return int((rec or {}).get("change_number") or 0)
+
+
+def _load_updates() -> Dict[str, Any]:
+    try:
+        with open(UPDATES) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_updates(data: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(UPDATES), exist_ok=True)
+    with open(UPDATES + ".tmp", "w") as f:
+        json.dump(data, f, indent=1, sort_keys=True)
+    os.replace(UPDATES + ".tmp", UPDATES)
+
+
+def update_window_open() -> bool:
+    return bool(_load_updates().get("open"))
+
+
+def note_steam_running() -> None:
+    """An open update window ends at the first Steam quit after Steam has run."""
+    data = _load_updates()
+    if data.get("open") and not data.get("steam_ran"):
+        data["steam_ran"] = True
+        _save_updates(data)
+
+
+def _update_interval() -> Optional[int]:
+    value = cloud._settings(0).get("GLUON_GAME_UPDATES", "weekly").strip().lower()
+    return UPDATE_INTERVALS.get(value, UPDATE_INTERVALS["weekly"])
+
+
 def _cloud_source(ai: Dict[str, Any], appid: int, change_number: Optional[int],
                   state: Optional[Dict[str, Any]]) -> Any:
     """Steam's own cloud section for the app."""
@@ -82,7 +155,8 @@ def _cloud_source(ai: Dict[str, Any], appid: int, change_number: Optional[int],
     # An earlier Gluon left the section out entirely; Steam's copy is in the state
     # until Steam refreshes the entry, which brings back its current section.
     rec = (state if state is not None else load_state()).get(str(appid)) or {}
-    if change_number is None or rec.get("change_number") != change_number:
+    if change_number is None or (change_number != FROZEN_CHANGE_NUMBER and
+                                 rec.get("change_number") != change_number):
         return None
     return _unpack(rec.get("original", {}).get("ufs"))
 
@@ -215,11 +289,12 @@ def _edit_launch_options(appids: List[int], install: bool) -> List[str]:
     return notes
 
 
-def enable(appids: List[int]) -> List[str]:
+def enable(appids: List[int], freeze: bool = True) -> List[str]:
     cache = _open_cache()
     state = load_state()
     notes: List[str] = []
     dirty = False
+    installed = installed_appids(appids) if freeze else set()
     for appid in appids:
         entry = cache.get(appid)
         if entry is None:
@@ -233,11 +308,23 @@ def enable(appids: List[int]) -> List[str]:
             notes.append("%d (%s): already has a macOS build, left alone" % (appid, name))
             continue
         changes = planned_changes(ai, appid, entry.change_number, state)
-        if not changes:
+        server_change = _server_change(entry, rec)
+        frozen = appid in installed
+        refreeze = (entry.change_number != FROZEN_CHANGE_NUMBER) if frozen else \
+            (entry.change_number == FROZEN_CHANGE_NUMBER and server_change > 0)
+        if not changes and not refreeze:
             notes.append("%d (%s): already enabled" % (appid, name))
             continue
+        if refreeze:
+            entry.change_number = FROZEN_CHANGE_NUMBER if frozen else server_change
+            dirty = True
+            if not changes:
+                notes.append("%d (%s): %s Steam's details" % (appid, name, "kept" if frozen else "released"))
+                if rec:
+                    rec["change_number"] = server_change
+                continue
         original = dict((rec or {}).get("original", {}))
-        record = {"name": name, "change_number": entry.change_number, "original": original}
+        record = {"name": name, "change_number": server_change, "original": original}
         if rec and "cloud_backup" in rec:
             record["cloud_backup"] = rec["cloud_backup"]
         for path, cur, new in changes:
@@ -289,6 +376,9 @@ def disable(appids: List[int]) -> List[str]:
             for key, value in rec["original"].items():
                 _set(kv["appinfo"], tuple(key.split("/")), _unpack(value))
             entry.set_kv(kv)
+            # Let Steam refresh the entry from its servers again.
+            if entry.change_number == FROZEN_CHANGE_NUMBER:
+                entry.change_number = int(rec.get("change_number") or 0)
             dirty = True
         del state[str(appid)]
         notes.append("%d (%s): restored" % (appid, rec.get("name")))
@@ -306,13 +396,19 @@ def status() -> List[Dict[str, Any]]:
     """One row per enabled app; `in_effect` is False once Steam has refreshed the entry."""
     cache = appinfo.AppInfoFile(steam.APPINFO)
     rows = []
-    for key, rec in sorted(load_state().items(), key=lambda kv: int(kv[0])):
+    state = load_state()
+    installed = installed_appids(state)
+    window = update_window_open()
+    for key, rec in sorted(state.items(), key=lambda kv: int(kv[0])):
         entry = cache.get(int(key))
         pending: Optional[int] = None
         change = None
         if entry is not None:
             pending = len(planned_changes(entry.kv["appinfo"], int(key), entry.change_number))
             change = entry.change_number
+            if pending == 0 and int(key) in installed and not window and \
+                    entry.change_number != FROZEN_CHANGE_NUMBER:
+                pending = 1
         rows.append({"appid": int(key), "name": rec.get("name"), "in_effect": pending == 0,
                      "enabled_at_change": rec.get("change_number"), "cache_change": change})
     return rows
@@ -351,18 +447,52 @@ def sync(dry_run: bool = False) -> List[str]:
         if dry_run:
             return []
         from . import metadata
-        # Offer a Steam restart for refreshed entries; the repair below runs
-        # through this same function once Steam has quit.
+        note_steam_running()
+        # Only an installed game can fail to start or lose files after a refresh;
+        # other refreshed entries are repaired quietly at the next Steam quit. The
+        # repair runs through this same function once Steam has quit.
         state = load_state()
-        return metadata.watch_refresh(state, lambda ai, appid, change: planned_changes(ai, appid, change, state),
-                                      repair=lambda: sync())
+        installed = installed_appids(state)
+        watched = {k: v for k, v in state.items() if int(k) in installed}
+        return metadata.watch_refresh(watched, lambda ai, appid, change: planned_changes(ai, appid, change, state),
+                                      repair=lambda: sync(), updating=update_window_open())
+    window_notes = [] if dry_run else _advance_update_window()
     wanted = sorted({a for a, _ in candidates()} | {int(k) for k in load_state()})
     pending = [r["appid"] for r in status() if not r["in_effect"]]
     todo = sorted({a for a, _ in candidates()} | set(pending))
     if dry_run:
         return ["would enable %d apps, re-apply %d" % (len(todo) - len(pending), len(pending))]
-    notes = enable(wanted) if wanted else []
+    notes = window_notes + (enable(wanted, freeze=not update_window_open()) if wanted else [])
     from . import install
     recovered = install.recover_missing_installs([int(k) for k in load_state()])
     return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n or ": deferred background updates" in n
-                   or ": cloud backup" in n or "Steam Cloud left off" in n] + recovered
+                   or ": cloud backup" in n or "Steam Cloud left off" in n or "update window" in n] + recovered
+
+
+
+def _advance_update_window(now: Optional[float] = None) -> List[str]:
+    """Open an update window when one is due; close it after a Steam session.
+
+    While it is open, installed games keep their real change numbers, so the next
+    Steam session downloads their current details and any new build. Gluon then
+    applies its details again and freezes them at the following Steam quit."""
+    now = time.time() if now is None else now
+    data = _load_updates()
+    if data.get("open"):
+        if not data.get("steam_ran"):
+            return []
+        data.update(open=False, steam_ran=False)
+        _save_updates(data)
+        return ["game update window closed"]
+    if not data.get("last_window"):
+        # The first run starts the interval instead of releasing everything at once.
+        data["last_window"] = now
+        _save_updates(data)
+        return []
+    interval = _update_interval()
+    if interval is None or now - float(data["last_window"]) < interval:
+        return []
+    data.update(open=True, steam_ran=False, last_window=now)
+    _save_updates(data)
+    return ["game update window opened: the next Steam session refreshes installed games"]
+
