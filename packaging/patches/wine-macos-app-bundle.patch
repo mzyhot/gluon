@@ -82,7 +82,7 @@
  
  #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
  
-@@ -2169,6 +2171,74 @@
+@@ -2169,14 +2171,87 @@
          [NSApp yieldActivationToApplication:otherApp];
          [otherApp activateFromApplication:[NSRunningApplication currentApplication]
                                    options:0];
@@ -119,9 +119,13 @@
 +        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[attempt] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 +            NSWorkspaceOpenConfiguration *configuration;
 +            BOOL onActiveSpace;
++            BOOL shown = [self gluonWindowShown:&onActiveSpace];
 +
++            /* Written to the game's session log. */
++            fprintf(stderr, "gluon: focus check %u: active %d, window shown %d, on the current Space %d\n",
++                    attempt + 1, [NSApp isActive] ? 1 : 0, shown ? 1 : 0, onActiveSpace ? 1 : 0);
 +            /* A window may not be shown yet; never activate an empty instance. */
-+            if (![self gluonWindowShown:&onActiveSpace])
++            if (!shown)
 +            {
 +                [self bringBundleForward:bundleURL attempt:attempt + 1];
 +                return;
@@ -142,8 +146,8 @@
 +                });
 +            }];
 +        });
-+    }
-+
+     }
+ 
 +    - (void) bringBundleForwardOnce
 +    {
 +        static BOOL attempted;
@@ -154,10 +158,11 @@
 +        if (![[bundleURL pathExtension] isEqualToString:@"app"]) return;
 +        attempted = YES;
 +        [self bringBundleForward:bundleURL attempt:0];
-     }
- 
++    }
++
      - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore
-@@ -2177,6 +2247,7 @@
+     {
+         NSProcessInfo *processInfo;
          NSString *configDir, *prefix;
          NSDictionary *userInfo;
  
@@ -165,7 +170,7 @@
          if ([NSApp isActive]) return;  /* Nothing to do. */
  
          if (!ignore ||
-@@ -2514,6 +2585,28 @@
+@@ -2514,6 +2589,28 @@
          return YES;
      }
  
@@ -194,18 +199,17 @@
      - (NSApplicationTerminateReply) applicationShouldTerminate:(NSApplication *)sender
      {
          NSApplicationTerminateReply ret = NSTerminateNow;
-@@ -2521,7 +2614,14 @@
+@@ -2521,6 +2618,13 @@
          NSAppleEventDescriptor* desc = [m currentAppleEvent];
          macdrv_event* event;
          WineEventQueue* queue;
 +        OSType quitReason = (OSType)[[desc attributeDescriptorForKeyword:kAEQuitReason] int32Value];
- 
++
 +        /* Logout, restart and shutdown keep Wine's own handling. */
 +        if (quitReason != kAELogOut && quitReason != kAEReallyLogOut &&
 +            quitReason != kAEShowRestartDialog && quitReason != kAEShowShutdownDialog &&
 +            [self stopGluonSession])
 +            return NSTerminateCancel;
-+
+ 
          event = macdrv_create_event(APP_QUIT_REQUESTED, nil);
          event->deliver = 1;
-         switch ([[desc attributeDescriptorForKeyword:kAEQuitReason] int32Value])

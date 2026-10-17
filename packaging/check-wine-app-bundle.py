@@ -41,7 +41,8 @@ MACDRV_REQUIRED = (
     "if (![[bundleURL pathExtension] isEqualToString:@\"app\"]) return; attempted = YES;",
     # Never activate an instance without a shown window; stop once a window is
     # active on the current Space, so a Big Picture Space is covered too.
-    "if (![self gluonWindowShown:&onActiveSpace]) { [self bringBundleForward:bundleURL attempt:attempt + 1]; return; }",
+    "BOOL shown = [self gluonWindowShown:&onActiveSpace];",
+    "if (!shown) { [self bringBundleForward:bundleURL attempt:attempt + 1]; return; }",
     "if ([NSApp isActive] && onActiveSpace) return;",
     "if (attempt >= sizeof(delays) / sizeof(delays[0])) return;",
     "configuration.activates = YES; configuration.createsNewApplicationInstance = NO;",

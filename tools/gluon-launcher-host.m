@@ -107,7 +107,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
 @property(nonatomic) off_t steamLogOffset;
 @property(nonatomic, strong) NSMutableData *steamLogLine;
 @property(nonatomic) double steamExitDeadline;
-@property(nonatomic) BOOL handedActivation;
+@property(nonatomic) double raiseDeadline;
 - (void)poll;
 @end
 
@@ -236,6 +236,15 @@ static NSRunningApplication *steam_owner(NSString *directory)
 - (void)poll
 {
     if (self.finished || [self reap]) return;
+    if (self.raiseDeadline && !self.stopping)
+    {
+        if (NSProcessInfo.processInfo.systemUptime >= self.raiseDeadline)
+        {
+            fprintf(stderr, "gluon: the game's window did not appear within 60 seconds of Steam's raise\n");
+            self.raiseDeadline = 0;
+        }
+        else if (NSApp.active && [self handActivationToGame]) self.raiseDeadline = 0;
+    }
     if (!self.stopping)
     {
         [self readSteamConsole];
@@ -399,15 +408,11 @@ static NSRunningApplication *steam_owner(NSString *directory)
     [self watchSteamShutdown];
 }
 
-/* Steam raises a running game through the process it tracks, which is this
- * host. Pass that activation on to the game's own app so its window comes
- * forward, in Big Picture as on the desktop. */
-- (void)applicationDidBecomeActive:(NSNotification *)notification
+- (BOOL)handActivationToGame
 {
-    (void)notification;
     const char *value = getenv("SteamAppId");
     NSString *appid = value && *value ? [NSString stringWithUTF8String:value] : nil;
-    if (!appid || self.finished) return;
+    if (!appid) return NO;
     NSString *identifier = [@"org.gluon.game." stringByAppendingString:appid];
     for (NSRunningApplication *app in [NSRunningApplication
         runningApplicationsWithBundleIdentifier:identifier])
@@ -420,11 +425,31 @@ static NSRunningApplication *steam_owner(NSString *directory)
             [app activateFromApplication:NSRunningApplication.currentApplication options:0];
         }
         else [app activateWithOptions:0];
-        if (!self.handedActivation)
-            fprintf(stderr, "gluon: passing Steam's activation to the game's app\n");
-        self.handedActivation = YES;
-        return;
+        fprintf(stderr, "gluon: passing Steam's activation to the game's app\n");
+        return YES;
     }
+    return NO;
+}
+
+/* Steam raises a running game through the process it tracks, which is this
+ * host. Big Picture does so as soon as the game is launched, before the game
+ * has a window, and keeps its own full-screen Space in front. While this host
+ * stays active, the activation is passed to the game's app once its window
+ * process exists; macOS then shows the Space with the game's window. */
+- (void)applicationDidBecomeActive:(NSNotification *)notification
+{
+    (void)notification;
+    if (self.finished) return;
+    fprintf(stderr, "gluon: Steam activated the game's launcher host\n");
+    self.raiseDeadline = [self handActivationToGame] ? 0 : NSProcessInfo.processInfo.systemUptime + 60.0;
+}
+
+- (void)applicationDidResignActive:(NSNotification *)notification
+{
+    (void)notification;
+    if (self.raiseDeadline)
+        fprintf(stderr, "gluon: launcher host lost activation before the game's window appeared\n");
+    self.raiseDeadline = 0;
 }
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender

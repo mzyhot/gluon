@@ -923,9 +923,15 @@ Vulkan driver), which is a separate project.
 
 ### Big Picture (owner run, 2026-10-16)
 
-Big Picture launched Happy Wheels (`SSGL: UI mode 7`) and called
-`Apps.RaiseWindowForGame` for about one second while the only tracked process was
-the launcher host; the game did not come to the front. Quitting Steam logged
+Steam logs its UI mode in `gameprocess_log.txt`: `SSGL: UI mode 4` is Big Picture and
+7 the desktop (Big Picture launches also carry `SteamGamepadUI=1`). Big Picture is a
+native macOS full-screen Space: opening it with `steam://open/bigpicture` made the Dock
+log a `FullscreenSpace`, and Steam Helper's window filled the screen at window level 0.
+A window created by another app while that Space is current goes to a desktop Space
+behind it, even when that app is active.
+
+A Big Picture launch of Happy Wheels started the game but did not bring it forward.
+Quitting Steam logged
 `ExecuteSteamURL: "steam://open/steam://exit"` at once, Steam stopped tracking the
 game 12 seconds later, and the host received TERM after 18 seconds; the shutdown
 callback did not arrive. Fixes:
@@ -933,10 +939,18 @@ callback did not arrive. Fixes:
 - The host reads Steam's console log for the exit request and stops the session one
   second after it, unless Steam refuses the exit (see
   [launcher-process-lifecycle.md](launcher-process-lifecycle.md)).
-- When Steam activates the host, it passes the activation to the game's app.
+- In Big Picture, `Apps.RaiseWindowForGame` returned in 11 ms at launch, when the
+  launcher host was the only tracked process; on the desktop it waits about a second.
+  The host now keeps Steam's activation for up to 60 seconds while it stays active,
+  and passes it to the game's app as soon as the game's window process exists, so
+  macOS shows the Space with the game's window. It logs when Steam activates it, when
+  it passes the activation on and when it loses it first.
+- The first launch after a runtime update also runs Wine's prefix update (about 13
+  seconds for Happy Wheels on 2026-10-16) before the game starts.
 - macdrv keeps asking LaunchServices to activate the game's bundle, at most three times
   within four seconds, until one of its windows is active on the current Space, so a
-  window behind Big Picture's full-screen window or on another Space comes forward.
+  window on another Space comes forward, and writes each check (active, window shown,
+  on the current Space) to the game's session log.
 - The metadata helper checks again for a running game after its restart question is
   answered, so "Restart Steam" never quits Steam under a game started meanwhile.
 

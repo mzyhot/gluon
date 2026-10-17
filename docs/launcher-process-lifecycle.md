@@ -106,7 +106,11 @@ Steam raises a running game through the processes it tracks, the first of which
 is this host. When the host becomes active, it passes the activation to the
 game's own app (`org.gluon.game.<SteamAppId>`, the instance with a regular
 activation policy) through macOS 14's cooperative activation, or a plain activate
-on older systems. The game's macdrv side asks LaunchServices to activate its
+on older systems. Big Picture raises the game as soon as it is launched, before
+the game has a window, so the host keeps the request for up to 60 seconds while
+it stays active and passes it on once the game's window process exists. Big
+Picture is a full-screen Space; activating the game makes macOS show the Space
+with the game's window. The game's macdrv side asks LaunchServices to activate its
 bundle until one of its windows is active on the current Space, at most three
 times within four seconds of its first activation request (`GLUON_FOCUS=0` turns
 this off). Big Picture's full-screen window can otherwise keep the game's first
