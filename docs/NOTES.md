@@ -245,6 +245,24 @@ install-folder or OS-restricted rules only, kept 8 that use only the Steam API, 
 none off. Needs an owner run: a mapped game's first launch (download into the prefix)
 and exit (upload) in Steam's cloud log.
 
+### 32-bit Mac games (2026-10-16)
+
+Steam marks a Mac build it can run with `macos64` or `macosapplesilicon` in
+`common/osextended`; a Mac build without either is 32-bit only and shows "Invalid OS
+Type" (HITMAN World of Assassination lists only `macosapplesilicon` and is native).
+This library has 46 such apps with a Windows build, including Portal 2, Team Fortress 2,
+Left 4 Dead 2, Garry's Mod and Hotline Miami. Their Mac depots and launch entries carry
+`oslist` `macos` (for example Portal 2's depot 623 and launch entry 3).
+
+Gluon now manages them like Windows-only games: `macos` is added to their Windows depots
+and launch entries and `macos64` to `osextended`, and their Mac-only depots and launch
+entries are removed from the cached entry (recorded whole in the state file, restored by
+`disable`), so Steam installs and starts the Windows build. Shared depots without an
+`oslist` stay. Cloud rules restricted to macOS describe the Mac build and keep their
+locations and the developer's macOS overrides; rules the Windows build uses are mapped
+as for Windows-only games. Games with a 64-bit or Apple silicon Mac build are never
+touched. None of the 46 were installed when this was added.
+
 ### Selection rule
 
 Fixed 2026-10-13: apps with no `oslist` at all are Windows apps (Fallout: New Vegas,

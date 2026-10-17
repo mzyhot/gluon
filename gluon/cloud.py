@@ -44,9 +44,20 @@ def _values(section: Any) -> List[Any]:
     return list(section.values()) if isinstance(section, dict) else []
 
 
+def _platforms(rule: Dict[str, Any]) -> List[str]:
+    return [str(p).strip().lower() for p in _values(rule.get("platforms"))]
+
+
 def _runs_on_mac(rule: Dict[str, Any]) -> bool:
-    platforms = [str(p).strip().lower() for p in _values(rule.get("platforms"))]
+    platforms = _platforms(rule)
     return not platforms or "macos" in platforms or "all" in platforms
+
+
+def _for_windows_game(rule: Dict[str, Any]) -> bool:
+    """A rule Steam evaluates on a Mac for files the Windows build writes. Rules for
+    the Mac build alone (a game whose Mac build is 32-bit) keep their own locations."""
+    platforms = _platforms(rule)
+    return _runs_on_mac(rule) and (not platforms or "windows" in platforms or "all" in platforms)
 
 
 def _is_os(override: Dict[str, Any], name: str) -> bool:
@@ -177,8 +188,8 @@ def mapped(ufs: Any, appid: int, profile: Optional[str] = None) -> Optional[Dict
         profile = profile or profile_dir(appid)
         generated: Dict[str, Dict[str, Any]] = {}
         for rule in savefiles:
-            if not _runs_on_mac(rule):
-                continue  # Steam skips it here and leaves its files alone.
+            if not _for_windows_game(rule):
+                continue  # Skipped by Steam here, or the Mac build's own location.
             root = str(rule.get("root", ""))
             if root.lower() in generated:
                 continue
@@ -201,7 +212,10 @@ def mapped(ufs: Any, appid: int, profile: Optional[str] = None) -> Optional[Dict
     except Unmappable:
         return None
     result = copy.deepcopy(ufs)
-    kept = [o for o in overrides if not _is_os(o, "macos")]
+    # The developer's macOS overrides describe a Mac build the Windows game does not
+    # use; those for roots of Mac-only rules still apply to them.
+    windows_roots = {str(r.get("root", "")).lower() for r in savefiles if _for_windows_game(r)}
+    kept = [o for o in overrides if not _is_os(o, "macos") or str(o.get("root", "")).lower() not in windows_roots]
     combined = kept + [generated[k] for k in sorted(generated)]
     if combined:
         result["rootoverrides"] = {str(i): copy.deepcopy(o) for i, o in enumerate(combined)}

@@ -68,6 +68,22 @@ def _has(csv: Any, item: str) -> bool:
     return item in _items(csv)
 
 
+def has_64bit_mac_build(common: Dict[str, Any]) -> bool:
+    """Steam marks a Mac build it can still run with macos64 or macosapplesilicon."""
+    extended = _items(common.get("osextended"))
+    return _has(common.get("oslist"), "macos") and ("macos64" in extended or "macosapplesilicon" in extended)
+
+
+def runs_through_gluon(ai: Dict[str, Any]) -> bool:
+    """Windows games without a Mac build, and games whose only Mac build is 32-bit
+    (Steam's "Invalid OS Type" on current macOS) but that have a Windows build."""
+    common = ai.get("common") or {}
+    oslist = common.get("oslist")
+    if not _has(oslist, "macos"):
+        return True
+    return _has(oslist, "windows") and not has_64bit_mac_build(common)
+
+
 def _get(d: Dict[str, Any], path: Path) -> Any:
     for k in path:
         if not isinstance(d, dict) or k not in d:
@@ -172,6 +188,11 @@ def planned_changes(ai: Dict[str, Any], appid: Optional[int] = None, change_numb
         if cur != new:
             out.append((path, cur, new))
 
+    # A game whose Mac build is 32-bit only runs its Windows build instead: Steam
+    # installs and starts the Windows depots and launch entries on this Mac.
+    common = _get(ai, ("common",)) or {}
+    mac32 = _has(common.get("oslist"), "macos") and _has(common.get("oslist"), "windows") \
+        and not has_64bit_mac_build(common)
     # An app with no platform list at all is a Windows app (older titles omit it).
     want(("common", "oslist"), _with(_get(ai, ("common", "oslist")) or "windows", "macos"))
     # without this the client flags the app "Invalid OS Type" (its 32-bit-only-Mac-app marker)
@@ -183,6 +204,8 @@ def planned_changes(ai: Dict[str, Any], appid: Optional[int] = None, change_numb
             oslist = _get(item, ("config", "oslist"))
             if _has(oslist, "windows"):
                 want(section + (key, "config", "oslist"), _with(oslist, "macos"))
+            elif mac32 and _has(oslist, "macos"):
+                out.append((section + (key,), item, None))
     if appid is None:
         if "ufs" in ai:
             out.append((("ufs",), ai["ufs"], None))
@@ -304,7 +327,7 @@ def enable(appids: List[int], freeze: bool = True) -> List[str]:
         ai = kv["appinfo"]
         name = _get(ai, ("common", "name"))
         rec = state.get(str(appid))
-        if rec is None and _has(_get(ai, ("common", "oslist")), "macos"):
+        if rec is None and not runs_through_gluon(ai):
             notes.append("%d (%s): already has a macOS build, left alone" % (appid, name))
             continue
         changes = planned_changes(ai, appid, entry.change_number, state)
@@ -424,7 +447,7 @@ def library_appids() -> Optional[set]:
 
 
 def candidates() -> List[Tuple[int, str]]:
-    """Games in the user's library that list Windows but not macOS."""
+    """Games in the user's library that list Windows but no Mac build current macOS runs."""
     owned = library_appids()
     out = []
     for entry in appinfo.AppInfoFile(steam.APPINFO).entries:
@@ -433,8 +456,9 @@ def candidates() -> List[Tuple[int, str]]:
         common = entry.kv.get("appinfo", {}).get("common", {})
         if str(common.get("type", "")).lower() not in PLAYABLE_TYPES:
             continue
-        # Everything without a macOS build, including titles that list no platform at all.
-        if not _has(common.get("oslist"), "macos"):
+        # Everything without a macOS build, including titles that list no platform at
+        # all, and games whose Mac build is 32-bit only.
+        if runs_through_gluon(entry.kv.get("appinfo", {})):
             out.append((entry.appid, str(common.get("name"))))
     return sorted(out, key=lambda x: x[1].lower())
 

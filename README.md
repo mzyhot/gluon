@@ -4,7 +4,8 @@
 
 <img src="gluon-slogan.svg" alt="Download Gluon and experience a world without CrossOver (and Windows). Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product." width="100%">
 
-Gluon runs Windows-only Steam games on macOS from your normal Steam library. It uses a
+Gluon runs Windows Steam games on macOS from your normal Steam library, including
+games whose Mac version is 32-bit only. It uses a
 Windows compatibility runtime that Gluon builds from open-source Wine code.
 
 **No configuring every game. No separate launcher. Just Steam.**
@@ -19,7 +20,9 @@ Everything below applies to every game Gluon runs. Each part can be switched off
 game or for all games (see [Settings](#settings)).
 
 - **Steam integration.** Windows-only games become installable, and Play starts them
-  through Gluon. Steam's Stop button and quitting Steam, from the desktop or Big Picture,
+  through Gluon. Games whose only Mac version is 32-bit, which current macOS cannot run
+  (Steam shows "Invalid OS Type"), install and run their Windows version the same way;
+  games with a 64-bit or Apple silicon Mac version are left alone. Steam's Stop button and quitting Steam, from the desktop or Big Picture,
   end the game and its Windows processes as soon as you ask.
 - **Each game is its own Mac app.** It opens in front of Steam, in Big Picture too, shows
   its own name in the menu bar and Dock, and macOS Game Mode can recognize it. Quitting it
@@ -94,7 +97,8 @@ Tested on an Apple Silicon Mac with the current runtime. Other games may or may 
 
 ## How it works
 
-1. **Discover.** Find Steam games with a Windows build but no macOS build.
+1. **Discover.** Find Steam games with a Windows build but no Mac build that current
+   macOS can run (no Mac build, or a 32-bit one).
 2. **Enable.** Update Steam's local metadata so those games can be installed.
 3. **Launch.** Route their Play buttons through Gluon's launcher.
 4. **Run.** Start the game as its own Mac app, on a Wine runtime built from source.
@@ -129,7 +133,7 @@ archive/                retired experiments
 
 ```bash
 ./scripts/install-tool.sh        # copy the launcher into Steam
-python3 -m gluon candidates      # games with a Windows build but no macOS build
+python3 -m gluon candidates      # games with a Windows build and no runnable Mac build
 python3 -m gluon enable <appid>  # Steam must be closed
 python3 -m gluon status
 python3 -m gluon disable <appid> # restore original metadata and launch option
