@@ -14,10 +14,12 @@ QUIT_SETTLE = 2.0
 
 
 TOOL_COPY = {
-    "absent": "no launcher copy",
-    "same": "same as the installed launcher",
-    "differs": "STALE - differs from the installed launcher",
-    "only": "IN USE - the installed launcher is missing, so launch options use this copy",
+    "absent": "not registered",
+    "shim": "shim to the installed launcher",
+    "differs": "STALE - replace the old tool copy with the installed-launcher shim",
+    "unusable": "NOT executable - reinstall the tool shim",
+    "unavailable": "shim target unavailable - install the Gluon launcher",
+    "unknown": "cannot verify - canonical tool shim is missing",
 }
 
 
@@ -44,6 +46,10 @@ def cmd_status(_args: argparse.Namespace) -> int:
 
 
 def cmd_enable(args: argparse.Namespace) -> int:
+    # Launch options always name the installed launcher, never Steam's tool shim.
+    if not os.access(steam.INSTALLED_LAUNCHER, os.X_OK):
+        raise enable.EnableError("Gluon's launcher is not installed (%s); install the Gluon package first"
+                                 % steam.INSTALLED_LAUNCHER)
     for line in enable.enable(args.appid):
         print(line)
     return 0

@@ -41,6 +41,7 @@ mkdir -p "$root/bin" "$root/lib/gluon" "$root/runtime" "$here/dist"
 install -m 755 "$here/tool/gluon" "$here/packaging/gluon-agent" "$here/packaging/gluon-uninstall" "$root/bin/"
 install -m 755 "$launcher_host" "$root/bin/gluon-launcher-host"
 install -m 644 "$here"/gluon/*.py "$root/lib/gluon/"
+install -m 644 "$here/tool/gluon-shim" "$root/lib/gluon/tool-shim"
 # Left out: prefix templates and locks a runtime creates on first use, and a bundled
 # runtime's own separate launcher program (Gluon is driven by Steam, not by an app).
 rsync -a --exclude '/files/share/default_pfx' --exclude '/*.lock' --exclude '/bin/pmac' \

@@ -154,6 +154,32 @@ case "$verb" in
     *) fail "unsupported verb '$verb' (expected run or waitforexitandrun)" ;;
 esac
 [ $# -gt 0 ] || fail "no executable given"
+
+# During a Steam Play migration a saved Launch Option can wrap the tool command,
+# or appear inside it. Peel only Gluon's known launcher paths from the front;
+# a game argument or another program merely named "gluon" is not a wrapper.
+# Keep a requested prefix wait from either layer, with one host and one session.
+tool_launcher="${STEAM_ROOT:-$HOME/Library/Application Support/Steam}/Steam.AppBundle/Steam/Contents/MacOS/compatibilitytools.d/gluon/gluon"
+while [ $# -gt 0 ]; do
+    nested_gluon=""
+    for known_launcher in "$0" "$GLUON_HOME/bin/gluon" "$source_root/tool/gluon" "$tool_launcher"; do
+        # Steam can retain install_path's "." in its command. File identity also
+        # accepts that spelling and symlinks without matching unrelated names.
+        if [ "$1" = "$known_launcher" ] || [ "$1" -ef "$known_launcher" ]; then
+            nested_gluon=1
+            break
+        fi
+    done
+    [ -n "$nested_gluon" ] || break
+    [ $# -ge 3 ] || fail "incomplete nested Gluon launch command"
+    case "$2" in
+        run) ;;
+        waitforexitandrun) verb=waitforexitandrun ;;
+        *) fail "unsupported nested Gluon verb '$2'" ;;
+    esac
+    log "  removed nested Gluon wrapper: $1 $2"
+    shift 2
+done
 exe="$1"
 shift
 

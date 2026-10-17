@@ -130,7 +130,7 @@ archive/                retired experiments
 ### Common commands
 
 ```bash
-./scripts/install-tool.sh        # copy the launcher into Steam
+./scripts/install-tool.sh        # register the Steam Play shim (runs the installed launcher)
 python3 -m gluon candidates      # games with a Windows build and no runnable Mac build
 python3 -m gluon enable <appid>  # Steam must be closed
 python3 -m gluon status

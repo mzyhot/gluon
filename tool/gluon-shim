@@ -1,0 +1,16 @@
+#!/bin/sh
+# Steam Play entry point. Keep the real launcher beside its installed native host.
+if [ -f "${GLUON_HOME:-$HOME/Library/Application Support/Gluon}/bin/gluon" ] &&
+   [ -x "${GLUON_HOME:-$HOME/Library/Application Support/Gluon}/bin/gluon" ]; then
+    exec "${GLUON_HOME:-$HOME/Library/Application Support/Gluon}/bin/gluon" "$@"
+fi
+
+gluon_home="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
+launcher="$gluon_home/bin/gluon"
+message="installed launcher is missing or not executable: $launcher"
+printf 'gluon: %s\n' "$message" >&2
+if ! (umask 077; mkdir -p "$gluon_home/logs" &&
+      printf 'gluon: %s\n' "$message" >> "$gluon_home/logs/tool-shim.log"); then
+    printf 'gluon: could not write the tool shim log in %s/logs\n' "$gluon_home" >&2
+fi
+exit 1

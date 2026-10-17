@@ -14,12 +14,12 @@ CLIENT_DIR = os.path.join(STEAM_ROOT, "Steam.AppBundle", "Steam", "Contents", "M
 APPINFO = os.path.join(STEAM_ROOT, "appcache", "appinfo.vdf")
 CONFIG_VDF = os.path.join(STEAM_ROOT, "config", "config.vdf")
 TOOL_DIR = os.path.join(CLIENT_DIR, "compatibilitytools.d", "gluon")
-# The package installs the launcher into Gluon's own folder; scripts/install-tool.sh puts a
-# development copy into Steam's tool folder. Launch options written for either are ours.
+# The registered tool is only a shim to the installed launcher. Keep recognizing
+# old launch options that named the tool copy, but never write new ones to it.
 INSTALLED_LAUNCHER = os.path.join(GLUON_HOME, "bin", "gluon")
 DEV_LAUNCHER = os.path.join(TOOL_DIR, "gluon")
 LAUNCHERS = (INSTALLED_LAUNCHER, DEV_LAUNCHER)
-LAUNCHER = INSTALLED_LAUNCHER if os.access(INSTALLED_LAUNCHER, os.X_OK) else DEV_LAUNCHER
+LAUNCHER = INSTALLED_LAUNCHER
 
 
 class SteamError(RuntimeError):
@@ -27,25 +27,32 @@ class SteamError(RuntimeError):
 
 
 def tool_copy_state() -> str:
-    """Compare the launcher copy in Steam's tool folder with the installed launcher.
+    """Check the registered entry point against the canonical packaged shim.
 
-    "absent": there is no copy. "same" / "differs": both exist and their bytes match or
-    not. "only": the installed launcher is missing, so launch options would use the copy.
-    Only reads both files.
+    An old full launcher is stale even when it matches the installed launcher.
+    A valid shim also needs both it and its installed target to be executable.
+    This only reads files; it never registers or updates the tool in Steam.
     """
     try:
         with open(DEV_LAUNCHER, "rb") as f:
             theirs = f.read()
     except OSError:
         return "absent"
-    if not os.access(INSTALLED_LAUNCHER, os.X_OK):
-        return "only"
+    canonical = os.path.join(os.path.dirname(__file__), "tool-shim")
+    if not os.path.isfile(canonical):
+        canonical = os.path.join(os.path.dirname(__file__), "..", "tool", "gluon-shim")
     try:
-        with open(INSTALLED_LAUNCHER, "rb") as f:
+        with open(canonical, "rb") as f:
             ours = f.read()
     except OSError:
-        return "only"
-    return "same" if ours == theirs else "differs"
+        return "unknown"
+    if ours != theirs:
+        return "differs"
+    if not os.access(DEV_LAUNCHER, os.X_OK):
+        return "unusable"
+    if not os.path.isfile(INSTALLED_LAUNCHER) or not os.access(INSTALLED_LAUNCHER, os.X_OK):
+        return "unavailable"
+    return "shim"
 
 
 def _pgrep() -> subprocess.CompletedProcess:
