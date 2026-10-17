@@ -1008,6 +1008,60 @@ relaunches itself is seen as running again, and then syncs. Gluon's details are 
 within seconds of a quit instead of up to a minute later, so reopening Steam quickly no
 longer starts it with the refreshed entries. Not yet observed on a real quit.
 
+## Steam Play through the compatibility manager (2026-10-17)
+
+The goal is for Steam itself to start Gluon as a compatibility tool, with no edited
+metadata. Steam registers Gluon's tool at every start but leaves its compatibility
+manager switched off unless the client platform is Linux (see the top of this file).
+
+**Registered tool.** `compatibilitytools.d/gluon/gluon` is now `tool/gluon-shim`, which
+execs the installed `$GLUON_HOME/bin/gluon` by path with arguments and environment
+unchanged, so a Steam Play launch gets the same host, prefix, overlay and achievement
+bridge as the Launch Option. With the installed launcher missing it logs and fails.
+If Steam Play and a saved Launch Option both wrap a game, the launcher removes the
+nested Gluon layer and starts one session. Only `scripts/install-tool.sh` registers
+the shim; the package never writes into Steam's bundle.
+
+**NotProton as the switch (read from its public GPL-3.0 source; nothing copied).**
+- Its hooks live in `steamclient.dylib`, which `steam_osx` loads; the compatibility
+  manager is there.
+- Its tool-selection hook keeps whatever tool Steam resolves for an app. Only an app
+  left with no tool falls back to NotProton's own CrossOver entry, so a game runs
+  through Gluon once the user picks Gluon for it under Properties > Compatibility.
+  Its page lists every registered tool whose `from_oslist` matches the app, which
+  includes Gluon's.
+- Its local redirect only rewrites tools that carry a Steam app ID. Gluon's tool
+  registers with app ID 0, so Steam keeps Gluon's install path and command line.
+- Its OS-list gate makes the install platform follow the chosen tool's
+  `from_oslist`, so a game mapped to Gluon should get its Windows depots.
+- Not settled from the source: whether it switches the manager on when no CrossOver
+  build is installed.
+
+No VDF change appears needed. A real run needs the owner's permission, because
+NotProton edits and re-signs Steam.app. Map one Windows-only game to Gluon, then
+check that Steam installs the Windows depot and starts the shim with
+`waitforexitandrun`, and that Project Zomboid keeps its Mac depot.
+
+**Gluon's own switch, first step: a read-only probe.**
+- `native/steam-compat/resolver.c` reads a loaded Mach-O image. For three function
+  names it counts matching strings in `__cstring` and the code references to them in
+  `__text` (ADR or ADRP+ADD on arm64, RIP-relative LEA on x86_64). It reports only
+  counts and a verdict, never addresses, and changes nothing. Activation is
+  hard-disabled until a reviewed hook exists.
+- `probe.c` builds a dylib that acts only inside `steam_osx` and only when
+  `GLUON_STEAM_COMPAT_PROBE=1`. It inspects `steamclient.dylib` as it loads and
+  appends one JSON line to a private log. It removes `DYLD_INSERT_LIBRARIES` from its
+  environment at load, so Steam's child processes do not inherit it.
+- `gluon steam-probe` prints the command. With `--launch --library <dylib>` and Steam
+  closed, it starts `steam_osx` directly with the probe inserted. That bypasses the
+  hardened bootstrapper and leaves Steam.app unmodified. This tests whether
+  `steam_osx` accepts a library when started this way, and whether the anchors
+  resolve uniquely in the installed client.
+- Source checks and Build test the resolver on synthetic images (with sanitizers) and
+  publish the probe as the `steam-compat` artifact. Nothing is compiled locally.
+- Not yet run against Steam. Running it starts Steam with code inserted, so it needs
+  the owner's permission.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number

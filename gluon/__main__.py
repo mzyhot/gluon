@@ -6,7 +6,7 @@ import os
 import sys
 import time
 
-from . import cef, enable, runtime, steam
+from . import cef, enable, runtime, steam, steam_compat
 
 # After Steam quits, wait this long before editing its files, so a client that relaunches
 # itself (after an update, say) is seen as running again.
@@ -105,6 +105,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="gluon")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status", help="show installation state and enabled apps").set_defaults(fn=cmd_status)
+    s = sub.add_parser("steam-probe", help="preview an explicit read-only Steam compatibility probe (no hooks)")
+    s.add_argument("--library", help="probe dylib downloaded from GitHub Actions")
+    s.add_argument("--launch", action="store_true", help="start Steam with the probe; requires Steam closed")
+    s.set_defaults(fn=steam_compat.cmd_probe)
     s = sub.add_parser("enable", help="make Windows games installable, including 32-bit-only Mac games (Steam must be closed)")
     s.add_argument("appid", type=int, nargs="+")
     s.set_defaults(fn=cmd_enable)
@@ -130,7 +134,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         return args.fn(args)
-    except (enable.EnableError, cef.BridgeError, runtime.RuntimeSelectionError, steam.SteamError) as e:
+    except (enable.EnableError, cef.BridgeError, runtime.RuntimeSelectionError, steam.SteamError, OSError) as e:
         print("gluon: %s" % e, file=sys.stderr)
         return 1
 

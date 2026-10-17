@@ -15,6 +15,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  steam-compat:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the resolver against synthetic images
+        run: packaging/check-steam-compat.sh
+
+      - name: Build read-only compatibility probe
+        run: packaging/build-steam-compat.sh
+
+      - name: Preserve developer probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-compat
+          path: build/steam-compat/libgluon-steam-compat.dylib
+          if-no-files-found: error
+          retention-days: 7
+
   source-checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
