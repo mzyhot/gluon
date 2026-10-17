@@ -254,6 +254,13 @@ runtime would not intercept Wine's CGL path. MGL is a possible development base,
 but its current implementation cannot honestly be installed as a general desktop
 compatibility fix.
 
+## Zink
+
+Mesa's Zink, running on MoltenVK or KosmicKrisp, was reviewed on 2026-10-16 in
+[graphics-opengl-zink.md](graphics-opengl-zink.md). Zink cannot start on
+MoltenVK 1.4.2, and on KosmicKrisp it computes OpenGL 2.1 until transform
+feedback and geometry shaders land upstream. It is not shipped.
+
 ## Probe and remaining work
 
 The source alias patch and its registry/signature checks are implemented. The
