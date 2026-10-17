@@ -140,7 +140,8 @@ under `~/Library/Application Support/Gluon` (`bin/`, `lib/gluon/`, `runtime/`).
 Its postinstall script writes and loads `~/Library/LaunchAgents/com.gluon.agent.plist`,
 which runs `bin/gluon-agent` at login and every 60 s. The agent runs `gluon sync`:
 
-- does nothing while Steam is running;
+- while Steam is running, notes refreshed entries, then waits for Steam to quit (until
+  55 s after the run started) and syncs again as soon as it does;
 - otherwise enables every Windows-only game in the library and re-applies entries Steam
   has refreshed (this is the answer to the metadata-refresh item below);
 - writes Steam's files atomically (temp file + rename).
@@ -1000,14 +1001,21 @@ The restart prompt and the code that quit and reopened Steam are removed; while 
 runs, the helper only logs refreshes. Steam hooks or blocking refreshes are not used.
 Not yet observed: a session where Steam runs the flagged update before it quits.
 
+A helper run that finds Steam running then stays up and waits for it to quit, sleeping on
+a kqueue process-exit event for `steam_osx` until 55 s after the run started (launchd
+starts the next run at 60 s). When Steam quits, the run waits 2 s, so a client that
+relaunches itself is seen as running again, and then syncs. Gluon's details are back
+within seconds of a quit instead of up to a minute later, so reopening Steam quickly no
+longer starts it with the refreshed entries. Not yet observed on a real quit.
+
 ## Open items
 
 1. **Metadata refresh.** Steam replaces an app's cache entry when its change number
    moves on the server, and the running client forgets Gluon's changes for that app.
    The owner confirmed that refreshed games keep launching. Gluon no longer prompts or
-   restarts Steam: the helper logs the refresh and re-applies its changes at the next
-   Steam quit, then clears the leftover update flag (see "Metadata refreshes without
-   prompts").
+   restarts Steam: the helper logs the refresh and re-applies its changes within seconds
+   of the next Steam quit, then clears the leftover update flag (see "Metadata
+   refreshes without prompts").
 2. **Library UI.** Tested through `app_install` and `steam://rungameid`. The Install
    button was confirmed enabled by the owner after Happy Wheels installation recovery.
    Platform icons and the remaining library flows are untested.

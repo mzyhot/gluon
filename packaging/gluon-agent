@@ -1,8 +1,10 @@
 #!/bin/sh
-# Background helper started by launchd (com.gluon.agent). Each run makes sure every
-# Windows game in the Steam library without a runnable Mac build (none, or 32-bit only)
-# is installable and routed through Gluon.
-# Steam's files are only edited while it is closed. When Steam refreshes managed
-# entries while running, the helper offers to restart it and repairs them then.
+# Background helper started by launchd (com.gluon.agent) every 60 s. Each run makes sure
+# every Windows game in the Steam library without a runnable Mac build (none, or 32-bit
+# only) is installable and routed through Gluon.
+# Steam's files are only edited while it is closed. While Steam runs, a run notes refreshed
+# entries and then waits (on Steam's process-exit event, until 55 s after it started) for
+# Steam to quit, so refreshed entries are repaired right after a quit rather than at the
+# next run.
 here="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHONPATH="$here/lib" exec /usr/bin/arch -arm64 /usr/bin/python3 -m gluon sync --log
+PYTHONPATH="$here/lib" exec /usr/bin/arch -arm64 /usr/bin/python3 -m gluon sync --log --wait-for-quit 55

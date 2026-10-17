@@ -1,10 +1,12 @@
 import contextlib
 import io
 import os
+import select
 import subprocess
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from gluon import __main__ as cli
 from gluon import enable, steam
@@ -26,6 +28,45 @@ class SteamProcessTests(unittest.TestCase):
         with patch.object(steam.subprocess, "run", side_effect=FileNotFoundError):
             with self.assertRaises(steam.SteamError):
                 steam.is_running()
+
+    def test_pids_lists_every_client_process(self):
+        with patch.object(steam.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, stdout="412\n977\n")):
+            self.assertEqual(steam.pids(), [412, 977])
+        with patch.object(steam.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, stdout="")):
+            self.assertEqual(steam.pids(), [])
+
+
+class SteamExitTests(unittest.TestCase):
+    def test_wait_ends_once_steam_has_quit(self):
+        with patch.object(steam, "pids", side_effect=[[412], [412], []]), \
+                patch.object(steam, "_wait_for_any_exit") as wait:
+            self.assertTrue(steam.wait_for_exit(30))
+        self.assertEqual(wait.call_count, 2)
+
+    def test_wait_gives_up_at_the_deadline(self):
+        with patch.object(steam, "pids", return_value=[412]), \
+                patch.object(steam.time, "monotonic", side_effect=[0, 1, 11]), \
+                patch.object(steam, "_wait_for_any_exit") as wait:
+            self.assertFalse(steam.wait_for_exit(10))
+        self.assertEqual(wait.call_args_list, [call([412], 9)])
+
+    @unittest.skipUnless(hasattr(select, "kqueue"), "kqueue process events are macOS/BSD only")
+    def test_exit_event_wakes_the_wait(self):
+        proc = subprocess.Popen(["sleep", "0.2"])
+        self.addCleanup(proc.wait)
+        started = time.monotonic()
+        steam._wait_for_any_exit([proc.pid], 10)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIsNotNone(proc.poll())
+
+    @unittest.skipUnless(hasattr(select, "kqueue"), "kqueue process events are macOS/BSD only")
+    def test_process_already_gone_does_not_wait(self):
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        started = time.monotonic()
+        steam._wait_for_any_exit([proc.pid], 10)
+        self.assertLess(time.monotonic() - started, 5)
 
 
 class ToolCopyTests(unittest.TestCase):

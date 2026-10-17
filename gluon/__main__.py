@@ -4,8 +4,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 
 from . import cef, enable, runtime, steam
+
+# After Steam quits, wait this long before editing its files, so a client that relaunches
+# itself (after an update, say) is seen as running again.
+QUIT_SETTLE = 2.0
 
 
 TOOL_COPY = {
@@ -51,11 +56,8 @@ def cmd_disable(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sync(args: argparse.Namespace) -> int:
-    lines = runtime.activate_pending(dry_run=args.dry_run)
-    lines += enable.sync(dry_run=args.dry_run)
+def _report(args: argparse.Namespace, lines: list) -> None:
     if args.log and lines:
-        import time
         path = os.path.join(steam.GLUON_HOME, "logs", "agent.log")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a") as f:
@@ -64,6 +66,20 @@ def cmd_sync(args: argparse.Namespace) -> int:
     else:
         for line in lines:
             print(line)
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    started = time.monotonic()
+    # While Steam runs, stay up until it quits (within the budget) and sync again then,
+    # so a quick relaunch finds Gluon's details back in place. Checked before the first
+    # pass so a quit during that pass is not missed.
+    waiting = args.wait_for_quit > 0 and not args.dry_run and steam.is_running()
+    _report(args, runtime.activate_pending(dry_run=args.dry_run) + enable.sync(dry_run=args.dry_run))
+    if waiting:
+        remaining = args.wait_for_quit - (time.monotonic() - started)
+        if remaining > 0 and steam.wait_for_exit(remaining):
+            time.sleep(QUIT_SETTLE)
+            _report(args, runtime.activate_pending() + enable.sync())
     return 0
 
 
@@ -79,7 +95,7 @@ def cmd_console(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="gluon")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status", help="show installation state and enabled apps").set_defaults(fn=cmd_status)
@@ -93,13 +109,19 @@ def main() -> int:
     s = sub.add_parser("sync", help="restore and protect managed games while Steam is closed; warn about refreshed metadata while it runs")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--log", action="store_true", help="append results to logs/agent.log instead of printing")
+    s.add_argument("--wait-for-quit", type=float, default=0, metavar="SECONDS",
+                   help="if Steam is running, wait until SECONDS after start for it to quit, then sync again")
     s.set_defaults(fn=cmd_sync)
     sub.add_parser("candidates", help="list cached games with a Windows build and no Mac build current macOS runs").set_defaults(fn=cmd_candidates)
     s = sub.add_parser("console", help="run a Steam console command (needs Steam started with -cef-enable-debugging)")
     s.add_argument("command", nargs="+")
     s.add_argument("--wait", type=float, default=1.5)
     s.set_defaults(fn=cmd_console)
-    args = p.parse_args()
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     try:
         return args.fn(args)
     except (enable.EnableError, cef.BridgeError, runtime.RuntimeSelectionError, steam.SteamError) as e:
