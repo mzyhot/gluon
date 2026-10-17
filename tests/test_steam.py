@@ -1,8 +1,13 @@
+import contextlib
+import io
+import os
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from gluon import steam
+from gluon import __main__ as cli
+from gluon import enable, steam
 
 
 class SteamProcessTests(unittest.TestCase):
@@ -21,6 +26,73 @@ class SteamProcessTests(unittest.TestCase):
         with patch.object(steam.subprocess, "run", side_effect=FileNotFoundError):
             with self.assertRaises(steam.SteamError):
                 steam.is_running()
+
+
+class ToolCopyTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="gluon-tool-copy-")
+        self.addCleanup(temp.cleanup)
+        self.home = os.path.join(temp.name, "Gluon")
+        self.tool_dir = os.path.join(temp.name, "compatibilitytools.d", "gluon")
+        self.installed = os.path.join(self.home, "bin", "gluon")
+        self.copy = os.path.join(self.tool_dir, "gluon")
+        for name, value in (("GLUON_HOME", self.home), ("TOOL_DIR", self.tool_dir),
+                            ("INSTALLED_LAUNCHER", self.installed), ("DEV_LAUNCHER", self.copy)):
+            patcher = patch.object(steam, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def write(self, path, text, mode=0o755):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, mode)
+
+    def status_lines(self):
+        out = io.StringIO()
+        with patch.object(steam, "is_running", return_value=False), \
+                patch.object(enable, "status", return_value=[]), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(cli.cmd_status(None), 0)
+        return dict(line.split(":", 1) for line in out.getvalue().splitlines() if ":" in line)
+
+    def test_no_copy_is_absent(self):
+        self.write(self.installed, "launcher v2\n")
+        self.assertEqual(steam.tool_copy_state(), "absent")
+
+    def test_identical_copy_is_same(self):
+        self.write(self.installed, "launcher v2\n")
+        self.write(self.copy, "launcher v2\n")
+        self.assertEqual(steam.tool_copy_state(), "same")
+
+    def test_older_copy_differs(self):
+        self.write(self.installed, "launcher v2\n")
+        self.write(self.copy, "launcher v1\n")
+        self.assertEqual(steam.tool_copy_state(), "differs")
+
+    def test_copy_is_only_launcher_without_an_installed_one(self):
+        self.write(self.copy, "launcher v1\n")
+        self.assertEqual(steam.tool_copy_state(), "only")
+
+    def test_non_executable_installed_launcher_leaves_only_the_copy(self):
+        self.write(self.installed, "launcher v1\n", mode=0o644)
+        self.write(self.copy, "launcher v1\n")
+        self.assertEqual(steam.tool_copy_state(), "only")
+
+    def test_status_names_a_stale_copy(self):
+        self.write(self.installed, "launcher v2\n")
+        self.write(self.copy, "launcher v1\n")
+        lines = self.status_lines()
+        self.assertEqual(lines["Launcher     "].strip(), self.installed)
+        self.assertIn("STALE", lines["Steam tool   "])
+        self.assertIn(self.tool_dir, lines["Steam tool   "])
+        self.assertNotIn("Gluon tool   ", lines)
+
+    def test_status_reports_a_missing_installed_launcher(self):
+        self.write(self.copy, "launcher v1\n")
+        lines = self.status_lines()
+        self.assertIn("NOT installed", lines["Launcher     "])
+        self.assertIn("IN USE", lines["Steam tool   "])
 
 
 if __name__ == "__main__":

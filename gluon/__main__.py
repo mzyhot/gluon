@@ -8,10 +8,20 @@ import sys
 from . import cef, enable, runtime, steam
 
 
+TOOL_COPY = {
+    "absent": "no launcher copy",
+    "same": "same as the installed launcher",
+    "differs": "STALE - differs from the installed launcher",
+    "only": "IN USE - the installed launcher is missing, so launch options use this copy",
+}
+
+
 def cmd_status(_args: argparse.Namespace) -> int:
     print("Steam root   :", steam.STEAM_ROOT)
     print("Steam running:", "yes" if steam.is_running() else "no")
-    print("Gluon tool   :", "installed" if os.access(steam.LAUNCHER, os.X_OK) else "NOT installed", "(%s)" % steam.TOOL_DIR)
+    installed = os.access(steam.INSTALLED_LAUNCHER, os.X_OK)
+    print("Launcher     :", steam.INSTALLED_LAUNCHER if installed else "NOT installed (%s)" % steam.INSTALLED_LAUNCHER)
+    print("Steam tool   :", "%s (%s)" % (TOOL_COPY[steam.tool_copy_state()], steam.TOOL_DIR))
     runtime = os.path.join(steam.GLUON_HOME, "runtime", "current")
     if os.access(os.path.join(runtime, "proton"), os.X_OK):
         kind = "Steam Play tool"
@@ -20,7 +30,6 @@ def cmd_status(_args: argparse.Namespace) -> int:
     else:
         kind = None
     print("Runtime      :", "%s (%s)" % (os.path.realpath(runtime), kind) if kind else "NOT found (%s)" % runtime)
-    print("Launcher     :", steam.LAUNCHER)
     rows = enable.status()
     print("Enabled apps :", len(rows))
     for r in rows:

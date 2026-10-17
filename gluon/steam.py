@@ -24,6 +24,28 @@ class SteamError(RuntimeError):
     pass
 
 
+def tool_copy_state() -> str:
+    """Compare the launcher copy in Steam's tool folder with the installed launcher.
+
+    "absent": there is no copy. "same" / "differs": both exist and their bytes match or
+    not. "only": the installed launcher is missing, so launch options would use the copy.
+    Only reads both files.
+    """
+    try:
+        with open(DEV_LAUNCHER, "rb") as f:
+            theirs = f.read()
+    except OSError:
+        return "absent"
+    if not os.access(INSTALLED_LAUNCHER, os.X_OK):
+        return "only"
+    try:
+        with open(INSTALLED_LAUNCHER, "rb") as f:
+            ours = f.read()
+    except OSError:
+        return "only"
+    return "same" if ours == theirs else "differs"
+
+
 def is_running() -> bool:
     try:
         result = subprocess.run(["pgrep", "-x", "steam_osx"], capture_output=True)
