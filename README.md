@@ -39,12 +39,10 @@ game or for all games (see [Settings](#settings)).
   ask for an OpenGL 3.x compatibility context, which macOS does not provide.
 - **Performance.** Wine's Mach-semaphore synchronization (msync) is on, and the Mac and
   display stay awake while you play with a controller.
-- **No restarts for Steam's metadata refreshes.** Steam re-downloads a game's details
-  several times a day, which used to undo Gluon's changes until Steam restarted.
-  Installed games now keep Gluon's details, and game updates arrive in a weekly update
-  check instead (one Steam restart that week, only if an installed game changed).
 - **Safe updates.** New runtimes are switched in only while Steam is closed, and the
-  previous one is kept for rollback.
+  previous one is kept for rollback. When Steam refreshes an installed game's details
+  and undoes Gluon's changes, Gluon offers to restart Steam and restores them while it
+  is closed; other games are restored quietly at the next Steam quit.
 
 ## Installation
 
@@ -76,9 +74,6 @@ Launch options win over a game's file, which wins over the file for every game.
 | `GLUON_GL_COMPAT_AS_CORE` | `1` | reject OpenGL 3.x compatibility contexts as Wine normally does |
 | `GLUON_CAFFEINATE` | `1` | let the Mac and display sleep during play |
 | `GLUON_CLOUD` | `1` | keep Steam Cloud off for the game on this Mac (settings files only) |
-
-`GLUON_GAME_UPDATES` in `settings.env` sets how often installed games may pick up game
-updates: `weekly` (default), `daily` or `never`.
 | `WINEMSYNC` | `1` | use the Wine server for synchronization instead of msync |
 
 `GLUON_RUNTIME=<folder>` picks another runtime from `~/Library/Application Support/Gluon/runtime/`.

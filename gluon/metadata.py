@@ -227,11 +227,8 @@ def _restart_steam(repair: Callable[[], List[str]], wait: float = 120.0,
 
 
 def watch_refresh(state: Dict[str, Any], planned_changes: Callable,
-                  repair: Callable[[], List[str]] | None = None, updating: bool = False) -> List[str]:
+                  repair: Callable[[], List[str]] | None = None) -> List[str]:
     """Read changed cache files and offer, once per refreshed set, to restart Steam.
-
-    `state` holds the installed managed games; Gluon keeps their cached details from
-    being refreshed outside an update window (`updating`), so this is rare.
 
     The helper may run while Steam is open: it writes Gluon's own observation
     state and never Steam's cache or manifests. Restarting is offered only when
@@ -267,13 +264,9 @@ def watch_refresh(state: Dict[str, Any], planned_changes: Callable,
     observed["offered"] = drift
     _save(OBSERVED, observed)
     games = ", ".join(item[0] for item in drift)
-    if updating:
-        message = ("Steam downloaded new details for %d installed Gluon game(s) in this week's update "
-                   "check. Restart Steam now so Gluon can apply them and Steam can update the game(s)? "
-                   "Until then, do not play them." % len(drift))
-    else:
-        message = ("Steam replaced Gluon's details for %d installed game(s), so it may not start or "
-                   "update them correctly. Restart Steam now so Gluon can restore them?" % len(drift))
+    message = ("Steam's details for %d Gluon game(s) need updating, for example after Steam refreshed "
+               "them, so it may not install, update, start or cloud-sync them correctly. Restart Steam "
+               "now so Gluon can update them?" % len(drift))
     if repair is None or not _ask_restart(message):
         return ["metadata refresh detected for apps %s; restart offered and postponed" % games]
     if _game_running():

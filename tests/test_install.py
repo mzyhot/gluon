@@ -160,13 +160,6 @@ class MissingInstallTests(unittest.TestCase):
 
 
 class SyncRecoveryTests(unittest.TestCase):
-    def setUp(self):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        updates = mock.patch.object(enable, "UPDATES", os.path.join(directory.name, "game-updates.json"))
-        updates.start()
-        self.addCleanup(updates.stop)
-
     def test_recovery_follows_enable_and_uses_managed_state(self):
         order = []
         state = {"4705510": {}}
@@ -174,9 +167,7 @@ class SyncRecoveryTests(unittest.TestCase):
                 mock.patch.object(enable, "candidates", return_value=[(4705510, "Happy Wheels")]), \
                 mock.patch.object(enable, "load_state", return_value=state), \
                 mock.patch.object(enable, "status", return_value=[]), \
-                mock.patch.object(enable, "_advance_update_window", return_value=[]), \
-                mock.patch.object(enable, "update_window_open", return_value=False), \
-                mock.patch.object(enable, "enable", side_effect=lambda ids, **_: order.append("enable") or []), \
+                mock.patch.object(enable, "enable", side_effect=lambda ids: order.append("enable") or []), \
                 mock.patch.object(install, "recover_missing_installs", side_effect=lambda ids:
                                   order.append(("recover", ids)) or ["recovered"]):
             self.assertEqual(enable.sync(), ["recovered"])
@@ -201,6 +192,14 @@ class SyncRecoveryTests(unittest.TestCase):
             observe.assert_called_once()
             reenable.assert_not_called()
             recover.assert_not_called()
+
+    def test_only_installed_games_reach_the_restart_offer(self):
+        with mock.patch.object(steam, "is_running", return_value=True), \
+                mock.patch.object(enable, "load_state", return_value={"123": {}, "456": {}}), \
+                mock.patch.object(enable, "installed_appids", return_value={123}), \
+                mock.patch.object(metadata, "watch_refresh", return_value=[]) as observe:
+            enable.sync()
+        self.assertEqual(list(observe.call_args.args[0]), ["123"])
 
 
 if __name__ == "__main__":
