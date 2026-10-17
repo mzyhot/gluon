@@ -29,6 +29,148 @@ Suffix guessing, returning `glVertexAttribPointer`, or removing all capability
 checks would not preserve this behavior. An alias fix does not add newer GLSL or
 unimplemented APIs.
 
+## Instanced drawing follow-up (2026-10-14)
+
+After the owner launched the complete v0.1.0 runtime, Primordialis passed the
+earlier integer-attribute lookup and asserted at `glDrawArraysInstanced`
+(`code\gl_functions_list.h:33`). Its current game log confirms the screenshot.
+The earlier context trace advertises `GL_ARB_draw_instanced`; Wine's generated
+registry requires desktop GL 3.1 for the unsuffixed function, but the ARB entry
+requires the advertised extension. The same distinction applies to indexed
+instanced drawing.
+
+The pinned Khronos XML declares both ARB and EXT draw-instanced commands exact
+aliases of the corresponding core commands, with identical parameter types.
+The patch now adds both array and indexed commands, preferring ARB and then
+trying EXT only through its own capability check. A failed first candidate must
+not suppress the second. Wine returns a registry index from this resolver, so
+only `(void *)-1` indicates failure; index zero remains valid. The shader4 aliases,
+current-context checks before shared caches, context version and GLSL behavior
+are preserved.
+
+Static strings in all three installed Primordialis executable variants contain
+the same 67 exact GL function names. Comparing those names with the Wine registry
+and recorded legacy extensions identifies this draw-instanced lookup as the
+additional supported alias omission; integer uniforms/attributes and the divisor
+already have checked mappings. This is a source/static audit, not evidence that
+all rendering or shader requirements are satisfied. The corrected complete
+runtime has passed cloud compilation and module checks; owner-run rendering
+verification remains outstanding.
+
+The executable variants also contain `330` immediately beside a `#version %s`
+shader-preprocessor string. Referenced shader files use `gl_VertexID`, integer
+attributes and explicit output locations. This is strong static evidence of a
+GLSL 3.30 requirement. The recorded legacy context precedes the function-loader
+assertions; it does not establish which context the game would request afterward.
+The alias patch does not add a shader language. Context creation and shader
+compilation still require a successful real launch.
+
+## WGL dispatch regression (2026-10-15)
+
+With the complete instancing runtime selected, the owner passed the earlier
+lookup and reached `wglCreateContextAttribsARB could not be loaded`
+(`code\\gl_functions_list.h:118`). Wine already implements this Windows API.
+`win32u/opengl.c` advertises `WGL_ARB_create_context` through its separate WGL
+extension string and prepopulates its dispatch slot. The moved pre-cache GL
+capability guard incorrectly checked that WGL entry against the current GL
+extension array and rejected it before reaching the populated slot.
+
+The guard now applies only to `gl*` names. GL lookups retain their current-context
+check before shared cached pointers; WGL entries retain Wine's original dispatch
+availability path. An absent WGL slot still fails driver lookup, and every lookup
+still needs an active context. This restores the context-creation and WGL
+extension-string thunks without changing context versions or forcing a profile.
+Static inspection of the context-creation call subsequently identified the
+requested attributes, described below; they have not yet been reached in an
+owner-run session with the corrected resolver.
+
+An isolated cloud C fixture compiles the exact patched resolver with controlled
+dispatch slots and capabilities, including WGL context/extension-string entries,
+missing entries, no active context, and a cached GL pointer returning to an
+unsupported context. The native WGL probe checks these WGL thunks in legacy,
+core and restored legacy contexts when a CGL-capable host is available.
+
+Complete build [38725676665](https://github.com/mzyhot/gluon/actions/runs/38725676665)
+and fresh-host preserved-runtime recheck
+[38728423047](https://github.com/mzyhot/gluon/actions/runs/38728423047) passed.
+Both Windows ABI module checks passed, but native CGL and WGL rendering checks
+were skipped for missing runner capability. The corrected runtime is now the
+shared Gluon default, with old test pins removed. These results verify the build
+and loader path, not Primordialis rendering or compatibility-profile support.
+
+## Primordialis context request
+
+Static inspection of the installed current/AVX executable found one context
+attribute list: major version 3, minor version 3, flags 0 and the
+compatibility-profile bit (`WGL_CONTEXT_MAJOR_VERSION_ARB`,
+`WGL_CONTEXT_MINOR_VERSION_ARB`, `WGL_CONTEXT_FLAGS_ARB`,
+`WGL_CONTEXT_PROFILE_MASK_ARB`). The context-creation routine passes it, zero
+terminated, to the pointer the loader obtains from
+`wglGetProcAddress("wglCreateContextAttribsARB")`. The SSE3 variant has the
+same list.
+This ties OpenGL 3.3, flags zero, and the compatibility profile to the actual
+context-creation call site; it is not a runtime observation.
+
+The pinned macdrv rejects that request. `CX_FWD_COMPAT_GL_CTX=1` supplies only
+the forward-compatible flag; the compatibility-profile check still fails.
+Thus restoring WGL lookup does not establish that Primordialis can create its
+desired rendering context. The legacy trace alone did not establish this;
+the explicit attribute list does.
+
+A real core context with an application-specific adaptation could be explored,
+but a default VAO alone does not restore fixed-function drawing, client-memory
+arrays, quads, line behavior, or all sharing semantics. General
+compatibility-profile support is unfinished. The static investigation did not
+execute the game. Whole-binary Ghidra analysis was stopped twice (timeout, then
+local resource limits); the call-site audit below uses linear disassembly only.
+
+## Compatibility-as-core mapping (2026-10-15)
+
+A call-site audit of the same AVX executable checks what the game would lose
+in a core profile. Its OpenGL imports and loaded names contain no fixed-function,
+matrix, client-state or display-list entry points, and no vertex array object
+calls. Every `glDrawArrays` mode is `GL_TRIANGLES` or `GL_TRIANGLE_FAN`. All 238
+`glVertexAttribPointer`/`glVertexAttribIPointer` calls pass small constant
+offsets after binding `GL_ARRAY_BUFFER`; no client-memory arrays were found.
+Texture wraps are repeat, clamp-to-edge and clamp-to-border; there is no
+`GL_CLAMP` or `GL_GENERATE_MIPMAP`. Enabled capabilities are blend, scissor and
+depth test. `glGetString` is only queried for `GL_VERSION`, and `glGetError` is
+read only while formatting an assertion that has already failed. Shader files
+use no deprecated GLSL built-ins and receive `#version 330`. Internal formats
+are sized or core-valid except one unsized `GL_SRGB_ALPHA` upload, which needs
+owner-run confirmation on Apple's core profile.
+
+`wine-gl-compat-as-core.patch` therefore adds a per-game opt-in to macdrv:
+with `GLUON_GL_COMPAT_AS_CORE=1`, a 3.0–4.1 compatibility or
+non-forward-compatible request is created as Apple's core profile, still
+limited by the host's maximum core version, and logs a WARN. Each mapped context
+binds its own default vertex array object the first time it becomes current,
+standing in for the compatibility profile's array object zero. Requests already
+accepted by macdrv and every other version are unchanged, and without the switch
+every original rejection remains. This deliberately breaks the WGL
+compatibility contract for opted-in games: removed functionality stays
+unavailable, a later `glBindVertexArray(0)` restores core behavior, and wide
+lines are unavailable as in any forward-compatible context. Primordialis loads
+neither `glBindVertexArray` nor `glLineWidth`. Because macdrv rejects every
+mapped request without it, the mapping only changes games that would otherwise
+fail to create their context.
+
+`check-gl-compat-as-core.py` pins the patched macdrv source and, on GitHub
+Actions Linux, compiles the exact opt-in decision helper with 24 cases
+(switch values, versions, profiles and flags). Its self-test rejects five
+source mutations and helper mutations that ignore the switch or remap
+supported requests. The WGL probe repeats Primordialis's exact request: without
+the switch it must fail with `ERROR_INVALID_VERSION_ARB`; with
+`--compat-as-core` and the switch it must report GL 3.3 or newer, a nonzero
+default vertex array, and render a buffer-backed GLSL 330 triangle without
+creating its own array object. Hosted runners lack CGL, so this rendering
+case is expected to be skipped there; game rendering needs an owner-run launch.
+
+Owner result: with complete build 38776361036 staged for Primordialis only and
+`GLUON_GL_COMPAT_AS_CORE=1` in its settings, the game now renders. The launcher
+now enables the mapping for every game; `GLUON_GL_COMPAT_AS_CORE=0` opts out. The unsized
+`GL_SRGB_ALPHA` upload therefore did not block it. The switch stays per game.
+
 ## Existing Wine path
 
 CodeWeavers' published 26.3 source, `sources/wine/dlls/winemac.drv/opengl.c`, creates
@@ -118,8 +260,8 @@ The source alias patch and its registry/signature checks are implemented. The
 native Wine module compiled, but a local partial-module substitution failed
 during DLL attachment before WGL calls; it is not runtime validation. Those local
 experiments were stopped after the owner reported overheating. Verify the complete
-CI-built Wine runtime using bounded Actions probes. Primordialis rendering is
-still unresolved. Local execution follows the latest constraints in `NOTES.md`.
+CI-built Wine runtime using bounded Actions probes. Primordialis renders through
+the opt-in mapping above. Local execution follows the latest constraints in `NOTES.md`.
 
 `packaging/check-opengl.sh [arm64|x86_64 ...]` compiles a standalone CGL probe. It
 reports legacy/core versions and flags, EXT_gpu_shader4 advertisement, host core/EXT

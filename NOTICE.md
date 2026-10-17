@@ -1,6 +1,8 @@
 # Third-party components
 
-Gluon's own code (this repository) is released under the Unlicense (see LICENSE).
+Gluon's own code (this repository) is released under the Gluon Public License, version 1.2
+(see LICENSE). It governs only Gluon's original materials; every component below keeps its
+own license, and Gluon's Wine patches remain under Wine's LGPL-2.1-or-later.
 
 The installer package carries a Windows runtime that Gluon's build assembles from
 open-source code (`packaging/build-runtime.sh`). License texts and source locations are
@@ -32,6 +34,10 @@ installed as `licenses/Gluon-Wine-OpenGL.patch`. They resolve Khronos-defined
 `GL_EXT_gpu_shader4` aliases when the active context supports that extension.
 ANGLE and MGL were evaluated from their public source and are not shipped.
 
+Wine application display-name changes are also LGPL-2.1-or-later. All applied
+Gluon Wine patches, including `wine-macos-display-name.patch`, are bundled under
+`licenses/gluon-wine-patches/`, with their names listed in `APPLIED.txt`.
+
 The Wine Vulkan host-boundary patch is also LGPL-2.1-or-later and ships as
 `licenses/Gluon-Wine-Vulkan.patch`. Its private portability feature layout is
 validated against pinned Khronos Vulkan XML; no generated Windows API is enlarged.
@@ -40,6 +46,8 @@ configuration and source locations recorded beside their license texts.
 
 Steam's native overlay is loaded, when Steam supplies it, from the user's installed
 Mac Steam client. No Valve overlay library is copied into or distributed with Gluon.
+The launcher host likewise loads the installed client's `steamclient.dylib` only to
+receive Steam's shutdown callback; no Steam client library is distributed.
 
 No binary from any commercial product is included, and nothing from Apple's Game Porting
 Toolkit.

@@ -11,24 +11,58 @@ on:
         description: Version for the package name (e.g. 0.3.0-dev)
         required: true
         default: 0.0.0-dev
+      recheck_run_id:
+        description: Recheck a completed runtime from this Build run ID instead of rebuilding
+        required: false
+        type: string
   push:
     tags: ["v*"]
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}-${{ inputs.recheck_run_id || 'new' }}
   cancel-in-progress: true
 
 jobs:
+  launcher-host:
+    runs-on: macos-15
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and check native launcher host
+        run: packaging/check-launcher-host.sh
+
+      - name: Preserve tested launcher host
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-host
+          path: build/launcher-host/gluon-launcher-host
+          if-no-files-found: error
+          retention-days: 7
+
   build:
+    if: ${{ !inputs.recheck_run_id }}
+    needs: launcher-host
     runs-on: macos-15
     timeout-minutes: 240
     env:
       JOBS: "4"
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher-host
+          path: build/launcher-host
+
+      - name: Restore launcher host mode
+        run: chmod 755 build/launcher-host/gluon-launcher-host
 
       - name: Version
         id: version
@@ -77,6 +111,26 @@ jobs:
               -o "build/graphics-probes/dependencies-$arch.exe"
           done
 
+      - name: Preserve completed runtime and compiled probes
+        run: |
+          shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
+            packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
+            tools/d3d9_probe.c > build/probe-sources.sha256
+          COPYFILE_DISABLE=1 tar -czf build/completed-runtime-input.tar.gz \
+            build/gluon-wine build/graphics-probes build/probe-sources.sha256
+          (cd build && shasum -a 256 completed-runtime-input.tar.gz > completed-runtime-input.tar.gz.sha256)
+
+      - name: Upload completed runtime for bounded rechecks
+        uses: actions/upload-artifact@v4
+        with:
+          name: completed-runtime-input
+          path: |
+            build/completed-runtime-input.tar.gz
+            build/completed-runtime-input.tar.gz.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Check complete runtime on GitHub macOS
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
@@ -124,3 +178,125 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" dist/Gluon-*.pkg dist/Gluon-*.pkg.sha256 \
             --title "Gluon ${{ steps.version.outputs.version }}" --generate-notes --prerelease
+
+  recheck:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recheck_run_id != '' }}
+    needs: launcher-host
+    permissions:
+      actions: read
+      contents: read
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GLUON_ORIGINAL_RUN_ID: ${{ inputs.recheck_run_id }}
+      GLUON_RECHECK_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: launcher-host
+          path: build/launcher-host
+
+      - name: Restore launcher host mode
+        run: chmod 755 build/launcher-host/gluon-launcher-host
+
+      - name: Validate request and original build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case "$GLUON_ORIGINAL_RUN_ID" in ''|*[!0-9]*) echo "Expected a numeric Build run ID" >&2; exit 1 ;; esac
+          case "$GLUON_RECHECK_VERSION" in ''|*[!A-Za-z0-9_.-]*) echo "Invalid package version" >&2; exit 1 ;; esac
+          mkdir -p build/recheck-input
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GLUON_ORIGINAL_RUN_ID" > build/original-run.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          run = json.loads(Path("build/original-run.json").read_text())
+          repository = os.environ["GITHUB_REPOSITORY"]
+          if (run.get("path") != ".github/workflows/build.yml"
+                  or run.get("repository", {}).get("full_name") != repository
+                  or run.get("head_repository", {}).get("full_name") != repository
+                  or run.get("event") not in ("workflow_dispatch", "push")):
+              raise SystemExit("Expected an owned-repository Build run, not a fork or pull-request artifact.")
+          print("Rechecking Build run", run["id"], "at", run["head_sha"])
+          PY
+
+      - name: Download and restore completed runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download "$GLUON_ORIGINAL_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name completed-runtime-input --dir build/recheck-input
+          (cd build/recheck-input && shasum -a 256 -c completed-runtime-input.tar.gz.sha256)
+          python3 - <<'PY'
+          import posixpath
+          import tarfile
+          from pathlib import PurePosixPath
+          roots = ("build/gluon-wine", "build/graphics-probes")
+          def allowed(name):
+              return (name == "build/probe-sources.sha256"
+                      or any(name == root or name.startswith(root + "/") for root in roots))
+          with tarfile.open("build/recheck-input/completed-runtime-input.tar.gz", "r:gz") as archive:
+              for item in archive.getmembers():
+                  name = item.name.rstrip("/")
+                  if (PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts
+                          or not allowed(name) or not (item.isfile() or item.isdir() or item.issym() or item.islnk())):
+                      raise SystemExit("Unexpected runtime archive member: " + item.name)
+                  if item.issym() or item.islnk():
+                      target = item.linkname if item.islnk() else posixpath.join(posixpath.dirname(name), item.linkname)
+                      if not allowed(posixpath.normpath(target)):
+                          raise SystemExit("Runtime archive link escapes its tree: " + item.name)
+          PY
+          tar -xzf build/recheck-input/completed-runtime-input.tar.gz
+
+      - name: Verify compiled inputs against this checkout
+        run: |
+          shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
+            packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
+            tools/d3d9_probe.c > build/expected-probe-sources.sha256
+          cmp build/probe-sources.sha256 build/expected-probe-sources.sha256
+          expected_patch="$(packaging/apply-wine-patches.sh --hash)"
+          test "$(cat build/gluon-wine/.gluon-wine-patches)" = "$expected_patch"
+          expected_key="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py; do
+            printf '%s %s\n' "$helper" "$(shasum -a 256 "packaging/$helper" | cut -d' ' -f1)"
+          done | shasum -a 256 | cut -d' ' -f1)"
+          test "$(cat build/gluon-wine/.gluon-runtime-build-key)" = "$expected_key"
+          test -x build/gluon-wine/bin/wine
+          test -x build/gluon-wine/bin/wineserver
+          test -x build/graphics-probes/opengl-native
+          test -x build/graphics-probes/vulkan-native
+
+      - name: Rosetta 2
+        run: softwareupdate --install-rosetta --agree-to-license || true
+
+      - name: Recheck complete runtime on GitHub macOS
+        timeout-minutes: 8
+        run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
+
+      - name: Package verified runtime
+        run: |
+          GLUON_PKG_RUNTIME="$PWD/build/gluon-wine" packaging/build-pkg.sh "$GLUON_RECHECK_VERSION"
+          (cd dist && shasum -a 256 Gluon-*.pkg > "Gluon-$GLUON_RECHECK_VERSION.pkg.sha256")
+
+      - name: Upload verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gluon-${{ inputs.version }}
+          path: dist/Gluon-*.pkg*
+          if-no-files-found: error
+
+      - name: Runtime recheck evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphics-build-evidence
+          path: |
+            build/graphics-probes/*.log
+            build/graphics-probes/*.json
+            build/original-run.json
+            build/probe-sources.sha256
+            build/expected-probe-sources.sha256
+          if-no-files-found: ignore
+          retention-days: 7

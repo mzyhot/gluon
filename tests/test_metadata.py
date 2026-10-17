@@ -129,33 +129,92 @@ class MetadataProtectionTests(unittest.TestCase):
         self.manifest.write_text(original.replace('"appid"\t\t"123"', '"appid"\t\t"123"\n\t"APPID"\t\t"123"'))
         self.assertEqual(self.guard(), [])
 
-    def test_refresh_warning_is_mtime_gated_and_only_notifies_once(self):
-        entry = SimpleNamespace(change_number=5, kv={"appinfo": {"needs_repair": True}})
+    def refreshed_cache(self, change=5):
+        entry = SimpleNamespace(change_number=change, kv={"appinfo": {"needs_repair": True}})
         cache = Mock()
         cache.get.return_value = entry
-        needed = lambda value: value.get("needs_repair")
-        with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache) as reader, \
-                patch.object(metadata.subprocess, "run") as notification:
-            self.assertEqual(len(metadata.watch_refresh({"123": {}}, needed)), 1)
+        return entry, cache
+
+    def test_refresh_is_reported_once_per_refreshed_set_without_prompts(self):
+        entry, cache = self.refreshed_cache()
+        needed = lambda value, *_: value.get("needs_repair")
+        with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache) as reader:
+            lines = metadata.watch_refresh({"123": {}}, needed)
+            self.assertEqual(len(lines), 1)
+            self.assertIn("re-applies its details when Steam quits", lines[0])
             self.assertEqual(metadata.watch_refresh({"123": {}}, needed), [])
-            self.assertEqual(reader.call_count, 1)
+            self.assertEqual(reader.call_count, 1, "an unchanged cache was read again")
             self.cache.write_bytes(b"another cache write")
             self.assertEqual(metadata.watch_refresh({"123": {}}, needed), [])
-            self.assertEqual(notification.call_count, 1)
             entry.kv["appinfo"]["needs_repair"] = False
             self.cache.write_bytes(b"healed cache")
-            metadata.watch_refresh({"123": {}}, needed)
+            self.assertEqual(metadata.watch_refresh({"123": {}}, needed), [])
             entry.kv["appinfo"]["needs_repair"] = True
             self.cache.write_bytes(b"refreshed again")
             self.assertEqual(len(metadata.watch_refresh({"123": {}}, needed)), 1)
-            self.assertEqual(notification.call_count, 2)
+
+    def test_watcher_never_quits_or_prompts(self):
+        for name in ("_ask_restart", "_restart_steam", "_notify", "_game_running"):
+            self.assertFalse(hasattr(metadata, name), name)
+
+    def flagged_manifest(self, flags="6", buildid="25734961", manifest="491856728672780704", beta=None):
+        app = {"appid": "123", "Universe": "1", "StateFlags": flags, "installdir": "Example Game",
+               "buildid": buildid, "TargetBuildID": buildid, "AutoUpdateBehavior": "1",
+               "ScheduledAutoUpdate": "1792222222",
+               "InstalledDepots": {"124": {"manifest": manifest, "size": "100"}},
+               "UserConfig": {"language": "english"}}
+        if beta:
+            app["UserConfig"]["BetaKey"] = beta
+        self.manifest.write_text(vdf.dumps({"AppState": app}))
+
+    def details(self, buildid=25734961, gid="491856728672780704"):
+        entry = SimpleNamespace(change_number=5, kv={"appinfo": {"depots": {
+            "124": {"config": {"oslist": "windows,macos"},
+                    "manifests": {"public": {"gid": gid, "size": 100}}},
+            "branches": {"public": {"buildid": buildid}}}}})
+        cache = Mock()
+        cache.get.side_effect = lambda appid: entry if appid == 123 else None
+        return cache
+
+    def settle(self, cache):
+        with patch.object(metadata.appinfo, "AppInfoFile", return_value=cache):
+            return metadata.settle_update_flags([123], [str(self.library)])
+
+    def test_update_flag_left_by_a_refresh_is_cleared(self):
+        self.flagged_manifest()
+        notes = self.settle(self.details())
+        app = vdf.load(str(self.manifest))["AppState"]
+        self.assertEqual(app["StateFlags"], "4")
+        self.assertEqual(app["ScheduledAutoUpdate"], "0")
+        self.assertIn("cleared the update flag", notes[0])
+        backup = notes[0].split("manifest backup: ", 1)[1].rstrip(")")
+        self.assertIn('"StateFlags"\t\t"6"', Path(backup).read_text())
+        self.assertEqual(self.settle(self.details()), [])
+
+    def test_real_updates_keep_their_flag(self):
+        cases = [
+            (dict(), self.details(buildid=25800000)),          # a new build
+            (dict(), self.details(gid="111")),                 # a new depot manifest
+            (dict(beta="beta"), self.details()),               # another branch
+            (dict(flags="1030"), self.details()),              # an update already started
+            (dict(flags="4"), self.details()),                 # nothing flagged
+        ]
+        for manifest, cache in cases:
+            self.flagged_manifest(**manifest)
+            before = self.manifest.read_text()
+            self.assertEqual(self.settle(cache), [], manifest)
+            self.assertEqual(self.manifest.read_text(), before, manifest)
+
+    def test_update_flag_is_left_while_steam_runs(self):
+        self.flagged_manifest()
+        with patch.object(metadata.steam, "is_running", return_value=True):
+            self.assertEqual(self.settle(self.details()), [])
+        self.assertEqual(vdf.load(str(self.manifest))["AppState"]["StateFlags"], "6")
 
     def test_incomplete_cache_is_not_recorded_as_a_refresh(self):
-        with patch.object(metadata.appinfo, "AppInfoFile", side_effect=ValueError("incomplete")), \
-                patch.object(metadata.subprocess, "run") as notification:
-            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda _: True), [])
+        with patch.object(metadata.appinfo, "AppInfoFile", side_effect=ValueError("incomplete")):
+            self.assertEqual(metadata.watch_refresh({"123": {}}, lambda *_: True), [])
         self.assertFalse(self.observed.exists())
-        notification.assert_not_called()
 
 
 if __name__ == "__main__":

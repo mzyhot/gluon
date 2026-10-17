@@ -106,9 +106,8 @@ overlay found x86_64 and arm64 Mach-O slices, a Metal framework dependency, and
 native Metal hook class/selectors including `SteamMetalHook`,
 `steamoverlay_nextDrawable`, `steamoverlay_presentDrawable:` and
 `steamoverlay_commit`. These are binary observations, not original Valve
-source or a runtime trace. The inspected whole-file SHA-256 was
-`[hash removed]`.
-The Mac client owns these files; Gluon does not redistribute them.
+source or a runtime trace. The Mac client owns these files; Gluon does not
+redistribute them.
 
 The Vulkan path differs. Pinned
 [MoltenVK v1.4.2 MVKImage.mm](https://github.com/KhronosGroup/MoltenVK/blob/v1.4.2/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm)
@@ -122,20 +121,17 @@ works through MoltenVK or Gluon's Vulkan-based Direct3D 9 implementation.
 
 ## CLI analysis and the initial launch change
 
-REA CLI analysis now used Ghidra 12.1.4 explicitly, with one available CPU,
-512 MB headless heap, reduced priority, a 45-second startup deadline and a
-60-second external deadline. The original installed Valve library remained
-unchanged. A local x86_64 slice was derived for the Wine host architecture;
-its SHA-256 is `[hash removed]`.
-The proprietary library and raw analysis are local ignored research artifacts,
-not package or repository contents.
+Static Ghidra analysis of the x86_64 slice, which matches the Wine host
+architecture, left the installed Valve library unchanged and did not execute it.
+The proprietary library and raw analysis are not package or repository contents.
+Observations:
 
-| REA evidence | Observation |
-|---|---|
-| `[evidence ID removed]` | Defined strings include the Steam overlay game ID and native Metal hook selectors. |
-| `[evidence ID removed]` | Initializer [address removed] reads the game IDs and creates per-PID overlay streams/events; this inspected function contains no Wine rejection. |
-| `[evidence ID removed]` | Encoded Objective-C metadata associates NSApplication's `steammetalhook_init` with implementation [address removed]. |
-| `[evidence ID removed]` | Routine [address removed] installs hooks on CAMetalLayer drawable acquisition and the native command-buffer class's presentation, submission and scheduled-handler methods. |
+- Defined strings include the Steam overlay game ID and native Metal hook selectors.
+- The initializer reads the game IDs and creates per-PID overlay streams/events;
+  it contains no Wine rejection.
+- An NSApplication category method, `steammetalhook_init`, installs hooks on
+  CAMetalLayer drawable acquisition and the native command-buffer class's
+  presentation, submission and scheduled-handler methods.
 
 The launcher change is installed for a test: it validates Steam's backed-up
 insertion list against the current client directory and x86_64 dylib headers,
@@ -172,12 +168,12 @@ ordinary descriptor 140, including in child processes; neither Valve insertion
 library appeared in the mapped executable inventory. An open file is not a
 loaded dylib. No debugger was attached and the game was not launched by the agent.
 
-REA CLI signature inspection established a concrete launch-policy blocker:
+Code-signature inspection established a concrete launch-policy blocker:
 
-| Executable | REA evidence | Signing policy |
-|---|---|---|
-| Development `bin/wineloader` (`[hash removed]`) | `[evidence ID removed]` | Hardened Runtime enabled; no DYLD environment entitlement. |
-| Development `lib/wine/x86_64-unix/wine` (`[hash removed]`) | `[evidence ID removed]` | Same restriction on the actual game host. |
+| Executable | Signing policy |
+|---|---|
+| Development `bin/wineloader` | Hardened Runtime enabled; no DYLD environment entitlement. |
+| Development `lib/wine/x86_64-unix/wine` | Same restriction on the actual game host. |
 
 Both have `com.apple.security.cs.disable-library-validation`, but lack
 `com.apple.security.cs.allow-dyld-environment-variables`. Apple documents that
@@ -190,17 +186,15 @@ rendering and IPC still require validation after using a compatible runtime.
 Steam, its libraries and system protection settings are not to be modified.
 
 The verified Actions runtime has unsigned native Wine executables, so it has no
-Hardened Runtime signing gate. REA evidence
-`[evidence ID removed]`
-and `[evidence ID removed]`
-cover its initial loader and actual native host respectively. Its Steam bridge
+Hardened Runtime signing gate; this was checked for both its initial loader
+and its actual native host. Its Steam bridge
 and licenses were verified before staging the complete runtime as
 `~/Library/Application Support/Gluon/runtime/gluon-wine-186bfc4`.
 
 Happy Wheels now selects that runtime through its per-game settings on the next
 normal Steam Play. The old runtime, default runtime link and original game prefix
-remain intact; no running game's loader paths were switched. The selection's
-rollback record is in `backups/happy-runtime-20261014-153843`. The new runtime
+remain intact; no running game's loader paths were switched. The selection
+has a rollback record. The new runtime
 omits Mono/Gecko and several multimedia dependencies, so other games have not
 been switched. The owner then tested the real fullscreen overlay on the new
 runtime successfully, as recorded below.
@@ -213,9 +207,8 @@ old development loader for its missing entitlement. Nine failure-path fixtures
 cover the signing gate and ambiguous inspection results. This prevents packaging
 the observed incompatible policy; it does not prove a rendered overlay.
 
-Ghidra analysis of logging function [address removed], evidence
-`[evidence ID removed]`,
-also established why missing logs alone were inconclusive: native logging is
+Static analysis of the overlay's logging also established why missing logs
+alone were inconclusive: native logging is
 off unless `STEAM_OVERLAY_LOGGING`, `STEAM_OVERLAY_LOGGING_FLUSH` or frame-time
 logging is present. Enabled logs are written to
 `/tmp/gameoverlayrenderer.<native-pid>.log`. Ordinary logging may be enabled
@@ -231,9 +224,8 @@ no achievement was artificially unlocked or reset by Gluon for this test.
 
 The existing launch log corroborates selection of `gluon-wine-186bfc4`, the
 original Happy Wheels executable and prefix, original Steam IDs, the Steam API
-bridge and Valve's validated native insertion list. It records user sessions
-starting at 16:09:55 and 16:10:54, ending with status zero after
-52 and 109 seconds respectively. These logs establish launch configuration and
+bridge and Valve's validated native insertion list. It records two user
+sessions, both ending with status zero. These logs establish launch configuration and
 clean exits; the owner's observation establishes the visible overlay and popup.
 
 This result applies to Happy Wheels' DXMT/Metal path on this Mac. Other games,

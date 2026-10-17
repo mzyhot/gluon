@@ -1,0 +1,215 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -69,6 +69,7 @@
+ # include <mach/mach.h>
+ # include <mach/mach_error.h>
+ # include <mach-o/getsect.h>
++# include <mach-o/dyld.h>
+ # include <crt_externs.h>
+ # ifndef _POSIX_SPAWN_DISABLE_ASLR
+ #  define _POSIX_SPAWN_DISABLE_ASLR 0x0100
+@@ -636,8 +637,32 @@
+ fail:
+     free(linkpath);
+     return NULL;
++}
++
++/* Gluon: a loader started from an app bundle (Contents/MacOS) keeps every
++ * process of its session in that bundle, so macOS uses the bundle's name,
++ * category and launch activation for all of them. */
++static char *bundled_wineloader(void)
++{
++    char path[PATH_MAX];
++    uint32_t size = sizeof(path);
++
++    if (_NSGetExecutablePath( path, &size ) || !strstr( path, ".app/Contents/MacOS/" )) return NULL;
++    return strdup( path );
+ }
+ 
++/* Gluon: LaunchServices starts a game's app bundle in "/"; the launcher passes
++ * the game's working directory instead. Only the first process uses it, and
++ * Windows programs it starts inherit their directory as usual. */
++static void enter_game_directory(void)
++{
++    const char *dir = getenv( "GLUON_GAME_CWD" );
++
++    if (!dir) return;
++    if (chdir( dir )) fprintf( stderr, "wine: cannot enter the game directory %s\n", dir );
++    unsetenv( "GLUON_GAME_CWD" );
++}
++
+ static void replace_wineloader_path_with_link(char **wineloader_path, const char *image_path)
+ {
+     char *app_name = extract_exe_name(image_path);
+@@ -686,8 +711,17 @@
+      * When the preloader is not being used, WINEDLLPATH needs to be set correctly for
+      * the loader to find ntdll.so, so don't even attempt this unless WINEDLLPATH is set.
+      */
+-    if (getenv("WINEDLLPATH"))
+-        replace_wineloader_path_with_link( &(argv[1]), image_path );
++    {
++        char *bundled = bundled_wineloader();
++
++        if (bundled)
++        {
++            free( argv[1] );
++            argv[1] = bundled;
++        }
++        else if (getenv("WINEDLLPATH"))
++            replace_wineloader_path_with_link( &(argv[1]), image_path );
++    }
+ #endif
+ 
+     execv( argv[1], argv + 1 );
+@@ -2622,6 +2656,9 @@
+     main_argc = argc;
+     main_argv = argv;
+ 
++#ifdef __APPLE__
++    enter_game_directory();
++#endif
+     init_paths();
+     if (!getenv( "WINELOADERNOEXEC" ) || argc <= 1) check_command_line( argc, argv );
+     unsetenv( "WINELOADERNOEXEC" );
+--- a/dlls/winemac.drv/cocoa_app.m
++++ b/dlls/winemac.drv/cocoa_app.m
+@@ -23,6 +23,8 @@
+ #import "cocoa_event.h"
+ #import "cocoa_window.h"
+ #import "cocoa_icon_utils.h"
++#include <libproc.h>
++#include <signal.h>
+ 
+ #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
+ 
+@@ -2169,14 +2171,87 @@
+         [NSApp yieldActivationToApplication:otherApp];
+         [otherApp activateFromApplication:[NSRunningApplication currentApplication]
+                                   options:0];
++    }
++
++    /* Gluon: Steam, not another Wine app, is usually active when a game window
++       first appears, and it does not yield. In Big Picture a game can also be
++       active while its window sits on another Space behind Steam's full-screen
++       window. A game started from its own app bundle asks LaunchServices to
++       activate that bundle, as a Dock click does, until one of its windows is
++       active on the current Space: up to three checks within four seconds of its
++       first activation request, each followed by the yield request below for
++       the bundle's other Wine processes. GLUON_FOCUS=0 turns this off. */
++    - (BOOL) gluonWindowShown:(BOOL*)onActiveSpace
++    {
++        BOOL shown = FALSE;
++
++        *onActiveSpace = FALSE;
++        for (NSWindow* window in [NSApp windows])
++        {
++            if (![window isKindOfClass:[WineWindow class]] || ![window isVisible] || [window isMiniaturized])
++                continue;
++            shown = TRUE;
++            if ([window isOnActiveSpace]) *onActiveSpace = TRUE;
++        }
++        return shown;
++    }
++
++    - (void) bringBundleForward:(NSURL*)bundleURL attempt:(unsigned int)attempt
++    {
++        static const double delays[] = { 0.3, 1.2, 2.5 };
++
++        if (attempt >= sizeof(delays) / sizeof(delays[0])) return;
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[attempt] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++            NSWorkspaceOpenConfiguration *configuration;
++            BOOL onActiveSpace;
++            BOOL shown = [self gluonWindowShown:&onActiveSpace];
++
++            /* Written to the game's session log. */
++            fprintf(stderr, "gluon: focus check %u: active %d, window shown %d, on the current Space %d\n",
++                    attempt + 1, [NSApp isActive] ? 1 : 0, shown ? 1 : 0, onActiveSpace ? 1 : 0);
++            /* A window may not be shown yet; never activate an empty instance. */
++            if (!shown)
++            {
++                [self bringBundleForward:bundleURL attempt:attempt + 1];
++                return;
++            }
++            if ([NSApp isActive] && onActiveSpace) return;
++            configuration = [NSWorkspaceOpenConfiguration configuration];
++            configuration.activates = YES;
++            configuration.createsNewApplicationInstance = NO;
++            configuration.addsToRecentItems = NO;
++            [[NSWorkspace sharedWorkspace] openApplicationAtURL:bundleURL
++                                                  configuration:configuration
++                                              completionHandler:^(NSRunningApplication *app, NSError *error){
++                (void)app;
++                (void)error;
++                dispatch_async(dispatch_get_main_queue(), ^{
++                    if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES];
++                    [self bringBundleForward:bundleURL attempt:attempt + 1];
++                });
++            }];
++        });
+     }
+ 
++    - (void) bringBundleForwardOnce
++    {
++        static BOOL attempted;
++        NSURL *bundleURL = [[NSBundle mainBundle] bundleURL];
++        const char *focus = getenv("GLUON_FOCUS");
++
++        if (attempted || (focus && !strcmp(focus, "0"))) return;
++        if (![[bundleURL pathExtension] isEqualToString:@"app"]) return;
++        attempted = YES;
++        [self bringBundleForward:bundleURL attempt:0];
++    }
++
+     - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore
+     {
+         NSProcessInfo *processInfo;
+         NSString *configDir, *prefix;
+         NSDictionary *userInfo;
+ 
++        [self bringBundleForwardOnce];
+         if ([NSApp isActive]) return;  /* Nothing to do. */
+ 
+         if (!ignore ||
+@@ -2514,6 +2589,28 @@
+         return YES;
+     }
+ 
++    /* Gluon: quitting a game's app (Cmd-Q, its menu or the Dock) ends its whole
++       Steam session, as Steam's Stop does: Gluon's launcher host stops every
++       process of the game. A game that ignores WM_QUERYENDSESSION, or the
++       game's other processes, would otherwise keep running. */
++    - (BOOL) stopGluonSession
++    {
++        const char *value = getenv("GLUON_HOST_PID");
++        char path[PROC_PIDPATHINFO_MAXSIZE];
++        const char *name;
++        char *end;
++        long pid;
++
++        if (!value || !*value) return FALSE;
++        pid = strtol(value, &end, 10);
++        if (*end || pid <= 1) return FALSE;
++        /* Never signal a reused PID: it must still be Gluon's launcher host. */
++        if (proc_pidpath((pid_t)pid, path, sizeof(path)) <= 0) return FALSE;
++        name = strrchr(path, '/');
++        if (!name || strcmp(name + 1, "gluon-launcher-host")) return FALSE;
++        return !kill((pid_t)pid, SIGTERM);
++    }
++
+     - (NSApplicationTerminateReply) applicationShouldTerminate:(NSApplication *)sender
+     {
+         NSApplicationTerminateReply ret = NSTerminateNow;
+@@ -2521,6 +2618,13 @@
+         NSAppleEventDescriptor* desc = [m currentAppleEvent];
+         macdrv_event* event;
+         WineEventQueue* queue;
++        OSType quitReason = (OSType)[[desc attributeDescriptorForKeyword:kAEQuitReason] int32Value];
++
++        /* Logout, restart and shutdown keep Wine's own handling. */
++        if (quitReason != kAELogOut && quitReason != kAEReallyLogOut &&
++            quitReason != kAEShowRestartDialog && quitReason != kAEShowShutdownDialog &&
++            [self stopGluonSession])
++            return NSTerminateCancel;
+ 
+         event = macdrv_create_event(APP_QUIT_REQUESTED, nil);
+         event->deliver = 1;

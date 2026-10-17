@@ -1,0 +1,126 @@
+--- a/dlls/winemac.drv/opengl.c
++++ b/dlls/winemac.drv/opengl.c
+@@ -71,6 +71,8 @@
+     macdrv_view             read_view;
+     CGLPBufferObj           read_pbuffer;
+     int                     swap_interval;
++    BOOL                    compat_as_core;
++    GLuint                  default_vao;
+ };
+ 
+ struct gl_drawable
+@@ -99,6 +101,9 @@
+                              GLenum format, GLenum type, void *pixels);
+ static void (*pglTexImage3D)( GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels );
+ static void (*pglTexSubImage3D)( GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void *pixels );
++/* Gluon: optional; only GLUON_GL_COMPAT_AS_CORE contexts use them. */
++static void (*pglGenVertexArrays)(GLsizei n, GLuint *arrays);
++static void (*pglBindVertexArray)(GLuint array);
+ 
+ 
+ struct color_mode {
+@@ -2095,6 +2100,24 @@
+     }
+ 
+     return GL_TRUE;
++}
++
++/***********************************************************************
++ *              gluon_compat_as_core_request
++ *
++ * Gluon: GLUON_GL_COMPAT_AS_CORE=1 opts a game into mapping desktop
++ * 3.0-4.1 requests that macOS cannot honour onto its core profile.
++ */
++static BOOL gluon_compat_as_core_request(int major, int minor, int profile, int flags)
++{
++    const char *value = getenv("GLUON_GL_COMPAT_AS_CORE");
++
++    if (!value || strcmp(value, "1")) return FALSE;
++    /* Profiles do not apply below 3.2, and macdrv rejects every 3.0/3.1 request. */
++    if (major == 3 && (minor == 0 || minor == 1)) return TRUE;
++    if (!((major == 3 && (minor == 2 || minor == 3)) || (major == 4 && (minor == 0 || minor == 1))))
++        return FALSE;
++    return profile != WGL_CONTEXT_CORE_PROFILE_BIT_ARB || !(flags & WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB);
+ }
+ 
+ /***********************************************************************
+@@ -2108,7 +2131,7 @@
+     struct macdrv_context *context;
+     const int *iptr;
+     int major = 1, minor = 0, profile = WGL_CONTEXT_CORE_PROFILE_BIT_ARB, flags = 0;
+-    BOOL core = FALSE;
++    BOOL core = FALSE, compat_as_core = FALSE;
+     GLint renderer_id = 0;
+ 
+     TRACE("format %d, share_context %p, attrib_list %p\n", format, share_context, attrib_list);
+@@ -2160,7 +2183,35 @@
+     }
+ 
+ 
+-    if ((major == 3 && (minor == 2 || minor == 3)) ||
++    /* Gluon: per-game opt-in only. Apple provides 3.x/4.x desktop GL only as
++     * a forward-compatible core profile. Map a 3.0-4.1 compatibility or
++     * non-forward-compatible request onto that core profile. Functionality
++     * removed from the core profile stays unavailable, so this breaks the
++     * WGL compatibility contract and must not become the default. */
++    if (gluon_compat_as_core_request(major, minor, profile, flags))
++    {
++        if (major > gl_info.max_major ||
++            (major == gl_info.max_major && minor > gl_info.max_minor))
++        {
++            WARN("This GL implementation does not support the requested GL version %u.%u\n",
++                 major, minor);
++            RtlSetLastWin32Error(ERROR_INVALID_VERSION_ARB);
++            return FALSE;
++        }
++        if (!pglGenVertexArrays || !pglBindVertexArray)
++        {
++            WARN("GLUON_GL_COMPAT_AS_CORE: vertex array objects are unavailable\n");
++            RtlSetLastWin32Error(ERROR_INVALID_VERSION_ARB);
++            return FALSE;
++        }
++        WARN("GLUON_GL_COMPAT_AS_CORE: GL %u.%u %s profile request with flags %#x mapped to "
++             "the core profile (up to %u.%u); removed compatibility features are unavailable\n",
++             major, minor, profile == WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB ? "compatibility" : "core",
++             flags, gl_info.max_major, gl_info.max_minor);
++        compat_as_core = TRUE;
++        core = TRUE;
++    }
++    else if ((major == 3 && (minor == 2 || minor == 3)) ||
+         (major == 4 && (minor == 0 || minor == 1)))
+     {
+         /* CW Hack 24834 */
+@@ -2217,6 +2268,7 @@
+ 
+     context->format = format;
+     context->renderer_id = renderer_id;
++    context->compat_as_core = compat_as_core;
+     if (!create_context(context, share_context ? share_context->cglcontext : NULL, major))
+     {
+         free(context);
+@@ -2315,6 +2367,15 @@
+ 
+     make_context_current(context, FALSE);
+     NtCurrentTeb()->glReserved2 = context;
++
++    /* Gluon: compatibility profiles draw with vertex array object zero;
++     * Apple's core profile rejects it, so bind one per mapped context. */
++    if (context->compat_as_core && !context->default_vao)
++    {
++        pglGenVertexArrays(1, &context->default_vao);
++        pglBindVertexArray(context->default_vao);
++        TRACE("bound default vertex array %u for context %p\n", context->default_vao, context);
++    }
+ 
+     return TRUE;
+ }
+@@ -2732,6 +2793,9 @@
+     /* CX HACK 23422 */
+     LOAD_FUNCPTR(glCompressedTexImage3D);
+     LOAD_FUNCPTR(glCompressedTexSubImage3D);
++    /* Gluon: optional, checked before GLUON_GL_COMPAT_AS_CORE maps a context. */
++    pglGenVertexArrays = dlsym(opengl_handle, "glGenVertexArrays");
++    pglBindVertexArray = dlsym(opengl_handle, "glBindVertexArray");
+ 
+     if (!init_gl_info())
+         goto failed;

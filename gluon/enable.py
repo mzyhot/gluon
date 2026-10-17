@@ -20,16 +20,16 @@ import shutil
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import appinfo, steam, vdf
+from . import appinfo, cloud, steam, vdf
 
 STATE = os.path.join(steam.GLUON_HOME, "state", "apps.json")
 
-# Steam Cloud is switched off (on this Mac only) for apps we enable, by leaving the cloud
-# section out of the cached entry. As a macOS client Steam evaluates an app's cloud rules
-# for macOS: Windows save locations do not resolve, and files that match no rule get
-# removed from the user's cloud after a session (seen with People Playground, 2026-10-13).
-# Turn this off only once Windows save locations are mapped into the game's prefix.
-CLOUD_SAFE_MODE = True
+# Steam Cloud: as a macOS client Steam evaluates an app's cloud rules for macOS, where
+# Windows save locations do not resolve, and files that match no rule get removed from
+# the user's cloud after a session (seen with People Playground, 2026-10-13). gluon.cloud
+# maps each cross-platform rule's Windows location into the game's Wine prefix with a
+# macOS root override; an app it cannot map keeps its cloud section out of the cached
+# entry, which turns Steam Cloud off for it on this Mac only.
 
 # App types offered for install. Left out: tools (SDKs, dedicated servers), DLC (its files
 # come through the base game), music, config.
@@ -57,6 +57,22 @@ def _has(csv: Any, item: str) -> bool:
     return item in _items(csv)
 
 
+def has_64bit_mac_build(common: Dict[str, Any]) -> bool:
+    """Steam marks a Mac build it can still run with macos64 or macosapplesilicon."""
+    extended = _items(common.get("osextended"))
+    return _has(common.get("oslist"), "macos") and ("macos64" in extended or "macosapplesilicon" in extended)
+
+
+def runs_through_gluon(ai: Dict[str, Any]) -> bool:
+    """Windows games without a Mac build, and games whose only Mac build is 32-bit
+    (Steam's "Invalid OS Type" on current macOS) but that have a Windows build."""
+    common = ai.get("common") or {}
+    oslist = common.get("oslist")
+    if not _has(oslist, "macos"):
+        return True
+    return _has(oslist, "windows") and not has_64bit_mac_build(common)
+
+
 def _get(d: Dict[str, Any], path: Path) -> Any:
     for k in path:
         if not isinstance(d, dict) or k not in d:
@@ -74,15 +90,35 @@ def _set(d: Dict[str, Any], path: Path, value: Any) -> None:
         d[path[-1]] = value
 
 
-def planned_changes(ai: Dict[str, Any]) -> List[Tuple[Path, Any, str]]:
-    """(path, current value, new value) for everything that has to mention macOS."""
-    out: List[Tuple[Path, Any, str]] = []
+def _cloud_source(ai: Dict[str, Any], appid: int, change_number: Optional[int],
+                  state: Optional[Dict[str, Any]]) -> Any:
+    """Steam's own cloud section for the app."""
+    if "ufs" in ai:
+        return ai["ufs"]
+    # An earlier Gluon left the section out entirely; Steam's copy is in the state
+    # until Steam refreshes the entry, which brings back its current section.
+    rec = (state if state is not None else load_state()).get(str(appid)) or {}
+    if change_number is None or rec.get("change_number") != change_number:
+        return None
+    return _unpack(rec.get("original", {}).get("ufs"))
+
+
+def planned_changes(ai: Dict[str, Any], appid: Optional[int] = None, change_number: Optional[int] = None,
+                    state: Optional[Dict[str, Any]] = None) -> List[Tuple[Path, Any, Any]]:
+    """(path, current value, new value) for everything that has to mention macOS and for
+    the app's cloud section on this Mac. Without an app id the cloud section is left out."""
+    out: List[Tuple[Path, Any, Any]] = []
 
     def want(path: Path, new: str) -> None:
         cur = _get(ai, path)
         if cur != new:
             out.append((path, cur, new))
 
+    # A game whose Mac build is 32-bit only runs its Windows build instead: Steam
+    # installs and starts the Windows depots and launch entries on this Mac.
+    common = _get(ai, ("common",)) or {}
+    mac32 = _has(common.get("oslist"), "macos") and _has(common.get("oslist"), "windows") \
+        and not has_64bit_mac_build(common)
     # An app with no platform list at all is a Windows app (older titles omit it).
     want(("common", "oslist"), _with(_get(ai, ("common", "oslist")) or "windows", "macos"))
     # without this the client flags the app "Invalid OS Type" (its 32-bit-only-Mac-app marker)
@@ -94,8 +130,16 @@ def planned_changes(ai: Dict[str, Any]) -> List[Tuple[Path, Any, str]]:
             oslist = _get(item, ("config", "oslist"))
             if _has(oslist, "windows"):
                 want(section + (key, "config", "oslist"), _with(oslist, "macos"))
-    if CLOUD_SAFE_MODE and "ufs" in ai:
-        out.append((("ufs",), ai["ufs"], None))
+            elif mac32 and _has(oslist, "macos"):
+                out.append((section + (key,), item, None))
+    if appid is None:
+        if "ufs" in ai:
+            out.append((("ufs",), ai["ufs"], None))
+        return out
+    source = _cloud_source(ai, appid, change_number, state)
+    target = cloud.mapped(source, appid) if source is not None else None
+    if target != ai.get("ufs"):
+        out.append((("ufs",), ai.get("ufs"), target))
     return out
 
 
@@ -208,22 +252,38 @@ def enable(appids: List[int]) -> List[str]:
         ai = kv["appinfo"]
         name = _get(ai, ("common", "name"))
         rec = state.get(str(appid))
-        if rec is None and _has(_get(ai, ("common", "oslist")), "macos"):
+        if rec is None and not runs_through_gluon(ai):
             notes.append("%d (%s): already has a macOS build, left alone" % (appid, name))
             continue
-        changes = planned_changes(ai)
+        changes = planned_changes(ai, appid, entry.change_number, state)
         if not changes:
             notes.append("%d (%s): already enabled" % (appid, name))
             continue
         original = dict((rec or {}).get("original", {}))
+        record = {"name": name, "change_number": entry.change_number, "original": original}
+        if rec and "cloud_backup" in rec:
+            record["cloud_backup"] = rec["cloud_backup"]
         for path, cur, new in changes:
-            if isinstance(cur, dict):
+            if path == ("ufs",) and isinstance(new, dict) and new.get("savefiles") \
+                    and "cloud_backup" not in record:
+                # Before Steam first syncs these saves on this Mac.
+                try:
+                    lines = cloud.backup(new, appid)
+                except OSError as exc:
+                    notes.append("%d (%s): Steam Cloud left off; backup failed: %s" % (appid, name, exc))
+                    new = lines = None  # cloud off, as before; retried on the next sync
+                if lines is not None:
+                    notes += lines
+                    record["cloud_backup"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            if path == ("ufs",) and cloud.is_gluon_mapping(cur):
+                pass  # Gluon's own mapping; the original stays Steam's section
+            elif isinstance(cur, dict):
                 original["/".join(path)] = _pack(cur)  # always the latest copy of a removed section
             else:
                 original.setdefault("/".join(path), cur)
             _set(ai, path, new)
         entry.set_kv(kv)
-        state[str(appid)] = {"name": name, "change_number": entry.change_number, "original": original}
+        state[str(appid)] = record
         dirty = True
         notes.append("%d (%s): enabled (%d values)" % (appid, name, len(changes)))
     if dirty:
@@ -274,7 +334,7 @@ def status() -> List[Dict[str, Any]]:
         pending: Optional[int] = None
         change = None
         if entry is not None:
-            pending = len(planned_changes(entry.kv["appinfo"]))
+            pending = len(planned_changes(entry.kv["appinfo"], int(key), entry.change_number))
             change = entry.change_number
         rows.append({"appid": int(key), "name": rec.get("name"), "in_effect": pending == 0,
                      "enabled_at_change": rec.get("change_number"), "cache_change": change})
@@ -291,7 +351,7 @@ def library_appids() -> Optional[set]:
 
 
 def candidates() -> List[Tuple[int, str]]:
-    """Games in the user's library that list Windows but not macOS."""
+    """Games in the user's library that list Windows but no Mac build current macOS runs."""
     owned = library_appids()
     out = []
     for entry in appinfo.AppInfoFile(steam.APPINFO).entries:
@@ -300,8 +360,9 @@ def candidates() -> List[Tuple[int, str]]:
         common = entry.kv.get("appinfo", {}).get("common", {})
         if str(common.get("type", "")).lower() not in PLAYABLE_TYPES:
             continue
-        # Everything without a macOS build, including titles that list no platform at all.
-        if not _has(common.get("oslist"), "macos"):
+        # Everything without a macOS build, including titles that list no platform at
+        # all, and games whose Mac build is 32-bit only.
+        if runs_through_gluon(entry.kv.get("appinfo", {})):
             out.append((entry.appid, str(common.get("name"))))
     return sorted(out, key=lambda x: x[1].lower())
 
@@ -314,13 +375,19 @@ def sync(dry_run: bool = False) -> List[str]:
         if dry_run:
             return []
         from . import metadata
-        return metadata.watch_refresh(load_state(), planned_changes)
+        # Refreshed games keep launching; Gluon re-applies its details at the
+        # next Steam quit, through this same function.
+        state = load_state()
+        return metadata.watch_refresh(state, lambda ai, appid, change: planned_changes(ai, appid, change, state))
     wanted = sorted({a for a, _ in candidates()} | {int(k) for k in load_state()})
     pending = [r["appid"] for r in status() if not r["in_effect"]]
     todo = sorted({a for a, _ in candidates()} | set(pending))
     if dry_run:
         return ["would enable %d apps, re-apply %d" % (len(todo) - len(pending), len(pending))]
     notes = enable(wanted) if wanted else []
-    from . import install
-    recovered = install.recover_missing_installs([int(k) for k in load_state()])
-    return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n or ": deferred background updates" in n] + recovered
+    from . import install, metadata
+    managed = [int(k) for k in load_state()]
+    recovered = install.recover_missing_installs(managed)
+    recovered += metadata.settle_update_flags(managed)
+    return [n for n in notes if ": enabled (" in n or n.startswith(("launch options", "cache backup")) or "left alone" in n or ": deferred background updates" in n
+                   or ": cloud backup" in n or "Steam Cloud left off" in n] + recovered

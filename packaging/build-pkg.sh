@@ -3,6 +3,7 @@
 #
 # It installs into ~/Library/Application Support/Gluon:
 #   bin/gluon            launcher Steam starts for Windows games
+#   bin/gluon-launcher-host  receives macOS application quit requests for the launcher
 #   bin/gluon-agent      background helper (run by launchd every minute)
 #   bin/gluon-uninstall
 #   lib/gluon/           the Python package
@@ -20,6 +21,8 @@ case "$version" in
 esac
 here="$(cd "$(dirname "$0")/.." && pwd)"
 . "$here/packaging/require-cloud.sh"
+launcher_host="${GLUON_PKG_LAUNCHER_HOST:-$here/build/launcher-host/gluon-launcher-host}"
+[ -x "$launcher_host" ] || { echo "tested native launcher host missing: $launcher_host" >&2; exit 1; }
 runtime_src="${GLUON_PKG_RUNTIME:-$(cd "$HOME/Library/Application Support/Gluon/runtime/current" && pwd -P)}"
 [ -x "$runtime_src/proton" ] || [ -x "$runtime_src/bin/wine" ] || { echo "no runtime at $runtime_src" >&2; exit 1; }
 [ -d "$runtime_src/licenses" ] || { echo "runtime at $runtime_src has no licenses folder; refusing to package it" >&2; exit 1; }
@@ -36,11 +39,28 @@ root="$stage/root/Library/Application Support/Gluon"
 mkdir -p "$root/bin" "$root/lib/gluon" "$root/runtime" "$here/dist"
 
 install -m 755 "$here/tool/gluon" "$here/packaging/gluon-agent" "$here/packaging/gluon-uninstall" "$root/bin/"
+install -m 755 "$launcher_host" "$root/bin/gluon-launcher-host"
 install -m 644 "$here"/gluon/*.py "$root/lib/gluon/"
 # Left out: prefix templates and locks a runtime creates on first use, and a bundled
 # runtime's own separate launcher program (Gluon is driven by Steam, not by an app).
 rsync -a --exclude '/files/share/default_pfx' --exclude '/*.lock' --exclude '/bin/pmac' \
     "$runtime_src/" "$root/runtime/$runtime_name/"
+# Ship every applied Wine modification, including patches added after the
+# original OpenGL/Vulkan notice list. The stamp must describe this exact set.
+if [ -f "$runtime_src/.gluon-wine-patches" ]; then
+    expected_patches="$("$here/packaging/apply-wine-patches.sh" --hash)"
+    [ "$(cat "$runtime_src/.gluon-wine-patches")" = "$expected_patches" ] \
+        || { echo "runtime Wine patches do not match this checkout" >&2; exit 1; }
+    wine_patch_names="$("$here/packaging/apply-wine-patches.sh" --list)"
+    patch_notices="$root/runtime/$runtime_name/licenses/gluon-wine-patches"
+    mkdir -p "$patch_notices"
+    for patch_name in $wine_patch_names; do
+        install -m 644 "$here/packaging/patches/$patch_name.patch" "$patch_notices/"
+    done
+    printf '%s\n' "$wine_patch_names" > "$patch_notices/APPLIED.txt"
+    printf '\nGluon Wine modifications (LGPL-2.1-or-later):\n  All applied patches are included under licenses/gluon-wine-patches/.\n  See APPLIED.txt and the runtime .gluon-wine-patches stamp.\n' \
+        >> "$root/runtime/$runtime_name/licenses/SOURCES.txt"
+fi
 printf '{"schema":1,"name":"%s","version":"%s"}\n' "$runtime_name" "$version" \
     > "$root/runtime/pending.json"
 
