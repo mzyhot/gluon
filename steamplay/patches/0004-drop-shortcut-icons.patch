@@ -1,0 +1,41 @@
+Drop the shortcut icon and desktop-bundle hooks.
+
+Both depend on NotProton's iconmaker helper and its CrossOver run script, which
+Gluon does not ship. Adding Windows programs as non-Steam shortcuts still works.
+
+--- a/Makefile
++++ b/Makefile
+@@ -32,3 +32,2 @@
+ 	dylib/util/file.c \
+-	dylib/util/peicon.c \
+ 	dylib/hooks/hooks.c \
+@@ -36,4 +35,2 @@
+ 	dylib/hooks/hook_shortcut.c \
+-	dylib/hooks/hook_icon.c \
+-	dylib/hooks/hook_shortcut_bundle.c \
+ 	dylib/hooks/hook_webui.c \
+--- a/dylib/hooks/hooks.c
++++ b/dylib/hooks/hooks.c
+@@ -49,4 +49,2 @@
+     { "shortcut", np_hooks_shortcut_count,        np_hooks_shortcut_defs        },
+-    { "icon",     np_hooks_icon_count,            np_hooks_icon_defs            },
+-    { "bundle",   np_hooks_shortcut_bundle_count, np_hooks_shortcut_bundle_defs },
+ };
+@@ -108,3 +106,3 @@
+     (void)slide;
+-    np_hooks_shortcut_bundle_bind(mh);
++    (void)mh;
+ 
+--- a/dylib/hooks/hooks.h
++++ b/dylib/hooks/hooks.h
+@@ -51,10 +51,2 @@
+ 
+-int               np_hooks_icon_count(void);
+-np_patch_entry_t *np_hooks_icon_defs(void);
+-
+-int               np_hooks_shortcut_bundle_count(void);
+-np_patch_entry_t *np_hooks_shortcut_bundle_defs(void);
+-
+-void np_hooks_shortcut_bundle_bind(const struct mach_header_64 *steamui);
+-
+ int np_hooks_install_all(const struct mach_header_64 *mh, intptr_t slide,

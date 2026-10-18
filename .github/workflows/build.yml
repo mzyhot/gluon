@@ -56,6 +56,14 @@ jobs:
           gh release download runtime-inputs-1 -R "$GITHUB_REPOSITORY" -p 'steam-bridge-*.tar.gz*' -D build/inputs || echo "no Steam bridge input published"
           if ls build/inputs/*.sha256 >/dev/null 2>&1; then (cd build/inputs && shasum -a 256 -c ./*.sha256); fi
 
+      - name: Build Steam Play integration
+        run: steamplay/build.sh
+
+      - name: Test Steam Play installation and launcher fixtures
+        run: |
+          python3 -m unittest discover -s tests -v
+          python3 steamplay/check-bundle.py
+
       - name: Build runtime
         run: packaging/build-runtime.sh
 
@@ -77,6 +85,26 @@ jobs:
               -o "build/graphics-probes/dependencies-$arch.exe"
           done
 
+      - name: Preserve completed runtime and compiled probes
+        run: |
+          shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
+            packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
+            tools/d3d9_probe.c > build/probe-sources.sha256
+          COPYFILE_DISABLE=1 tar -czf build/completed-runtime-input.tar.gz \
+            build/gluon-wine build/graphics-probes build/probe-sources.sha256
+          (cd build && shasum -a 256 completed-runtime-input.tar.gz > completed-runtime-input.tar.gz.sha256)
+
+      - name: Upload completed runtime for bounded rechecks
+        uses: actions/upload-artifact@v4
+        with:
+          name: completed-runtime-input
+          path: |
+            build/completed-runtime-input.tar.gz
+            build/completed-runtime-input.tar.gz.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Check complete runtime on GitHub macOS
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
@@ -96,7 +124,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: Gluon-${{ steps.version.outputs.version }}
-          path: dist/Gluon-*.pkg*
+          path: |
+            dist/Gluon-*.pkg*
+            dist/Gluon-SteamPlay-source.tar.gz
           if-no-files-found: error
 
       - name: Graphics build evidence
@@ -122,5 +152,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/Gluon-*.pkg dist/Gluon-*.pkg.sha256 \
+          gh release create "$GITHUB_REF_NAME" dist/Gluon-*.pkg dist/Gluon-*.pkg.sha256 dist/Gluon-SteamPlay-source.tar.gz \
             --title "Gluon ${{ steps.version.outputs.version }}" --generate-notes --prerelease

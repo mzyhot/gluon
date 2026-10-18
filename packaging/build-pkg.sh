@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build dist/Gluon-<version>.pkg: a per-user installer (no administrator password).
+# Build dist/Gluon-<version>.pkg: system staging plus unprivileged per-user setup.
 #
 # It installs into ~/Library/Application Support/Gluon:
 #   bin/gluon            launcher Steam starts for Windows games
@@ -33,10 +33,16 @@ runtime_name="gluon-runtime-$version-$run_id.$run_attempt"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 root="$stage/root/Library/Application Support/Gluon"
-mkdir -p "$root/bin" "$root/lib/gluon" "$root/runtime" "$here/dist"
+steamplay_src="$here/build/steamplay-payload"
+[ -f "$steamplay_src/payload.json" ] || { echo 'Steam Play payload is missing' >&2; exit 1; }
+steamplay_name="$version-$run_id.$run_attempt"
+mkdir -p "$root/bin" "$root/lib/gluon" "$root/runtime" "$root/steamplay/payloads/$steamplay_name" "$here/dist"
 
-install -m 755 "$here/tool/gluon" "$here/packaging/gluon-agent" "$here/packaging/gluon-uninstall" "$root/bin/"
+install -m 755 "$here/tool/gluon" "$here/packaging/gluon-agent" "$here/packaging/gluon-uninstall" "$here/packaging/gluonctl" "$root/bin/"
 install -m 644 "$here"/gluon/*.py "$root/lib/gluon/"
+# Explicitly remove retired modules on upgrade (pkg receipts do not remove them).
+rsync -a "$steamplay_src/" "$root/steamplay/payloads/$steamplay_name/"
+printf '{"name":"%s"}\n' "$steamplay_name" > "$root/steamplay/pending.json"
 # Left out: prefix templates and locks a runtime creates on first use, and a bundled
 # runtime's own separate launcher program (Gluon is driven by Steam, not by an app).
 rsync -a --exclude '/files/share/default_pfx' --exclude '/*.lock' --exclude '/bin/pmac' \
@@ -51,8 +57,8 @@ cat > "$stage/distribution.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
     <title>Gluon</title>
-    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
-    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <choices-outline>
         <line choice="gluon"/>
     </choices-outline>

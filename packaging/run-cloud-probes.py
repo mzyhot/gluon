@@ -53,6 +53,15 @@ def main():
                 code = process.wait(timeout=seconds)
                 status = "passed" if code == 0 else "failed"
             except subprocess.TimeoutExpired:
+                # Capture the blocked native Wine host before terminating it.
+                # This runs only on the disposable Actions runner.
+                sample_path = probes / (name + "-sample.log")
+                with sample_path.open("w") as sample:
+                    try:
+                        subprocess.run(["/usr/bin/sample", str(process.pid), "3"],
+                                       stdout=sample, stderr=subprocess.STDOUT, timeout=8)
+                    except (OSError, subprocess.SubprocessError) as error:
+                        sample.write("Could not sample probe: %s\n" % error)
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
                 code, status = None, "timed_out"
@@ -89,10 +98,14 @@ def main():
                                 str(runtime / "lib/libMoltenVK.dylib"), "--device"],
                            allow_unavailable=True)
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
+        # wineboot may return before setup/service children finish. Match the
+        # launcher's first-run barrier before loading other DLLs in the prefix.
+        run("wine-prefix-idle", [server, "-w"], seconds=30)
         for arch in ("x86_64", "i686"):
             run(f"runtime-dependencies-{arch}", [wine, str(probes / f"dependencies-{arch}.exe")])
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])
-            run(f"vulkan-loader-{arch}", [wine, str(probes / f"vulkan-{arch}.exe")])
+            run(f"vulkan-loader-{arch}", [wine, str(probes / f"vulkan-{arch}.exe")],
+                overrides={"WINEDEBUG": "fixme-all,+vulkan,+loaddll"})
             if native_gl["status"] == "passed":
                 run(f"wgl-alias-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--require-alias"])
             else:

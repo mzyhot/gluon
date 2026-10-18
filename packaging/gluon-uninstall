@@ -1,6 +1,5 @@
 #!/bin/sh
-# Remove Gluon. Restores the original Steam metadata and launch options for every game
-# Gluon enabled, stops the background helper and deletes the installed program files.
+# Restore managed Steam bundles and legacy settings, then remove Gluon's program files.
 # Game prefixes (steamapps/compatdata), logs, backups and state are left in place.
 set -e
 gluon="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,7 +11,9 @@ if pgrep -x steam_osx >/dev/null; then
 fi
 launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null || true
 rm -f "$plist"
-PYTHONPATH="$gluon/lib" /usr/bin/python3 -m gluon disable --all
-rm -rf "$gluon/bin" "$gluon/lib" "$gluon/runtime"
-pkgutil --forget com.gluon.pkg --volume "$HOME" >/dev/null 2>&1 || true
+PYTHONPATH="$gluon/lib" /usr/bin/arch -arm64 /usr/bin/python3 -m gluon uninstall
+rm -rf "$gluon/bin" "$gluon/lib" "$gluon/runtime" "$gluon/steamplay/payloads" "$gluon/steamplay/legacycompat"
+rm -f "$gluon/steamplay/pending.json"
+# The system package staging area is root-owned and may be shared by accounts.
+# Its installer receipt is retained; this command removes this account's deployment.
 echo "Gluon removed. Left in place: $gluon (logs, backups, state)"

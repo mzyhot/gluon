@@ -1,0 +1,32 @@
+Adapt the support-directory fixture and describe the registered Gluon tool accurately.
+
+--- a/dylib/tests/nativeplatformcheck.c
++++ b/dylib/tests/nativeplatformcheck.c
+@@ -41,2 +41,5 @@
+     setenv("HOME", home, 1);
++    unsetenv("GLUON_HOME");
++    unsetenv("GLUON_STEAMPLAY_PAYLOAD");
++    unsetenv("GLUON_STEAM_ROOT");
+     np_support_path(g_tool, sizeof(g_tool), home, "appinfo");
+@@ -46,2 +49,4 @@
+     snprintf(dir, sizeof(dir), "%s/Library/Application Support", home);
++    mkdir(dir, 0755);
++    snprintf(dir, sizeof(dir), "%s/Library/Application Support/Gluon", home);
+     mkdir(dir, 0755);
+@@ -68,2 +73,4 @@
+     rmdir(dir);
++    snprintf(dir, sizeof(dir), "%s/Library/Application Support/Gluon", home);
++    rmdir(dir);
+     snprintf(dir, sizeof(dir), "%s/Library/Application Support", home);
+--- a/dylib/hooks/hook_compat.c
++++ b/dylib/hooks/hook_compat.c
+@@ -64,3 +64,3 @@
+ // An unmapped windows-only app resolves to no tool ("Install on Windows").
+-// Those are defaulted to CrossOver for quality UX.
++// Those are defaulted to Gluon.
+ static void *hook_FindToolForTargetApp(void *self, uint32_t appid) {
+@@ -87,3 +87,3 @@
+     if (crossover)
+-        NP_DBG("hook_FindToolForTargetApp: appID %u is windows-only, defaulting to CrossOver tool",
++        NP_DBG("hook_FindToolForTargetApp: appID %u is windows-only, defaulting to Gluon tool",
+                appid);

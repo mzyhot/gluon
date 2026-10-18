@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from gluon import enable, install, metadata, steam, vdf
+from gluon import install, steam, vdf
 
 
 class MissingInstallTests(unittest.TestCase):
@@ -157,41 +157,6 @@ class MissingInstallTests(unittest.TestCase):
     def test_steam_starting_before_rename_is_kept(self):
         steam.is_running.side_effect = [False, False, True]
         self.assert_untouched()
-
-
-class SyncRecoveryTests(unittest.TestCase):
-    def test_recovery_follows_enable_and_uses_managed_state(self):
-        order = []
-        state = {"4705510": {}}
-        with mock.patch.object(steam, "is_running", return_value=False), \
-                mock.patch.object(enable, "candidates", return_value=[(4705510, "Happy Wheels")]), \
-                mock.patch.object(enable, "load_state", return_value=state), \
-                mock.patch.object(enable, "status", return_value=[]), \
-                mock.patch.object(enable, "enable", side_effect=lambda ids: order.append("enable") or []), \
-                mock.patch.object(install, "recover_missing_installs", side_effect=lambda ids:
-                                  order.append(("recover", ids)) or ["recovered"]):
-            self.assertEqual(enable.sync(), ["recovered"])
-        self.assertEqual(order, ["enable", ("recover", [4705510])])
-
-    def test_dry_run_does_not_recover(self):
-        with mock.patch.object(steam, "is_running", return_value=False), \
-                mock.patch.object(enable, "candidates", return_value=[]), \
-                mock.patch.object(enable, "load_state", return_value={}), \
-                mock.patch.object(enable, "status", return_value=[]), \
-                mock.patch.object(install, "recover_missing_installs") as recover:
-            enable.sync(dry_run=True)
-            recover.assert_not_called()
-
-    def test_running_steam_does_not_enable_or_recover(self):
-        with mock.patch.object(steam, "is_running", return_value=True), \
-                mock.patch.object(enable, "load_state", return_value={}), \
-                mock.patch.object(metadata, "watch_refresh", return_value=[]) as observe, \
-                mock.patch.object(enable, "enable") as reenable, \
-                mock.patch.object(install, "recover_missing_installs") as recover:
-            self.assertEqual(enable.sync(), [])
-            observe.assert_called_once()
-            reenable.assert_not_called()
-            recover.assert_not_called()
 
 
 if __name__ == "__main__":

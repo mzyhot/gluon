@@ -1,0 +1,83 @@
+Refuse undeclared client builds and unresolved UI signatures; preserve Steam update markers.
+
+--- a/dylib/core/loader.c
++++ b/dylib/core/loader.c
+@@ -2,2 +2,3 @@
+ #include "../version.h"
++#include "../gluon_build.h"
+ #include "../util/log.h"
+@@ -28,28 +29,2 @@
+ 
+-static void drop_marker_file(const char *dir, const char *name) {
+-    char path[1024];
+-    int len = snprintf(path, sizeof(path), "%s/%s", dir, name);
+-    if (len < 0 || len >= (int)sizeof(path))
+-        return;
+-    if (unlink(path) == 0)
+-        NP_LOG("removed marker %s", path);
+-}
+-
+-// A leftover 'marker' makes the client redownload and rewrite Info.plist, which is bad.
+-static void clear_relaunch_markers(void) {
+-    char exe[1024];
+-    uint32_t cap = sizeof(exe);
+-    if (_NSGetExecutablePath(exe, &cap) != 0) {
+-        NP_WARN("could not read own executable path");
+-        return;
+-    }
+-
+-    char scratch[1024];
+-    snprintf(scratch, sizeof(scratch), "%s", exe);
+-    const char *dir = dirname(scratch);
+-
+-    drop_marker_file(dir, ".crash");
+-    drop_marker_file(dir, ".forceupdate");
+-}
+-
+ static int pick_latest_sigdb(const char *dir, char *buf, size_t buf_size) {
+@@ -129,6 +104,7 @@
+ 
+-    if (count < required)
+-        NP_WARN("install_thread: %s %d/%d signatures resolved; the hooks that did "
+-                "resolve still install, the rest stay off", STEAMUI_DYLIB, count,
+-                required);
++    if (count < required) {
++        NP_ERR("unsupported Steam UI: %d/%d signatures resolved; no UI hooks installed", count, required);
++        np_free_resolution(&resolved);
++        return;
++    }
+ 
+@@ -191,3 +167,3 @@
+     // Safety feature :)
+-    if (resolved_count < required) {
++    if (required == 0 || resolved_count < required) {
+         NP_ERR("install_thread: %d/%d signatures resolved, installing nothing; "
+@@ -274,3 +250,16 @@
+ 
+-    clear_relaunch_markers();
++    char policy[1024], client[1024];
++    const char *root = getenv("GLUON_STEAM_ROOT");
++    if (!root || !root[0]) {
++        const char *home = np_home_dir();
++        if (!home) return;
++        snprintf(client, sizeof(client), "%s/Library/Application Support/Steam", home);
++        root = client;
++    }
++    np_support_path(policy, sizeof(policy), np_home_dir(), "builds");
++    if (!gluon_build_supported(root, policy)) {
++        NP_ERR("unsupported or unknown Steam build; Steam Play hooks are disabled; update Gluon and repair Steam");
++        np_hooks_spawn_install();
++        return;
++    }
+ 
+--- a/dylib/feats/nativeplatform.c
++++ b/dylib/feats/nativeplatform.c
+@@ -64,3 +64,7 @@
+     np_support_path(tool, sizeof(tool), home, "appinfo");
+-    snprintf(vdf, sizeof(vdf), "%s/Library/Application Support/Steam/appcache/appinfo.vdf", home);
++    const char *root = getenv("GLUON_STEAM_ROOT");
++    if (root && root[0])
++        snprintf(vdf, sizeof(vdf), "%s/appcache/appinfo.vdf", root);
++    else
++        snprintf(vdf, sizeof(vdf), "%s/Library/Application Support/Steam/appcache/appinfo.vdf", home);
+ 

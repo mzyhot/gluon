@@ -27,7 +27,11 @@
 unset DYLD_INSERT_LIBRARIES
 
 GLUON_HOME="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
-appid="${SteamAppId:-${SteamGameId:-${STEAM_COMPAT_APP_ID:-0}}}"
+appid="${STEAM_COMPAT_APP_ID:-0}"
+case "$appid" in ''|0) appid="${SteamAppId:-0}" ;; esac
+case "$appid" in ''|0) appid="${SteamGameId:-0}" ;; esac
+case "$appid" in ''|0) appid="${STEAM_COMPAT_DATA_PATH##*/}" ;; esac
+case "$appid" in ''|0|*[!0-9]*) printf '%s\n' 'gluon: Steam did not supply a valid app ID' >&2; exit 1 ;; esac
 LOG_DIR="$GLUON_HOME/logs"
 LOG="$LOG_DIR/launch-$appid.log"
 WINE_LOG="$LOG_DIR/wine-$appid.log"
@@ -76,11 +80,12 @@ export DOTNET_EnableWriteXorExecute="${DOTNET_EnableWriteXorExecute:-0}"
 # Only the final plain-Wine game launch receives Steam's validated overlay below.
 unset DYLD_INSERT_LIBRARIES
 
-verb="$1"
+verb="${1:-}"
 [ $# -gt 0 ] && shift
 case "$verb" in
-    run | waitforexitandrun) ;;
-    *) fail "unsupported verb '$verb' (expected run or waitforexitandrun)" ;;
+    run | runinprefix | waitforexitandrun) ;;
+    getcompatpath) printf '%s\n' "$STEAM_COMPAT_DATA_PATH"; exit 0 ;;
+    *) fail "unsupported verb '$verb'" ;;
 esac
 [ $# -gt 0 ] || fail "no executable given"
 exe="$1"
@@ -112,7 +117,24 @@ case "$exe" in
     *) compat="$GLUON_HOME/compatdata/$appid" ;;
 esac
 [ -n "$STEAM_COMPAT_DATA_PATH" ] && compat="$STEAM_COMPAT_DATA_PATH"
+# A moved game can retain the prefix Gluon created before native Steam Play.
+# Reuse its old library prefix rather than creating a fresh save directory.
+if [ ! -d "$compat/pfx-wine" ] && [ -n "$install_dir" ]; then
+    previous="${install_dir%%/steamapps/common/*}/steamapps/compatdata/$appid"
+    [ ! -d "$previous/pfx-wine" ] || compat="$previous"
+fi
+if [ ! -d "$compat/pfx-wine" ] && [ -d "$GLUON_HOME/compatdata/$appid/pfx-wine" ]; then
+    compat="$GLUON_HOME/compatdata/$appid"
+fi
 mkdir -p "$compat" || fail "cannot create $compat"
+export STEAM_COMPAT_DATA_PATH="$compat" STEAM_COMPAT_APP_ID="$appid"
+if [ "$verb" = waitforexitandrun ]; then
+    export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+else
+    # Install-script helpers must not register as the running game (AppError_16).
+    unset SteamAppId SteamGameId
+fi
+[ -n "$install_dir" ] && export STEAM_COMPAT_INSTALL_PATH="${STEAM_COMPAT_INSTALL_PATH:-$install_dir}"
 
 # A Steam Play tool insists on <compat>/pfx and fills it with its own files, so a plain
 # Wine runtime gets a prefix of its own rather than sharing that one.
@@ -146,7 +168,9 @@ if [ "$kind" = proton ]; then
     export STEAM_COMPAT_CLIENT_INSTALL_PATH="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$client_dir}"
     export STEAM_COMPAT_APP_ID="$appid"
     [ -n "$install_dir" ] && export STEAM_COMPAT_INSTALL_PATH="${STEAM_COMPAT_INSTALL_PATH:-$install_dir}"
-    export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+    if [ "$verb" = waitforexitandrun ]; then
+        export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+    fi
     log "  client    = $STEAM_COMPAT_CLIENT_INSTALL_PATH"
 fi
 
@@ -154,11 +178,11 @@ fi
 # layers here cannot present into another process's window, which leaves a blank
 # window. Keeping the GPU work inside the window's own process avoids that.
 exe_dir="$(dirname "$exe")"
-if [ -z "$GLUON_NO_AUTO_ARGS" ] && { [ -f "$exe_dir/chrome_100_percent.pak" ] || [ -f "$exe_dir/resources/app.asar" ] || [ -f "$exe_dir/LICENSES.chromium.html" ]; }; then
+if [ "$verb" = waitforexitandrun ] && [ -z "$GLUON_NO_AUTO_ARGS" ] && { [ -f "$exe_dir/chrome_100_percent.pak" ] || [ -f "$exe_dir/resources/app.asar" ] || [ -f "$exe_dir/LICENSES.chromium.html" ]; }; then
     log "  Chromium-based app detected: adding --in-process-gpu"
     set -- "$@" --in-process-gpu
 fi
-if [ -n "$GLUON_EXTRA_ARGS" ]; then
+if [ "$verb" = waitforexitandrun ] && [ -n "$GLUON_EXTRA_ARGS" ]; then
     log "  extra arguments: $GLUON_EXTRA_ARGS"
     # shellcheck disable=SC2086  # word splitting is intended: one argument per word
     set -- "$@" $GLUON_EXTRA_ARGS
@@ -167,7 +191,7 @@ fi
 # Steam API bridge: when the runtime carries it, the game is started through its helper
 # so that the game's steam_api finds the running Mac Steam client.
 steam_bridge=""
-if [ "$kind" = wine ] && [ -f "$runtime/lib/wine/x86_64-windows/lsteamclient.dll" ] \
+if [ "$verb" = waitforexitandrun ] && [ "$kind" = wine ] && [ -f "$runtime/lib/wine/x86_64-windows/lsteamclient.dll" ] \
     && [ -f "$runtime/lib/wine/x86_64-windows/steam.exe" ] && [ -z "$GLUON_NO_STEAM_BRIDGE" ]; then
     steam_bridge=1
     if [ -n "$STEAM_CLIENT_CONFIG_FILE" ]; then
@@ -190,7 +214,11 @@ fi
 overlay_source_root="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
 
 case "$exe" in
-    */*) cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")" ;;
+    [A-Za-z]:*) ;; # Wine resolves Windows paths inside the selected prefix.
+    */*)
+        exe="$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")" || fail "cannot resolve executable"
+        cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")"
+        ;;
 esac
 
 # Steam treats this process as the game: playtime, the Stop button and the cloud sync
@@ -218,7 +246,7 @@ if [ "$kind" = proton ]; then
         export WINEDLLOVERRIDES="$WINEDLLOVERRIDES;mscoree,mshtml="
     fi
     log "  starting the tool (output in $WINE_LOG)"
-    "$runtime/proton" waitforexitandrun "$exe" "$@" >> "$WINE_LOG" 2>&1 &
+    "$runtime/proton" "$verb" "$exe" "$@" >> "$WINE_LOG" 2>&1 &
     wait $!
     status=$?
 else
@@ -237,7 +265,7 @@ else
         "$wineserver" -w >> "$WINE_LOG" 2>&1
     fi
     overlay_insert=""
-    if [ "${SteamClientLaunch:-}" = 1 ] && [ -n "${STEAM_DYLD_INSERT_LIBRARIES:-}" ]; then
+    if [ "$verb" = waitforexitandrun ] && [ "${SteamClientLaunch:-}" = 1 ] && [ -n "${STEAM_DYLD_INSERT_LIBRARIES:-}" ]; then
         overlay_lib="$GLUON_HOME/lib"
         [ -f "$overlay_lib/gluon/overlay.py" ] || overlay_lib="$overlay_source_root"
         if [ -f "$overlay_lib/gluon/overlay.py" ]; then
@@ -294,8 +322,10 @@ else
     wait $!
     status=$?
     # Wine returns as soon as a GUI program has started; wait for the prefix to go idle.
-    "$wineserver" -w >> "$WINE_LOG" 2>&1 &
-    wait $!
+    if [ "$verb" = waitforexitandrun ]; then
+        "$wineserver" -w >> "$WINE_LOG" 2>&1 &
+        wait $!
+    fi
 fi
 elapsed=$(( $(date +%s) - started ))
 log "  session ended (exit status $status, ${elapsed}s)"

@@ -1,0 +1,120 @@
+Show Gluon in Steam's UI and leave CrossOver's settings out.
+
+The Windows-only hint names Gluon. The CrossOver options panel renders nothing,
+since Gluon's launcher reads none of the CrossOver settings it writes. NotProton's
+1.0.x launch-option migration is dropped: Gluon never wrote those options.
+
+--- a/dylib/feats/webpatch.c
++++ b/dylib/feats/webpatch.c
+@@ -270,5 +270,5 @@
+ #define NP_COMPAT_HINT NP_WEB_TEXT( \
+-    "Enable CrossOver under Properties > Compatibility to install and run the Windows version.", \
+-    "请在“属性 > 兼容性”中启用 CrossOver，以安装并运行 Windows 版本。", \
+-    "Abilita CrossOver in Propriet\\u00e0 > Compatibilit\\u00e0 per installare e avviare la versione Windows.")
++    "Enable Gluon under Properties > Compatibility to install and run the Windows version.", \
++    "请在“属性 > 兼容性”中启用 Gluon，以安装并运行 Windows 版本。", \
++    "Abilita Gluon in Propriet\\u00e0 > Compatibilit\\u00e0 per installare e avviare la versione Windows.")
+ 
+@@ -294,61 +294,6 @@
+ 
+-// FEX runs arm64 Wine, which has no D3DMetal and never runs under Rosetta.
+-#define NP_CX_OPTIONS_BODY(ARG, RT, BARREL) \
+-    ARG "=>{" \
+-    "const t=" ARG ".details,o=t.strLaunchOptions||\"\"," \
+-    "fex=" NP_FEX_TOOLS ".indexOf(t.strCompatToolName||\"" NP_FALLBACK_TOOL "\")>=0," \
+-    "npZh=" NP_WEB_IS_ZH ",npIt=" NP_WEB_IS_IT ",npL=(en,zh,it)=>npZh?zh:npIt?it:en," \
+-    "L=MSCXLaunch(o,t.unAppID),g=L.g,s=L.s," \
+-    "T=(ks,l,on,off)=>(0," RT ".jsx)(" BARREL ".Yh,{className:\"MSCXRow\",label:l," \
+-    "checked:g(ks[0])===on," \
+-    "onChange:v=>s(ks.map(k=>[k,v?on:(off||\"\")]))},ks[0])," \
+-    "bv=g(\"CX_GRAPHICS_BACKEND\"),b=fex&&\"d3dmetal\"===bv?\"\":bv," \
+-    "dm=!fex&&(\"\"===b||\"d3dmetal\"===b)," \
+-    "dx=\"\"===b||\"dxmt\"===b," \
+-    "sw=\"1\"===g(\"DXMT_METALFX_SPATIAL_SWAPCHAIN\")," \
+-    "F=\"d3d11.metalSpatialUpscaleFactor=\"," \
+-    "fe=g(\"DXMT_CONFIG\").split(\";\").filter(e=>e.trim())," \
+-    "fk=e=>/^[ \\t\\r]*d3d11\\.metalSpatialUpscaleFactor[ \\t\\r]*=/.test(e)," \
+-    "fx=v=>fe.filter(e=>!fk(e)).concat(v?[F+v]:[]).join(\";\")," \
+-    "fv=(fe.filter(fk).pop()||\"=2\").replace(/^[^=]*=/,\"\").replace(/\"/g,\"\").trim().split(/\\s/)[0]," \
+-    "fn=Math.max(isNaN(+fv)?2:+fv,1)," \
+-    "U=[{data:\"\",label:npL(\"Off\",\"关闭\",\"Disattivato\")}," \
+-    "{data:\"1.5\",label:\"1.5x\"}," \
+-    "{data:\"1.72\",label:\"1.72x\"}," \
+-    "{data:\"2.0\",label:\"2x\"}," \
+-    "{data:\"3.0\",label:\"3x\"}]," \
+-    "B=[{data:\"\",label:npL(\"Automatic\",\"自动\",\"Automatico\")}," \
+-    "{data:\"d3dmetal\",label:\"D3DMetal\"}," \
+-    "{data:\"dxmt\",label:\"DXMT\"}," \
+-    "{data:\"dxvk\",label:\"DXVK\"}," \
+-    "{data:\"wined3d\",label:\"WineD3D\"}].filter(x=>!fex||x.data!==\"d3dmetal\");" \
+-    "if(t.unAppID<2147483648&&(t.vecPlatforms||[]).indexOf(\"osx\")>=0" \
+-    "&&!t.strCompatToolName)return null;" \
+-    "return(0," RT ".jsx)(\"div\",{className:\"MSCXPanel\",children:(0," RT ".jsxs)(" RT ".Fragment,{children:[" \
+-    "(0," RT ".jsx)(\"style\",{children:" NP_CX_OPTIONS_CSS "})," \
+-    "(0," RT ".jsxs)(" BARREL ".XY,{label:npL(\"Graphics\",\"图形\",\"Grafica\"),children:[" \
+-    "(0," RT ".jsx)(" BARREL ".m,{rgOptions:B,selectedOption:b," \
+-    "onChange:v=>s([[\"CX_GRAPHICS_BACKEND\",v.data]]" \
+-    ".concat(\"\"===v.data||\"d3dmetal\"===v.data?[]:[[\"D3DM_ENABLE_METALFX\",\"\"]])" \
+-    ".concat(\"\"===v.data||\"dxmt\"===v.data?[]:" \
+-    "[[\"DXMT_METALFX_SPATIAL_SWAPCHAIN\",\"\"],[\"DXMT_CONFIG\",fx(\"\")]])" \
+-    ".concat(\"dxmt\"===v.data?[]:[[\"DXMT_ENABLE_NVEXT\",\"\"]]))})," \
+-    "T([\"MTL_HUD_ENABLED\"],npL(\"Metal HUD\",\"Metal 性能监视器\",\"Metal HUD\"),\"1\")," \
+-    "dm&&T([\"D3DM_ENABLE_METALFX\"],\"DLSS\",\"1\")," \
+-    "\"dxmt\"===b&&T([\"DXMT_ENABLE_NVEXT\"],\"DLSS\",\"1\")," \
+-    "!fex&&T([\"ROSETTA_ADVERTISE_AVX\"],npL(\"Advertise AVX2 to Rosetta\",\"向 Rosetta 声明 AVX2 支持\",\"Segnala AVX2 a Rosetta\"),\"1\",\"0\")," \
+-    "T([\"WINEMSYNC\"],\"MSync\",\"1\",\"0\")," \
+-    "T([\"NOTPROTON_RETINA\"],npL(\"High Resolution\",\"高分辨率\",\"Alta risoluzione\"),\"1\",\"0\")" \
+-    "]},\"gfx\")," \
+-    "dx&&(0," RT ".jsx)(" BARREL ".XY," \
+-    "{label:npL(\"MetalFX Upscaling (Samples from the resolution the game is set to)\"," \
+-    "\"MetalFX 超分辨率（以游戏设置的分辨率为采样来源）\",\"Upscaling MetalFX (ingrandisce l'immagine dalla risoluzione impostata nel gioco)\")," \
+-    "children:(0," RT ".jsx)(" BARREL ".m,{rgOptions:U," \
+-    "selectedOption:sw?(U.find(u=>u.data&&+u.data===fn)||{data:String(fn)}).data:\"\"," \
+-    "onChange:v=>s([[\"DXMT_METALFX_SPATIAL_SWAPCHAIN\",v.data?\"1\":\"\"],[\"DXMT_CONFIG\",fx(v.data)]])})},\"usf\")," \
+-    "(0," RT ".jsx)(" BARREL ".XY,{label:npL(\"Controllers (May break Steam Input. Not recommended)\"," \
+-    "\"控制器（可能导致 Steam Input 失效，不推荐）\",\"Controller (pu\\u00f2 interferire con Steam Input, sconsigliato)\"),children:" \
+-    "T([\"NOTPROTON_RAW_CONTROLLERS\"],npL(\"Let games read controllers directly\"," \
+-    "\"允许游戏直接读取控制器\",\"Lascia che i giochi leggano direttamente i controller\"),\"1\",\"\")},\"ctl\")" \
+-    "]})})}"
++// The CrossOver options panel writes CrossOver's own settings (CX_GRAPHICS_BACKEND,
++// D3DM_*, DXMT_*) into launch options. Gluon's launcher reads none of them, so the
++// panel renders nothing and the pages around it keep their structure.
++#define NP_CX_OPTIONS_BODY(ARG, RT, BARREL) ARG "=>null"
+ 
+@@ -367,31 +312,2 @@
+     "var MSCXOpts=" NP_CX_OPTIONS_CAPTURE(NP_C3, NP_C4) ";"
+-
+-// 1.0.x saved CrossOver settings without %command%, this migrates them.
+-#define NP_LAUNCH_MIGRATION_RULE \
+-    "o=>{const T=/(?:[^\\s\"'\\\\]|\\\\[^]|\"(?:[^\"\\\\]|\\\\[^])*\"|'[^']*')+/g," \
+-    "w=o.match(T)||[]," \
+-    "k=x=>/^(CX_GRAPHICS|D3DM_|DXMT_|DXVK_|MTL_|NOTPROTON_|ROSETTA_|WINE)\\w*=/.test(x)," \
+-    "e=w.filter(k);" \
+-    "if(/%command%/i.test(o)||o.replace(T,\"\").trim()||!e.length)return null;" \
+-    "return e.map(x=>{const i=x.indexOf(\"=\"),v=x.slice(i+1);" \
+-    "return/[\"'\\\\]/.test(x)||/^[\\w.,:=\\/+@%-]*$/.test(v)?x:x.slice(0,i+1)+\"'\"+v+\"'\"})" \
+-    ".concat(\"%command%\",w.filter(x=>!k(x))).join(\" \")}"
+-
+-#define NP_LAUNCH_MIGRATION \
+-    "(async()=>{try{" \
+-    "const K=\"NotProtonLaunchMigrated_\"+this.m_cm.steamid.GetAccountID();" \
+-    "if(localStorage.getItem(K))return;" \
+-    "const M=" NP_LAUNCH_MIGRATION_RULE ";" \
+-    "const A=[...window.appStore.m_mapApps.values()].filter(a=>a);let n=0;" \
+-    "for(let i=0;i<A.length;i+=20)await Promise.all(A.slice(i,i+20).map(async a=>{const id=a.appid;" \
+-    "const t=await Promise.race([window.appDetailsStore.RequestAppDetails(id)," \
+-    "new Promise(r=>setTimeout(r,5e3))]);" \
+-    "if(!t){console.warn(\"NotProton: no details for app \"+id+\", its launch options were not moved\");return}" \
+-    "if(!(id<2147483648&&(t.vecPlatforms||[]).indexOf(\"osx\")>=0&&!t.strCompatToolName)){" \
+-    "const r=M(t.strLaunchOptions||\"\");" \
+-    "if(r!==null){SteamClient.Apps.SetAppLaunchOptions(id,r);n++;" \
+-    "console.log(\"NotProton: moved the launch options of app \"+id)}}}));" \
+-    "console.log(\"NotProton: checked the launch options of \"+A.length+\" apps, moved \"+n);" \
+-    "localStorage.setItem(K,\"1\")" \
+-    "}catch(e){console.error(\"NotProton: launch options migration failed\",e)}})()"
+ 
+@@ -515,4 +431,2 @@
+       1, 0 },
+-    { "this.m_bServicesInitialized=!0,SteamClient.UI.NotifyAppInitialized()",
+-      "this.m_bServicesInitialized=!0," NP_LAUNCH_MIGRATION ",SteamClient.UI.NotifyAppInitialized()", 1, 0 },
+     // Pr means macOS, td means Windows.
