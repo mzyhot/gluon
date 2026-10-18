@@ -57,10 +57,6 @@ a unique directory; the background helper switches the default only while Steam
 and Wine are idle, preserving the previous selection for rollback. Game prefixes
 stay in place. See the graphics documents for tested capabilities and limitations.
 
-**Steam Play, for macOS.**
-
-<img src="gluon-slogan.svg" alt="Download Gluon and experience a world without CrossOver (and Windows). Gluon is an independent project and is not affiliated with, endorsed by, or sponsored by CodeWeavers or its CrossOver product." width="100%">
-
 Gluon brings Windows-only Steam games to macOS through an open-source Windows compatibility runtime.
 
 Install Gluon once, and it automatically integrates with Steam to make Windows-only games installable and launchable directly from your library.
