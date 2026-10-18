@@ -24,6 +24,7 @@ DYLIB = "gluon-steamplay.dylib"
 INSERT = "DYLD_INSERT_LIBRARIES"
 CONTROLLER = "SDL_JOYSTICK_BLACKLIST_DEVICES"
 LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+VALVE_REQUIREMENT = 'anchor apple generic and certificate leaf[subject.OU] = "MXGJJ98X76"'
 
 
 class SteamPlayError(RuntimeError):
@@ -174,7 +175,7 @@ class System:
     def valve(self, app):
         self.verify(app)
         _run("/usr/bin/codesign", "--verify", "--test-requirement",
-             'anchor apple generic and certificate leaf[subject.OU] = "MXGJJ98X76"', app)
+             "=" + VALVE_REQUIREMENT, app)
 
     def register(self, app):
         _run(LSREGISTER, "-f", app)
