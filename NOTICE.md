@@ -35,6 +35,9 @@ ANGLE and MGL were evaluated from their public source and are not shipped.
 The Wine Vulkan host-boundary patch is also LGPL-2.1-or-later and ships as
 `licenses/Gluon-Wine-Vulkan.patch`. Its private portability feature layout is
 validated against pinned Khronos Vulkan XML; no generated Windows API is enlarged.
+The display-name, app-bundle/focus, overlay-scope and optional compatibility-profile
+patches are also LGPL-2.1-or-later. Every applied Wine patch and its inventory ship
+under `licenses/gluon-wine-patches/`.
 All TLS/media libraries are source-build outputs, with SHA-256 inputs, exact
 configuration and source locations recorded beside their license texts.
 

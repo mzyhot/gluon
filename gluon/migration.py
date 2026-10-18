@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 import uuid
 
-from . import appinfo, install, steam, vdf
+from . import appinfo, install, legacy_cloud, steam, vdf
 
 
 class MigrationError(RuntimeError):
@@ -88,7 +88,9 @@ def migrate():
                 current = _get(ai, keys)
                 if current == original:
                     continue
-                if current != _expected(keys, original):
+                mapped_cloud = (keys == ["ufs"] and isinstance(original, dict)
+                                and current == legacy_cloud.mapped(original, int(appid)))
+                if not mapped_cloud and current != _expected(keys, original):
                     conflicts.append("%s/%s changed independently" % (appid, name))
                     continue
                 parent = _get(ai, keys[:-1])

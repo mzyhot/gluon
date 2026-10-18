@@ -410,7 +410,8 @@ static NSRunningApplication *steam_owner(NSString *directory)
 
 - (BOOL)handActivationToGame
 {
-    const char *value = getenv("SteamAppId");
+    const char *value = getenv("STEAM_COMPAT_APP_ID");
+    if (!value || !*value) value = getenv("SteamAppId");
     NSString *appid = value && *value ? [NSString stringWithUTF8String:value] : nil;
     if (!appid) return NO;
     NSString *identifier = [@"org.gluon.game." stringByAppendingString:appid];

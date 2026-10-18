@@ -6,7 +6,7 @@ import os
 import sys
 import time
 
-from . import cef, migration, runtime, steam, steamplay
+from . import cef, cloud, migration, runtime, steam, steamplay
 
 
 def main():
@@ -18,6 +18,9 @@ def main():
         command.add_argument("--steam-app", help="path to the Steam application to configure")
     sub.add_parser("uninstall", help="restore all Steam apps managed by Gluon; preserve saves and backups")
     sub.add_parser("migrate", help="restore legacy Gluon metadata once; keep originals and backups")
+    command = sub.add_parser("cloud", help="prepare an optional native Steam Cloud view while Steam is closed")
+    command.add_argument("operation", choices=("prepare",))
+    command.add_argument("appid")
     command = sub.add_parser("sync", help="select complete runtime updates only; never edit Steam metadata")
     command.add_argument("--dry-run", action="store_true")
     command.add_argument("--log", action="store_true")
@@ -33,6 +36,8 @@ def main():
             lines = steamplay.Installation().uninstall() + migration.migrate()
         elif args.command == "migrate":
             lines = migration.migrate()
+        elif args.command == "cloud":
+            lines = cloud.prepare(args.appid)
         elif args.command == "sync":
             lines = runtime.activate_pending(dry_run=args.dry_run)
         elif args.command == "console":
@@ -51,7 +56,7 @@ def main():
             for line in lines:
                 print(line)
         return 0
-    except (steamplay.SteamPlayError, migration.MigrationError, runtime.RuntimeSelectionError,
+    except (steamplay.SteamPlayError, cloud.CloudError, migration.MigrationError, runtime.RuntimeSelectionError,
             steam.SteamError, cef.BridgeError, OSError, ValueError) as error:
         print("gluon: " + str(error), file=sys.stderr)
         return 1

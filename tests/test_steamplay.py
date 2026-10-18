@@ -226,3 +226,26 @@ class SteamPlayTests(unittest.TestCase):
         with patch.object(migration, 'migrate', return_value=[]):
             self.install()
         self.assertEqual(path.read_bytes(), b'opaque native metadata')
+
+    def test_native_cloud_tool_is_checked_for_foreign_contents(self):
+        tool = self.root / 'compatibilitytools.d/gluon-proton'
+        tool.mkdir(parents=True)
+        (tool / 'run').write_text('foreign Cloud tool')
+        with self.assertRaisesRegex(steamplay.SteamPlayError, 'foreign compatibility tool'):
+            self.install()
+        self.assertEqual((tool / 'run').read_text(), 'foreign Cloud tool')
+
+    def test_uninstall_removes_both_owned_tools_and_keeps_prefix_views(self):
+        self.install()
+        for name in ('gluon', 'gluon-proton'):
+            tool = self.root / 'compatibilitytools.d' / name
+            tool.mkdir(parents=True)
+            (tool / 'run').write_text('#!/bin/sh\n# gluon Steam Play compatibility tool shim\n')
+            (tool / 'flavor').write_text('rosetta')
+        compat = self.root / 'steamapps/compatdata/123'
+        (compat / 'pfx-wine').mkdir(parents=True)
+        (compat / 'pfx').symlink_to('pfx-wine')
+        self.installation.uninstall()
+        self.assertFalse((self.root / 'compatibilitytools.d/gluon').exists())
+        self.assertFalse((self.root / 'compatibilitytools.d/gluon-proton').exists())
+        self.assertEqual((compat / 'pfx').resolve(), compat / 'pfx-wine')
