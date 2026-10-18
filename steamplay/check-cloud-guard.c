@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 int main(void) {
+    int cloud_tool, recovery_tool;
     const char *root = getenv("GLUON_STEAM_ROOT");
     const char *home = getenv("GLUON_HOME");
     assert(root && home);
@@ -17,6 +18,7 @@ int main(void) {
     snprintf(index, sizeof(index), "%s/steamplay/cloud-index.json", home);
     assert(gluon_cloud_ready(0));
     assert(gluon_cloud_ready(123));
+    assert(gluon_cloud_select(123, &cloud_tool, &recovery_tool) == &cloud_tool);
     struct stat st, before, after;
     assert(lstat(view, &st) == 0 && S_ISLNK(st.st_mode));
     assert(stat(marker, &st) == 0 && S_ISREG(st.st_mode));
@@ -28,6 +30,7 @@ int main(void) {
     // A foreign Proton prefix must be refused before its paths can be returned.
     assert(unlink(view) == 0 && mkdir(view, 0700) == 0);
     assert(!gluon_cloud_ready(123));
+    assert(gluon_cloud_select(123, &cloud_tool, &recovery_tool) == &recovery_tool);
     assert(lstat(view, &st) == 0 && S_ISDIR(st.st_mode));
     // An uninstalled app keeps Install available. A newly created manifest
     // invalidates that result and prepares its Cloud view automatically.

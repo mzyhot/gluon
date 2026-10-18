@@ -24,7 +24,8 @@ class NativeCloudTests(unittest.TestCase):
         self.compat = self.library / 'steamapps/compatdata/123'
         self.prefix = self.compat / 'pfx-wine'
         for target, name, value in ((steam, 'GLUON_HOME', str(self.home)),
-                                    (steam, 'STEAM_ROOT', str(self.library))):
+                                    (steam, 'STEAM_ROOT', str(self.library)),
+                                    (steam, 'APPINFO', str(self.library / 'appcache/appinfo.vdf'))):
             context = patch.object(target, name, value)
             context.start(); self.addCleanup(context.stop)
         context = patch.object(steam, 'library_dirs', return_value=[str(self.library)])
@@ -36,6 +37,135 @@ class NativeCloudTests(unittest.TestCase):
 
     def prepare(self):
         return cloud.prepare('123')
+
+    def rules(self, content):
+        from test_migration import cache_bytes
+        cache = Path(steam.APPINFO)
+        cache.parent.mkdir(exist_ok=True)
+        cache.write_bytes(cache_bytes({'ufs': content}))
+
+    def legacy(self):
+        old = self.compat / 'pfx'
+        (old / 'drive_c/users/steamuser').mkdir(parents=True)
+        (old / 'system.reg').write_text('old Proton registry')
+        (old / 'creation_sync_guard').touch()
+        (old / 'drive_c/users/steamuser/old-save.dat').write_bytes(b'older independent save')
+        profile = self.prefix / 'drive_c/users/crossover'
+        profile.mkdir(parents=True)
+        (profile / 'save.dat').write_bytes(b'active Wine save')
+        (self.prefix / 'system.reg').write_text('active Wine registry')
+        (self.compat / '.gluon-steam-bridge').touch()
+        (self.compat / 'version').write_text('11.0-100\n')
+        (self.compat / 'tracked_files').write_text('drive_c/users/steamuser/\n')
+        current = self.home / 'runtime/current'
+        (current / 'bin').mkdir(parents=True)
+        (current / 'bin/wine').write_text('fixture Wine')
+        (self.compat / 'config_info').write_text('\n'.join((
+            '11.0-100', str(current / 'files/share/fonts') + '/',
+            str(current / 'files/lib') + '/', 'fixture Steam client',
+            '0', '0', '0', str(current / 'files/share/default_pfx') + '/', '')))
+        return old, profile
+
+    def test_api_cloud_does_not_touch_separate_prefixes(self):
+        self.legacy()
+        self.rules({'quota': 5000000, 'maxnumfiles': 1})
+        before = steamplay._tree(self.compat)
+        self.prepare()
+        self.assertEqual(cloud.check_app('123', self.compat), 'native')
+        self.assertEqual(steamplay._tree(self.compat), before)
+        self.assertTrue(cloud.index()['apps']['123']['ready'])
+
+    def test_game_install_cloud_does_not_require_prefix_aliases(self):
+        self.legacy()
+        self.rules({'savefiles': {'0': {'root': 'gameinstall', 'path': 'Contraptions', 'pattern': '*'}}})
+        before = steamplay._tree(self.compat)
+        self.prepare()
+        self.assertFalse(cloud.needs_prefix('123'))
+        self.assertEqual(steamplay._tree(self.compat), before)
+
+    def test_windows_override_still_requires_preparation(self):
+        self.rules({'savefiles': {'0': {'root': 'gameinstall', 'path': 'Save'}},
+                    'rootoverrides': {'0': {'root': 'gameinstall', 'useinstead': 'WinAppDataRoaming'}}})
+        self.assertTrue(cloud.needs_prefix('123'))
+
+    def test_known_legacy_gluon_prefix_is_retired_whole_without_merging_saves(self):
+        old, profile = self.legacy()
+        old_tree = steamplay._tree(old)
+        active_inode = (profile / 'save.dat').stat().st_ino
+        retired_inode = (old / 'drive_c/users/steamuser/old-save.dat').stat().st_ino
+        self.prepare()
+        self.assertEqual(cloud.check_app('123', self.compat), 'prefix')
+        retired = list(self.compat.glob('.gluon-retired-pfx-*'))
+        self.assertEqual(len(retired), 1)
+        self.assertEqual(steamplay._tree(retired[0]), old_tree)
+        self.assertEqual((retired[0] / 'drive_c/users/steamuser/old-save.dat').stat().st_ino, retired_inode)
+        self.assertEqual((profile / 'save.dat').stat().st_ino, active_inode)
+        self.assertEqual((profile / 'save.dat').read_bytes(), b'active Wine save')
+        self.assertFalse((profile / 'old-save.dat').exists())
+        self.assertEqual((self.compat / 'pfx').resolve(), self.prefix)
+        self.prepare()
+        self.assertEqual(list(self.compat.glob('.gluon-retired-pfx-*')), retired)
+
+    def test_foreign_runtime_provenance_is_not_migrated(self):
+        old, _ = self.legacy()
+        path = self.compat / 'config_info'
+        path.write_text(path.read_text().replace(str(self.home), '/another/tool'))
+        before = steamplay._tree(self.compat)
+        with self.assertRaisesRegex(cloud.CloudError, 'separate pfx'):
+            self.prepare()
+        self.assertEqual(steamplay._tree(self.compat), before)
+
+    def test_explicit_runtime_override_requires_reconciliation(self):
+        self.legacy()
+        (self.home / 'settings.env').write_text('GLUON_RUNTIME=another-runtime\n')
+        with self.assertRaisesRegex(cloud.CloudError, 'separate pfx'):
+            self.prepare()
+        self.assertFalse((self.compat / cloud.MIGRATION).exists())
+
+    def test_failed_backup_is_detected_before_retiring_old_prefix(self):
+        import shutil
+        self.legacy()
+        copy = shutil.copytree
+        def corrupt(source, target, **kwargs):
+            result = copy(source, target, **kwargs)
+            (target / 'save.dat').write_bytes(b'incomplete backup')
+            return result
+        with patch.object(cloud.shutil, 'copytree', side_effect=corrupt):
+            with self.assertRaisesRegex(cloud.CloudError, 'backup verification'):
+                self.prepare()
+        self.assertTrue((self.compat / 'pfx').is_dir())
+        self.assertFalse((self.compat / 'pfx').is_symlink())
+        self.assertFalse((self.compat / cloud.MIGRATION).exists())
+
+    def test_interrupted_prefix_retirement_recovers_on_retry(self):
+        old, profile = self.legacy()
+        rename = os.rename
+        def interrupt(source, target):
+            rename(source, target)
+            raise KeyboardInterrupt('interrupted after rename')
+        with patch.object(cloud.os, 'rename', side_effect=interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.prepare()
+        self.assertFalse(old.exists())
+        self.assertTrue((self.compat / cloud.MIGRATION).exists())
+        self.prepare()
+        self.assertEqual(cloud.check(self.compat), profile)
+        self.assertEqual((profile / 'save.dat').read_bytes(), b'active Wine save')
+        self.assertEqual(len(list(self.compat.glob('.gluon-retired-pfx-*'))), 1)
+
+    def test_missing_readiness_record_after_alias_creation_recovers_on_retry(self):
+        self.legacy()
+        write = steamplay._write_json
+        def interrupt(path, value):
+            if path.name == cloud.MARKER:
+                raise OSError('interrupted before readiness record')
+            return write(path, value)
+        with patch.object(steamplay, '_write_json', side_effect=interrupt):
+            with self.assertRaises(OSError):
+                self.prepare()
+        self.assertTrue((self.compat / 'pfx').is_symlink())
+        self.prepare()
+        self.assertEqual(cloud.check(self.compat), self.prefix / 'drive_c/users/crossover')
 
     def test_fresh_prefix_shares_one_profile_without_metadata_edits(self):
         before = (self.library / 'steamapps/appmanifest_123.acf').read_bytes()

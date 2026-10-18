@@ -167,3 +167,11 @@ out:
     pthread_mutex_unlock(&guard_lock);
     return ready;
 }
+
+void *gluon_cloud_select(uint32_t appid, void *cloud_tool, void *recovery_tool) {
+    // Tool availability and permission to expose Windows save roots are separate.
+    // The recovery tool has no "proton" identifier: Steam cannot synchronize an
+    // unsafe prefix through it, and Play can present an actionable error instead
+    // of leaving the game disabled with no explanation.
+    return gluon_cloud_ready(appid) ? cloud_tool : recovery_tool;
+}

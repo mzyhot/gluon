@@ -1,0 +1,94 @@
+Keep Steam Play available when Cloud preparation needs attention.
+
+The non-proton recovery transport exposes no Windows Cloud roots and only
+reports an actionable launch error. It is not an opt-in Cloud mode. Public
+selection remains Gluon; old mappings are normalized for display only.
+
+--- a/dylib/feats/compat.h
++++ b/dylib/feats/compat.h
+@@ -124,6 +124,9 @@
+ // Manager-owned. Callers read fields without taking ownership.
+ void *np_compat_registered_tool(void *compat_mgr);
+ 
++// Internal non-Cloud transport for reporting a failed preflight from Play.
++void *np_compat_recovery_tool(void *compat_mgr);
++
+ // Name of the first tool in the app's list, which unmapped Windows games run under.
+ const char *np_compat_fallback_tool_name(void);
+ 
+--- a/dylib/feats/compat.c
++++ b/dylib/feats/compat.c
+@@ -943,3 +943,7 @@
+     }
+     return NULL;
+ }
++
++void *np_compat_recovery_tool(void *compat_mgr) {
++    return compat_mgr ? find_tool(compat_mgr, "gluon") : NULL;
++}
+--- a/dylib/hooks/hook_compat.c
++++ b/dylib/hooks/hook_compat.c
+@@ -80,7 +80,8 @@
+         tool = np_compat_registered_tool(self);
+     if (tool) {
+         name = *(const char *const *)((const uint8_t *)tool + COMPAT_TOOL_NAME_OFF);
+-        if (name && !strncmp(name, "gluon", 5) && !gluon_cloud_ready(appid)) return NULL;
++        if (name && !strncmp(name, "gluon", 5))
++            return gluon_cloud_select(appid, np_compat_registered_tool(self), np_compat_recovery_tool(self));
+         return tool;
+     }
+ 
+@@ -93,7 +94,8 @@
+         return NULL;
+ 
+     void *crossover = np_compat_registered_tool(self);
+-    if (crossover && !gluon_cloud_ready(appid)) return NULL;
++    if (crossover)
++        crossover = gluon_cloud_select(appid, crossover, np_compat_recovery_tool(self));
+     if (crossover)
+         NP_DBG("hook_FindToolForTargetApp: appID %u is windows-only, defaulting to Gluon tool",
+                appid);
+--- a/dylib/feats/compatsvc.c
++++ b/dylib/feats/compatsvc.c
+@@ -138,6 +138,10 @@
+     return *(const char *const *)((const uint8_t *)tool + COMPAT_TOOL_NAME_OFF);
+ }
+ 
++static const char *gluon_public_name(const char *name) {
++    return name && !strcmp(name, "gluon") ? "gluon-proton" : name;
++}
++
+ static int get_compat_tools(uintptr_t request, uintptr_t response) {
+     uint32_t has_bits = *(const uint32_t *)(request + REQ_HAS_BITS_OFF);
+     uint32_t appid    = (has_bits & REQ_HAS_APPID)
+@@ -175,10 +179,11 @@
+     uint32_t platforms = appid ? np_compat_valid_platforms(mgr, appid)
+                                : PLATFORMS_UNSCOPED;
+     // The resolved tool and the raw mapping.
+-    const char *active = tool_name(np_compat_tool_for_app(mgr, appid));
++    const char *active = gluon_public_name(tool_name(np_compat_tool_for_app(mgr, appid)));
+     // Raw mapping, including names that resolve to no installed tool.
+     const char *chosen = appid ? np_compat_app_mapping(mgr, appid)
+                                : tool_name(np_compat_chosen_tool(mgr, 0));
++    chosen = gluon_public_name(chosen);
+     const bool  holds_none = chosen && strcmp(chosen, NP_COMPAT_TOOL_NONE) == 0;
+     // The fallback tool for when no choice is made. The wildcard covers apps the
+     // client will not run natively (Windows stuff). Left unset where nothing carries the app,
+@@ -187,6 +192,8 @@
+     if (!fallback && (appid == 0 || np_compat_would_force(mgr, appid)))
+         fallback = tool_name(np_compat_registered_tool(mgr));
+ 
++    fallback = gluon_public_name(fallback);
++
+     int32_t best = 0;
+     for (uint32_t i = 0; i < count; i++) {
+         int32_t prio = *(const int32_t *)(array + (size_t)i * np_compat_tool_stride()
+@@ -210,7 +217,7 @@
+         if (!offered(tool, platforms, bypass)) continue;
+ 
+         const char *name = tool_name(tool);
+-        if (!name) continue;
++        if (!name || !strcmp(name, "gluon")) continue; // Internal recovery transport, not a second setting.
+ 
+         int32_t prio = *(const int32_t *)(tool + COMPAT_TOOL_PRIORITY_OFF);
+         pb_tool(&w, RESP_TOOLS, name,

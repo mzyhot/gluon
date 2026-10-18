@@ -12,8 +12,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
+import uuid
 
 from . import appinfo, steam, steamplay
 
@@ -26,6 +28,9 @@ SHARED_FOLDERS = ('drive_c/ProgramData', 'drive_c/users/Public/Documents')
 HOST_FOLDERS = {'Documents': 'Documents', 'Desktop': 'Desktop', 'Downloads': 'Downloads',
                 'Music': 'Music', 'Pictures': 'Pictures', 'Videos': 'Movies'}
 INDEX = 'cloud-index.json'
+MIGRATION = '.gluon-cloud-migration.json'
+_metadata_cache = None
+_metadata_stamp = None
 
 
 class CloudError(RuntimeError):
@@ -36,6 +41,113 @@ class WineBusy(CloudError):
     pass
 
 
+def _rules(appid):
+    """Read appinfo once per helper, without ever writing Steam metadata."""
+    global _metadata_cache, _metadata_stamp
+    path = Path(steam.APPINFO)
+    stamp = (str(path), _stamp(path))
+    if stamp != _metadata_stamp:
+        try:
+            _metadata_cache = appinfo.AppInfoFile(str(path))
+        except FileNotFoundError:
+            _metadata_cache = None
+        except (ValueError, struct.error) as error:
+            raise CloudError('Steam Cloud metadata is incomplete; let Steam finish updating and retry') from error
+        _metadata_stamp = stamp
+    entry = _metadata_cache.get(int(appid)) if _metadata_cache else None
+    return entry.kv['appinfo'].get('ufs', {}) if entry else None
+
+
+def needs_prefix(appid):
+    rules = _rules(appid)
+    # Unknown metadata stays conservative. A fresh Wine view is safe, but an
+    # existing conflict must not be guessed away just because appinfo is missing.
+    if rules is None:
+        return True
+    saves = rules.get('savefiles', {})
+    overrides = rules.get('rootoverrides', {})
+    if not isinstance(saves, dict) or not isinstance(overrides, dict):
+        raise CloudError('Invalid Steam Cloud path rules')
+    if not saves:
+        return False  # RemoteStorage API games do not use AutoCloud prefix paths.
+    roots = [str(rule.get('root', '')).lower() for rule in saves.values() if isinstance(rule, dict)]
+    roots += [str(rule.get('useinstead', '')).lower() for rule in overrides.values() if isinstance(rule, dict)]
+    return any(root not in ('gameinstall', 'machome', 'macappsupport', 'macdocuments',
+                           'linuxhome', 'linuxxdgdatahome', 'linuxxdgconfighome') for root in roots)
+
+
+def check_app(appid, compat=None):
+    if not needs_prefix(appid):
+        return 'native'
+    expected = _candidates(str(appid))
+    if compat is not None and Path(compat).resolve() != expected.resolve():
+        raise CloudError('Launcher and Steam selected different compatibility directories')
+    check(expected)
+    return 'prefix'
+
+
+def _legacy_prefix(compat):
+    """Recognize only the dual-runtime layout produced by earlier Gluon.
+
+    Its active Wine profile stays authoritative. Retire the old Gluon Proton
+    prefix whole, retaining every file; never merge two registries or save sets.
+    """
+    old, active = compat / 'pfx', compat / 'pfx-wine'
+    if not old.is_dir() or old.is_symlink() or not active.is_dir() or active.is_symlink():
+        return None
+    home = Path(steam.GLUON_HOME)
+    required = (compat / '.gluon-steam-bridge', compat / 'version', compat / 'config_info',
+                compat / 'tracked_files', old / 'creation_sync_guard',
+                old / 'system.reg', active / 'system.reg')
+    if any(p.is_symlink() or not p.is_file() for p in required):
+        return None
+    if (compat / '.gluon-steam-bridge').stat().st_size != 0:
+        return None
+    current = home / 'runtime/current'
+    if not (current / 'bin/wine').is_file() or (current / 'proton').exists():
+        return None
+    for settings in (home / 'settings.env', home / 'games' / (compat.name + '.env')):
+        if settings.is_file() and any(line.startswith('GLUON_RUNTIME=') or line.startswith('GLUON_WINE_ROOT=')
+                                      for line in settings.read_text().splitlines()):
+            return None
+    lines = (compat / 'config_info').read_text().splitlines()
+    if (len(lines) < 8 or lines[0] != (compat / 'version').read_text().strip()
+            or lines[1] != str(current / 'files/share/fonts') + '/'
+            or lines[2] != str(current / 'files/lib') + '/'
+            or lines[7] != str(current / 'files/share/default_pfx') + '/'):
+        return None
+    users = old / 'drive_c/users'
+    if users.is_symlink() or not users.is_dir():
+        return None
+    real = [p.name for p in users.iterdir() if p.is_dir() and not p.is_symlink() and p.name != 'Public']
+    return old if real == ['steamuser'] else None
+
+
+def _recover_migration(compat):
+    journal = compat / MIGRATION
+    if not journal.exists():
+        return
+    record = steamplay._json(journal)
+    name = record.get('retired', '')
+    if (record.get('schema') != 1 or not isinstance(name, str)
+            or not name.startswith('.gluon-retired-pfx-') or '/' in name or '\\' in name):
+        raise CloudError('Invalid Cloud migration journal; prefixes were left unchanged')
+    retired, view = compat / name, compat / 'pfx'
+    if (compat / MARKER).exists():
+        check(compat)
+        return
+    if not retired.exists():
+        return
+    if retired.is_symlink() or not retired.is_dir():
+        raise CloudError('Retired prefix changed; recovery stopped')
+    if view.is_symlink() and os.readlink(view) == 'pfx-wine':
+        view.unlink()
+    if os.path.lexists(view):
+        raise CloudError('Interrupted Cloud migration has two prefixes; recovery copies retained')
+    os.rename(retired, view)
+    journal.unlink()
+
+
 def _inside(path, root):
     try:
         path.resolve().relative_to(root.resolve())
@@ -44,12 +156,12 @@ def _inside(path, root):
         return False
 
 
-def _layout(compat):
+def _layout(compat, legacy=None):
     prefix = compat / 'pfx-wine'
     if prefix.is_symlink() or (prefix.exists() and not prefix.is_dir()):
         raise CloudError('Cloud preparation requires an ordinary pfx-wine directory')
     view = compat / 'pfx'
-    if os.path.lexists(view) and not (view.is_symlink() and os.readlink(view) == 'pfx-wine'):
+    if os.path.lexists(view) and view != legacy and not (view.is_symlink() and os.readlink(view) == 'pfx-wine'):
         raise CloudError('A separate pfx already exists; it and all saves were left unchanged')
     users = prefix / 'drive_c/users'
     for path in (prefix / 'drive_c', users):
@@ -147,10 +259,9 @@ def _document_backups(appid, profile):
     documents = profile / 'Documents'
     if not documents.is_symlink():
         return []
-    entry = appinfo.AppInfoFile(steam.APPINFO).get(int(appid))
-    if entry is None:
+    ufs = _rules(appid)
+    if ufs is None:
         raise CloudError('Cannot protect shared Documents without this game\'s Cloud metadata')
-    ufs = entry.kv['appinfo'].get('ufs', {})
     overrides = list(ufs.get('rootoverrides', {}).values())
     paths = set()
     for rule in ufs.get('savefiles', {}).values():
@@ -192,21 +303,55 @@ def _wine_idle():
         raise WineBusy('Wine is active; prefix preparation will retry after it exits')
 
 
+def _error_path(appid):
+    if not str(appid).isdigit() or int(appid) <= 0:
+        raise CloudError('Expected a positive Steam app ID')
+    return Path(steam.GLUON_HOME) / 'steamplay/cloud-errors' / (str(appid) + '.json')
+
+
+def status(appid):
+    try:
+        mode = check_app(appid)
+        return ['Steam Cloud is ready for %s (%s paths)' % (appid, mode)]
+    except (CloudError, OSError, ValueError) as error:
+        saved = _error_path(appid)
+        reason = steamplay._json(saved).get('reason', str(error)) if saved.exists() else str(error)
+        return ['Steam Cloud needs attention for %s: %s' % (appid, reason),
+                'Existing prefixes and saves are retained. Details: ' + str(Path(steam.GLUON_HOME) / 'steamplay/cloud.log')]
+
+
+def _show_error(message):
+    if sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') == 'true':
+        return
+    script = 'on run argv\ndisplay alert "Gluon: Steam Cloud needs attention" message (item 1 of argv) as critical\nend run'
+    try:
+        subprocess.run(['/usr/bin/osascript', '-e', script, message[:3000]],
+                       capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        pass  # The same error is always written to stderr and the per-app record.
+
+
 def prepare(appid, *, automatic=False):
     appid = str(appid)
     if not appid.isdigit() or int(appid) <= 0:
         raise CloudError('Expected a positive Steam app ID')
     installation = steamplay.Installation()
     with installation.lock('cloud-' + appid + '.lock'):
+        if not needs_prefix(appid):
+            return ['Steam Cloud uses native/API paths for ' + appid + '; existing prefixes are unchanged']
         compat = _candidates(appid)
-        prefix, users, profile = _layout(compat)
+        idle = _wine_idle if automatic else installation.idle
+        if (compat / MIGRATION).exists() and not (compat / MARKER).exists():
+            idle()
+            _recover_migration(compat)
+        legacy = _legacy_prefix(compat)
+        prefix, users, profile = _layout(compat, legacy)
         marker = compat / MARKER
         if marker.is_symlink():
             raise CloudError('Cloud readiness record must be an ordinary file')
         if marker.exists():
             check(compat)
             return ['Native Cloud is already prepared for ' + appid]
-        idle = _wine_idle if automatic else installation.idle
         idle()
         sources = []
         if profile.exists():
@@ -227,12 +372,22 @@ def prepare(appid, *, automatic=False):
             raise CloudError('Not enough free space for the save backup; no layout changed')
         backup = installation.home / 'backups/cloud' / (appid + '-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
         backup.mkdir(parents=True)
+        snapshots = {}
         for name, source in sources:
+            snapshots[name] = steamplay._tree(source)
             shutil.copytree(source, backup / name, symlinks=True)
+            if steamplay._tree(backup / name) != snapshots[name] or steamplay._tree(source) != snapshots[name]:
+                raise CloudError('Save backup verification failed; no layout changed')
         # Revalidate immediately before changing only this game's prefix aliases.
         idle()
-        if _layout(compat) != (prefix, users, profile):
+        if (_layout(compat, legacy) != (prefix, users, profile)
+                or legacy != _legacy_prefix(compat)
+                or any(steamplay._tree(source) != snapshots[name] for name, source in sources)):
             raise CloudError('Cloud profile changed during preparation; backup retained')
+        if legacy:
+            retired = '.gluon-retired-pfx-' + uuid.uuid4().hex
+            steamplay._write_json(compat / MIGRATION, {'schema': 1, 'retired': retired, 'backup': str(backup)})
+            os.rename(legacy, compat / retired)
         for name in FOLDERS:
             (profile / name).mkdir(parents=True, exist_ok=True)
         for name in SHARED_FOLDERS:
@@ -272,7 +427,8 @@ def index():
     home = Path(steam.GLUON_HOME)
     libraries = list(dict.fromkeys(Path(p).resolve() for p in steam.library_dirs()))
     watch = [Path(steam.STEAM_ROOT) / 'steamapps/libraryfolders.vdf',
-             home / 'compatdata']
+             Path(steam.APPINFO), home / 'compatdata', home / 'runtime/current',
+             home / 'settings.env', home / 'games']
     apps = {}
     for library in libraries:
         base = library / 'steamapps'
@@ -283,15 +439,17 @@ def index():
                 continue
             compat = base / 'compatdata' / appid
             watched = [manifest, compat, compat / 'pfx', compat / 'pfx-wine', compat / MARKER,
-                       compat / 'pfx-wine/drive_c/users']
+                       compat / 'pfx-wine/drive_c/users', compat / MIGRATION,
+                       home / 'games' / (appid + '.env')]
             watched += [compat / 'pfx-wine' / name for name in SHARED_FOLDERS]
             watched += [p / 'steamapps/compatdata' / appid for p in libraries]
             watched += [home / 'compatdata' / appid]
             try:
-                if _candidates(appid) != compat:
+                if needs_prefix(appid) and _candidates(appid) != compat:
                     raise CloudError('Conflicting library')
-                profile = check(compat)
-                watched += [profile / p for p in (*FOLDERS, *ALIASES)]
+                if needs_prefix(appid):
+                    profile = check(compat)
+                    watched += [profile / p for p in (*FOLDERS, *ALIASES)]
                 ready = True
             except (CloudError, OSError, ValueError):
                 ready = False
@@ -307,8 +465,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--check', help='verify a prepared compatibility directory')
+    group.add_argument('--check-app', metavar='APPID', help='verify only the Cloud paths this game actually uses')
+    group.add_argument('--explain', metavar='APPID', help='report a refused preparation without starting the game')
     group.add_argument('--automatic', metavar='APPID', help='prepare before native path resolution')
     group.add_argument('--index', action='store_true', help='refresh the native guard catalogue')
+    parser.add_argument('--compat', help='launcher-selected compatibility directory')
+    parser.add_argument('--show-error', action='store_true', help='show an actionable error when Play requested a failed preparation')
     args = parser.parse_args()
     try:
         if args.index:
@@ -318,14 +480,30 @@ def main():
                 prepare(args.automatic, automatic=True)
             finally:
                 index()
+        elif args.check_app:
+            print(check_app(args.check_app, args.compat))
+        elif args.explain:
+            raise CloudError('\n'.join(status(args.explain)) + '\nRetry Play after preparation succeeds. No game was started with unsynchronized saves.')
         else:
             check(args.check)
         return 0
     except WineBusy as error:
-        print('gluon: ' + str(error), file=sys.stderr)
+        appid = args.automatic or args.check_app or args.explain
+        if appid:
+            steamplay._write_json(_error_path(appid), {'schema': 1, 'reason': str(error)})
+        print('gluon: Cloud for %s: %s' % (appid, error), file=sys.stderr)
         return 75
     except (CloudError, OSError, ValueError) as error:
-        print('gluon: ' + str(error), file=sys.stderr)
+        appid = args.automatic or args.check_app or args.explain
+        message = 'Cloud for %s: %s' % (appid, error) if appid else str(error)
+        if appid and str(appid).isdigit() and int(appid) > 0 and not args.explain:
+            try:
+                steamplay._write_json(_error_path(appid), {'schema': 1, 'reason': str(error)})
+            except OSError:
+                pass
+        print('gluon: ' + message, file=sys.stderr)
+        if args.show_error:
+            _show_error(message + '\n\nExisting prefixes and saves were retained.\nDetails: ' + str(Path(steam.GLUON_HOME) / 'steamplay/cloud.log'))
         return 1
 
 
