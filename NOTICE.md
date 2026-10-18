@@ -1,6 +1,6 @@
 # Third-party components
 
-Gluon's own code (this repository) is released under the Unlicense (see LICENSE).
+Gluon's own code (this repository) is released under GPLv3 (see LICENSE).
 
 The installer package carries a Windows runtime that Gluon's build assembles from
 open-source code (`packaging/build-runtime.sh`). License texts and source locations are
