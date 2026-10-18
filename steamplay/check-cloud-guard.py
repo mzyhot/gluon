@@ -12,6 +12,7 @@ root = Path(__file__).resolve().parents[1]
 source = root / 'build/notproton'
 executable = root / 'build/evidence/check-cloud-guard'
 subprocess.run(['clang', '-arch', 'arm64', '-std=c17', '-Wall', '-Wextra', '-Werror',
+                '-Wno-error=deprecated-declarations',  # pinned upstream cJSON uses sprintf
                 '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                 '-I' + str(root / 'steamplay'), str(root / 'steamplay/check-cloud-guard.c'),
                 str(source / 'dylib/feats/cloud_guard.c'), str(source / 'dylib/util/file.c'),

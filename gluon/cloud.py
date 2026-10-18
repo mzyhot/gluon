@@ -23,6 +23,8 @@ FOLDERS = ('Documents', 'Desktop', 'Downloads', 'Music', 'Pictures', 'Videos',
 ALIASES = {'My Documents': 'Documents', 'Application Data': 'AppData/Roaming',
            'Local Settings/Application Data': '../AppData/Local'}
 SHARED_FOLDERS = ('drive_c/ProgramData', 'drive_c/users/Public/Documents')
+HOST_FOLDERS = {'Documents': 'Documents', 'Desktop': 'Desktop', 'Downloads': 'Downloads',
+                'Music': 'Music', 'Pictures': 'Pictures', 'Videos': 'Movies'}
 INDEX = 'cloud-index.json'
 
 
@@ -79,9 +81,10 @@ def _layout(compat):
                 break
             # Older Gluon Wine prefixes deliberately share the Mac Documents
             # directory. Keep that location; moving it would strand existing saves.
-            shared_documents = (ancestor == profile / 'Documents' and
-                                ancestor.resolve() == (Path.home() / 'Documents').resolve())
-            if ancestor.is_symlink() and not shared_documents:
+            host_name = HOST_FOLDERS.get(name)
+            known_host_folder = (host_name and ancestor == profile / name and
+                                 ancestor.resolve() == (Path.home() / host_name).resolve())
+            if ancestor.is_symlink() and not known_host_folder:
                 raise CloudError('Cloud folder is a link; its files were left unchanged: ' + str(ancestor))
             if ancestor.exists() and not ancestor.is_dir():
                 raise CloudError('Cloud folder is not a directory: ' + str(ancestor))

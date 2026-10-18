@@ -163,7 +163,7 @@ def main():
                                         reason="Native Metal device prerequisite did not pass."))
                 results.append(dict(name=f"d3d9-render-{arch}", status="skipped",
                                     reason="Native Metal device prerequisite did not pass."))
-    except (ProbeFailed, OSError) as error:
+    except (ProbeFailed, OSError, subprocess.SubprocessError) as error:
         print(f"Stopped runtime checks: {error}", flush=True)
         exit_code = 1
     finally:
