@@ -216,6 +216,17 @@ class NativeCloudTests(unittest.TestCase):
         self.assertEqual((legacy / 'save').read_bytes(), b'legacy')
         self.assertFalse(self.prefix.exists())
 
+    def test_compatibility_directory_cannot_alias_another_games_saves(self):
+        other = self.root / 'other-game'
+        other.mkdir()
+        (other / 'save').write_bytes(b'another game')
+        self.compat.parent.mkdir(parents=True)
+        self.compat.symlink_to(other)
+        with self.assertRaisesRegex(cloud.CloudError, 'ambiguous'):
+            self.prepare()
+        self.assertEqual((other / 'save').read_bytes(), b'another game')
+        self.assertEqual(list(other.iterdir()), [other / 'save'])
+
     def test_shared_mac_documents_location_and_affected_saves_are_preserved(self):
         from test_migration import cache_bytes
         mac_home = self.root / 'MacHome'

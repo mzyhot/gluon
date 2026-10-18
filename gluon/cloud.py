@@ -99,6 +99,8 @@ def _layout(compat):
 
 
 def check(compat):
+    if Path(compat).is_symlink():
+        raise CloudError('Compatibility directory links are ambiguous; saves were left unchanged')
     compat = Path(compat).resolve()
     marker = compat / MARKER
     if marker.is_symlink() or not marker.is_file():
@@ -126,6 +128,8 @@ def _candidates(appid):
     if len(installed) != 1:
         raise CloudError('Expected one installed game/library; conflicting or disconnected libraries were left unchanged')
     compat = installed[0] / 'steamapps/compatdata' / appid
+    if compat.is_symlink():
+        raise CloudError('Compatibility directory links are ambiguous; saves were left unchanged')
     # Steam's native Cloud root is library-relative. Do not let the launcher
     # silently select a different old prefix after Steam has synchronized it.
     for old in [p / 'steamapps/compatdata' / appid for p in libraries] + [Path(steam.GLUON_HOME) / 'compatdata' / appid]:
@@ -158,6 +162,8 @@ def _document_backups(appid, profile):
         for extra, target in targets:
             if target != 'winmydocuments':
                 continue
+            if rule.get('pathtransforms') or any(o.get('pathtransforms') for o in overrides):
+                raise CloudError('Transformed Cloud paths in shared Documents need reconciliation; saves were left unchanged')
             fragments = (extra + '/' + str(rule.get('path', ''))).replace('\\', '/').split('/')
             below = []
             for fragment in fragments:

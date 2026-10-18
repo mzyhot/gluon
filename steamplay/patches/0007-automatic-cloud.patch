@@ -64,3 +64,16 @@ tool without changing the user's recorded mapping or any appinfo data.
  #define TOOL_DIR_NAME "gluon"
  #define TOOL_RUN      "/run"
  
+
+--- a/dylib/feats/compat.c
++++ b/dylib/feats/compat.c
+@@ -727,6 +727,9 @@
+ void *np_compat_chosen_tool(void *compat_mgr, uint32_t appid) {
+     if (!g_chosen_tool || !compat_mgr)
+         return NULL;
++    const char *mapping = np_compat_app_mapping(compat_mgr, appid);
++    if (mapping && !strcmp(mapping, "gluon"))
++        return np_compat_registered_tool(compat_mgr);
+     return g_chosen_tool(compat_mgr, appid);
+ }
+ 

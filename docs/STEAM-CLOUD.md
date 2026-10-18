@@ -47,7 +47,7 @@ folders, while a recognized pre-existing Mac Documents link retains its target.
 The first preparation backs up the profile, per-game Steam userdata and affected
 shared Documents subtrees. Cloud metadata is read solely to select conservative
 backup subtrees; it is never edited, and Gluon does not implement a second sync
-engine. An unrestricted shared Documents root is refused rather than backing up
+engine. Transformed or unrestricted shared Documents roots are refused rather than backing up
 unrelated personal documents or proceeding without protection.
 
 Separate Proton prefixes, multiple real profiles, ambiguous legacy locations,
