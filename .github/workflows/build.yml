@@ -85,6 +85,26 @@ jobs:
               -o "build/graphics-probes/dependencies-$arch.exe"
           done
 
+      - name: Preserve completed runtime and compiled probes
+        run: |
+          shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
+            packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
+            tools/d3d9_probe.c > build/probe-sources.sha256
+          COPYFILE_DISABLE=1 tar -czf build/completed-runtime-input.tar.gz \
+            build/gluon-wine build/graphics-probes build/probe-sources.sha256
+          (cd build && shasum -a 256 completed-runtime-input.tar.gz > completed-runtime-input.tar.gz.sha256)
+
+      - name: Upload completed runtime for bounded rechecks
+        uses: actions/upload-artifact@v4
+        with:
+          name: completed-runtime-input
+          path: |
+            build/completed-runtime-input.tar.gz
+            build/completed-runtime-input.tar.gz.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Check complete runtime on GitHub macOS
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes

@@ -128,6 +128,10 @@ int main(int argc, char **argv)
     VkResult result;
     uint32_t count = 0, api = VK_API_VERSION_1_0;
     int device_check = 0, api_1_0 = 0, status = 1;
+    /* Keep the last completed stage visible if a driver call blocks. */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    puts("Loading Vulkan library");
 #ifdef WINE_UNIX_LIB
     if (argc < 2 || argc > 3 || (argc == 3 && strcmp(argv[2], "--device") && strcmp(argv[2], "--device-1.0"))) return 2;
     void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
@@ -144,9 +148,11 @@ int main(int argc, char **argv)
     api_1_0 = argc == 2 && !strcmp(argv[1], "--device-1.0");
 #endif
     if (!get) { fputs("Missing vkGetInstanceProcAddr\n", stderr); goto done; }
+    puts("Resolving Vulkan global functions");
     enumerate = (PFN_vkEnumerateInstanceExtensionProperties)get(NULL, "vkEnumerateInstanceExtensionProperties");
     version = (PFN_vkEnumerateInstanceVersion)get(NULL, "vkEnumerateInstanceVersion");
     if (!enumerate) { fputs("Missing vkEnumerateInstanceExtensionProperties\n", stderr); goto done; }
+    puts("Querying Vulkan instance version and extensions");
     if (version && (result = version(&api)) != VK_SUCCESS) goto done;
     if ((result = enumerate(NULL, &count, NULL)) != VK_SUCCESS || !count) goto done;
     if (!(extensions = calloc(count, sizeof(*extensions)))) goto done;
