@@ -3,7 +3,7 @@ on:
   push:
     branches: ["codex/notproton-steamplay", "codex/steamplay-runtime-polish"]
   pull_request:
-    paths: ["steamplay/**", "gluon/**", "tool/**", "packaging/**", "tests/**", ".github/workflows/steamplay.yml"]
+    paths: ["steamplay/**", "gluon/**", "tool/**", "tools/**", "packaging/**", "tests/**", ".github/workflows/steamplay.yml"]
   workflow_dispatch:
 permissions:
   contents: read

@@ -34,7 +34,7 @@ def main():
     env = os.environ.copy()
     for key in ("DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
         env.pop(key, None)
-    env.update(WINEPREFIX=str(prefix), WINEDEBUG="fixme-all",
+    env.update(WINEPREFIX=str(prefix), WINEDEBUG="fixme-all", WINEMSYNC="1",
                WINEDLLOVERRIDES="mscoree,mshtml,winemenubuilder.exe=d",
                DXVK_LOG_PATH=str(probes), DXVK_STATE_CACHE_PATH=str(probes))
     env.update(GST_PLUGIN_SYSTEM_PATH_1_0=str(runtime / "lib/gstreamer-1.0"),
