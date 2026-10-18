@@ -61,7 +61,7 @@ lipo "$payload/gluon-steamplay.dylib" -verify_arch arm64 x86_64
 codesign --verify --strict "$payload/gluon-steamplay.dylib"
 codesign --verify --strict "$payload/appinfo"
 otool -L "$payload/gluon-steamplay.dylib" > "$payload/dependencies.txt"
-if grep -E '/(opt|Users|private)/|CrossOver' "$payload/dependencies.txt"; then
+if grep -E '^[[:space:]]+/(opt|Users|private)/|CrossOver' "$payload/dependencies.txt"; then
     echo 'Non-system Steam Play dependency' >&2; exit 1
 fi
 # Corresponding source, including Dobby's pinned submodules and original notices.

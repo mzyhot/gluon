@@ -184,9 +184,9 @@ class Installation:
         self.system = system or System()
 
     @contextmanager
-    def lock(self):
+    def lock(self, name="steamplay.lock"):
         self.state.parent.mkdir(parents=True, exist_ok=True)
-        path = self.state.parent / "steamplay.lock"
+        path = self.state.parent / name
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             try:

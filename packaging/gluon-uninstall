@@ -14,5 +14,6 @@ rm -f "$plist"
 PYTHONPATH="$gluon/lib" /usr/bin/arch -arm64 /usr/bin/python3 -m gluon uninstall
 rm -rf "$gluon/bin" "$gluon/lib" "$gluon/runtime" "$gluon/steamplay/payloads" "$gluon/steamplay/legacycompat"
 rm -f "$gluon/steamplay/pending.json"
-pkgutil --forget com.gluon.pkg --volume "$HOME" >/dev/null 2>&1 || true
+# The system package staging area is root-owned and may be shared by accounts.
+# Its installer receipt is retained; this command removes this account's deployment.
 echo "Gluon removed. Left in place: $gluon (logs, backups, state)"

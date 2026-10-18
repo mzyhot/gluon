@@ -1,6 +1,7 @@
 # Native Steam Play integration
 
-The package installs the existing Gluon Wine runtime, Python management commands,
+The system-domain package requests administrator authorization to stage the
+existing Gluon Wine runtime, Python management commands,
 and an immutable, versioned Steam Play payload. The installer configures the
 selected Steam bundle's `LSEnvironment` to load `gluon-steamplay.dylib`, following
 NotProton's implementation. The dylib hooks Steam's compatibility manager,
@@ -9,6 +10,17 @@ Steam launches `run`, `runinprefix` or `waitforexitandrun`; helpers use the same
 per-game prefix, and only game sessions use the Steam bridge and native overlay.
 
 ## Installation and recovery
+
+Apple's home-directory installation domain cannot write outside the home folder.
+The package therefore stages root-owned files in `/Library/Application Support/Gluon`
+and invokes setup as the logged-in console account, dropping privileges before
+reading or changing user data. Setup copies verified immutable runtime/payload
+versions into that account's Gluon folder. It invokes Steam integration with
+ordinary account permissions; administrator authorization does not bypass Steam
+bundle ownership checks. Both staging and the per-user runtime copies are retained,
+so this currently requires space for both copies. System staging and its receipt
+remain after per-user uninstall and support subsequent account deployments.
+
 
 `gluonctl install [--steam-app PATH]` discovers a single Steam app through standard
 locations and Spotlight. Multiple copies require an explicit choice. The account

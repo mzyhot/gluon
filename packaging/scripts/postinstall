@@ -1,45 +1,14 @@
 #!/bin/sh
-# Per-user package: install native Steam Play and retain idle runtime maintenance.
+# A system-domain package is required to integrate Steam apps outside HOME.
+# Drop privileges before reading/writing any user data or invoking Gluon.
 set -eu
-home="$HOME"
-gluon="$home/Library/Application Support/Gluon"
-plist="$home/Library/LaunchAgents/com.gluon.agent.plist"
-
-mkdir -p "$home/Library/LaunchAgents" "$gluon/logs"
-# Stop the old metadata synchronizer before migration. Its replacement only
-# selects complete runtimes; it cannot edit game metadata.
-launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null || true
-rm -f "$gluon/lib/gluon/enable.py" "$gluon/lib/gluon/metadata.py"
-PYTHONPATH="$gluon/lib" /usr/bin/arch -arm64 /usr/bin/python3 -m gluon install \
-    > "$gluon/logs/install.log" 2>&1 || {
-    cat "$gluon/logs/install.log" >&2
-    echo "Gluon Steam Play installation failed. Quit Steam and run $gluon/bin/gluonctl repair." >&2
-    exit 1
-}
-
-cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.gluon.agent</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>$gluon/bin/gluon-agent</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StartInterval</key>
-    <integer>60</integer>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>StandardErrorPath</key>
-    <string>$gluon/logs/agent-stderr.log</string>
-</dict>
-</plist>
-PLIST
-
-launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null
-exit 0
+[ "$(id -u)" -eq 0 ] || { echo 'Use the Gluon system installer.' >&2; exit 1; }
+[ "${3:-/}" = / ] || { echo 'Gluon requires installation on the running system.' >&2; exit 1; }
+account="$(/usr/bin/stat -f '%Su' /dev/console)"
+case "$account" in ''|root|loginwindow|*[!A-Za-z0-9_.-]*) echo 'Log in to the account that owns Steam before installing Gluon.' >&2; exit 1 ;; esac
+user_home="$(/usr/bin/dscl . -read "/Users/$account" NFSHomeDirectory | sed -n 's/^NFSHomeDirectory: //p')"
+case "$user_home" in /*) ;; *) echo 'Cannot identify the logged-in home directory.' >&2; exit 1 ;; esac
+source='/Library/Application Support/Gluon'
+exec /usr/bin/sudo -H -u "$account" /usr/bin/env \
+    HOME="$user_home" GLUON_HOME="$user_home/Library/Application Support/Gluon" \
+    PYTHONPATH="$source/lib" /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.package_install "$source"

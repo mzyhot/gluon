@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build dist/Gluon-<version>.pkg: a per-user installer (no administrator password).
+# Build dist/Gluon-<version>.pkg: system staging plus unprivileged per-user setup.
 #
 # It installs into ~/Library/Application Support/Gluon:
 #   bin/gluon            launcher Steam starts for Windows games
@@ -58,7 +58,7 @@ cat > "$stage/distribution.xml" <<XML
 <installer-gui-script minSpecVersion="2">
     <title>Gluon</title>
     <options customize="never" require-scripts="true" hostArchitectures="arm64"/>
-    <domains enable_anywhere="false" enable_currentUserHome="true" enable_localSystem="false"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <choices-outline>
         <line choice="gluon"/>
     </choices-outline>

@@ -12,8 +12,8 @@ changes during migration. No metadata synchronization runs afterward.
 The implementation is experimental. See [verification status](docs/STEAMPLAY.md)
 for the distinction between CI fixtures, builds and actual Steam/game tests.
 
-Install the Actions-built `.pkg` while Steam and Wine are closed. The per-user
-installer needs a Steam application owned by the installing account and a writable
+Install the Actions-built `.pkg` while Steam and Wine are closed. The installer requests administrator authorization to stage its payload, then
+runs setup as the logged-in account. Setup needs a Steam application owned by the installing account and a writable
 parent directory owned by that account or root. For a custom location or multiple Steam copies, use:
 
 ```sh
@@ -36,7 +36,9 @@ and successful runtime signature validation.
 "$HOME/Library/Application Support/Gluon/bin/gluon-uninstall"
 ```
 
-Repair requires Steam and Wine to be closed. Unsupported builds fail with a
+Repair requires Steam and Wine to be closed. The system package staging area
+under `/Library/Application Support/Gluon` is retained for reinstallations; the
+uninstaller removes this account's deployment. Unsupported builds fail with a
 compatibility error. Foreign injections and independent bundle changes are
 preserved and reported. Recovery retains originals, migration journals, game
 files, Wine prefixes and saves. Reconnect any tracked removable Steam application
