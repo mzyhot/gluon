@@ -65,9 +65,9 @@ installs no hooks for that module. Steam update and crash markers are preserved.
 Errors are written to `Gluon/steamplay/steamplay.log`.
 
 Signature patterns may resolve across builds; an older filename alone neither
-proves nor disproves newer-build support. No real installed client was available
-at the default Steam location during this handoff. Actual signature resolution
-and Steam UI behavior remain required acceptance tests.
+proves nor disproves newer-build support. Read-only inspection identified the installed stable client as `1791918634`
+from its signed-channel manifest. Actual signature resolution and Steam UI
+behavior remain required acceptance tests.
 
 ## Legacy migration
 

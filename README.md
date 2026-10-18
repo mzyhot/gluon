@@ -1,4 +1,7 @@
 # Gluon
+![Gluon slogan](gluon-slogan.svg)
+
+Thanks to the NotProton developers for the native Steam integration.
 
 Steam Play for macOS, using Gluon's Wine runtime and an integrated, GPLv3
 NotProton-derived Steam client library. CrossOver and a separate NotProton
