@@ -24,12 +24,20 @@ with tempfile.TemporaryDirectory() as temporary:
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'com.valvesoftware.steam',
         'CFBundleExecutable': 'steam_osx', 'CFBundleName': 'Steam fixture', 'CFBundlePackageType': 'APPL'}))
     subprocess.run(['codesign', '-f', '-s', '-', str(app)], check=True)
+    with patch.object(steamplay, 'VALVE_REQUIREMENT', 'identifier "org.gluon.wrong-fixture"'):
+        try:
+            steamplay.System().valve(app)
+        except steamplay.SteamPlayError:
+            pass
+        else:
+            raise AssertionError('signature requirement accepted the wrong identity')
     original = steamplay._tree(app)
     class FixtureIdentity(steamplay.System):
         def valve(self, candidate):
-            # Fixtures cannot have Valve's Developer ID. All signature verification,
-            # staging and signing still use the real production implementation.
-            self.verify(candidate)
+            # Fixtures cannot have Valve's Developer ID. Exercise production
+            # requirement parsing with this fixture's actual signed identifier.
+            with patch.object(steamplay, 'VALVE_REQUIREMENT', 'identifier "com.valvesoftware.steam"'):
+                super().valve(candidate)
     install = steamplay.Installation(base / 'Gluon', base / 'Steam', FixtureIdentity())
     shutil.copytree(repository / 'build/steamplay-payload', install.payload)
     build = next(iter(steamplay._json(install.payload / 'payload.json')['builds']))

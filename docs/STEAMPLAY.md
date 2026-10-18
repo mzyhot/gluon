@@ -105,7 +105,9 @@ synthetic Wine launcher tests, native signing fixtures and package inspections
 run only in GitHub Actions. The signing fixture compiles a fake Steam executable;
 it checks production signing and byte-exact restoration, and does not modify or
 execute a real Steam installation. Its Valve identity check is replaced because
-a fixture cannot carry Valve's Developer ID.
+a fixture cannot carry Valve's Developer ID. The fixture substitutes its signed
+identifier as the identity predicate while exercising production requirement
+parsing and rejection of a mismatched identity.
 
 Actual Steam startup, dylib loading, compatibility settings, Windows depot
 installation, game execution, overlay, achievements, controls, graphics, audio,

@@ -11,10 +11,15 @@ on:
         description: Version for the package name (e.g. 0.3.0-dev)
         required: true
         default: 0.0.0-dev
+      recheck_run_id:
+        description: Reuse a completed Build runtime whose compiled inputs match this checkout
+        required: false
+        type: string
   push:
     tags: ["v*"]
 
 permissions:
+  actions: read
   contents: write
 
 concurrency:
@@ -64,10 +69,76 @@ jobs:
           python3 -m unittest discover -s tests -v
           python3 steamplay/check-bundle.py
 
+      - name: Restore matching completed runtime
+        if: inputs.recheck_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GLUON_ORIGINAL_RUN_ID: ${{ inputs.recheck_run_id }}
+        run: |
+          case "$GLUON_ORIGINAL_RUN_ID" in ''|*[!0-9]*) echo "Expected a numeric Build run ID" >&2; exit 1 ;; esac
+          mkdir -p build/recheck-input
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GLUON_ORIGINAL_RUN_ID" > build/original-run.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          run = json.loads(Path("build/original-run.json").read_text())
+          repository = os.environ["GITHUB_REPOSITORY"]
+          if (run.get("path") != ".github/workflows/build.yml"
+                  or run.get("repository", {}).get("full_name") != repository
+                  or run.get("head_repository", {}).get("full_name") != repository
+                  or run.get("event") not in ("workflow_dispatch", "push")
+                  or run.get("conclusion") != "success"):
+              raise SystemExit("Expected a successful owned-repository Build run.")
+          print("Reusing compiled runtime from Build run", run["id"], "at", run["head_sha"])
+          PY
+          gh run download "$GLUON_ORIGINAL_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name completed-runtime-input --dir build/recheck-input
+          (cd build/recheck-input && shasum -a 256 -c completed-runtime-input.tar.gz.sha256)
+          python3 - <<'PY'
+          import posixpath
+          import tarfile
+          from pathlib import PurePosixPath
+          roots = ("build/gluon-wine", "build/graphics-probes")
+          def allowed(name):
+              return (name == "build/probe-sources.sha256"
+                      or any(name == root or name.startswith(root + "/") for root in roots))
+          with tarfile.open("build/recheck-input/completed-runtime-input.tar.gz", "r:gz") as archive:
+              members = archive.getmembers()
+              symlinks = {item.name.rstrip("/") for item in members if item.issym()}
+              for item in members:
+                  name = item.name.rstrip("/")
+                  if (PurePosixPath(name).is_absolute() or ".." in PurePosixPath(name).parts
+                          or not allowed(name) or not (item.isfile() or item.isdir() or item.issym() or item.islnk())
+                          or any(str(parent) in symlinks for parent in PurePosixPath(name).parents)):
+                      raise SystemExit("Unexpected runtime archive member: " + item.name)
+                  if item.issym() or item.islnk():
+                      target = item.linkname if item.islnk() else posixpath.join(posixpath.dirname(name), item.linkname)
+                      if not allowed(posixpath.normpath(target)):
+                          raise SystemExit("Runtime archive link escapes its tree: " + item.name)
+          PY
+          tar -xzf build/recheck-input/completed-runtime-input.tar.gz
+          shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
+            packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
+            tools/d3d9_probe.c > build/expected-probe-sources.sha256
+          cmp build/probe-sources.sha256 build/expected-probe-sources.sha256
+          expected_patch="$(packaging/apply-wine-patches.sh --hash)"
+          test "$(cat build/gluon-wine/.gluon-wine-patches)" = "$expected_patch"
+          expected_key="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py; do
+            printf '%s %s\n' "$helper" "$(shasum -a 256 "packaging/$helper" | cut -d' ' -f1)"
+          done | shasum -a 256 | cut -d' ' -f1)"
+          test "$(cat build/gluon-wine/.gluon-runtime-build-key)" = "$expected_key"
+          test -x build/gluon-wine/bin/wine
+          test -x build/gluon-wine/bin/wineserver
+          test -x build/graphics-probes/opengl-native
+          test -x build/graphics-probes/vulkan-native
+
       - name: Build runtime
+        if: inputs.recheck_run_id == ''
         run: packaging/build-runtime.sh
 
       - name: Compile OpenGL probes
+        if: inputs.recheck_run_id == ''
         run: |
           packaging/check-opengl.sh --compile-only arm64 x86_64
           mkdir -p build/graphics-probes
@@ -86,6 +157,7 @@ jobs:
           done
 
       - name: Preserve completed runtime and compiled probes
+        if: inputs.recheck_run_id == ''
         run: |
           shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
             packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
@@ -95,6 +167,7 @@ jobs:
           (cd build && shasum -a 256 completed-runtime-input.tar.gz > completed-runtime-input.tar.gz.sha256)
 
       - name: Upload completed runtime for bounded rechecks
+        if: inputs.recheck_run_id == ''
         uses: actions/upload-artifact@v4
         with:
           name: completed-runtime-input
@@ -138,6 +211,9 @@ jobs:
             build/graphics-probes/*.log
             build/graphics-probes/*.json
             build/graphics-probes/*.exe
+            build/original-run.json
+            build/probe-sources.sha256
+            build/expected-probe-sources.sha256
             build/d3d9/*/pe-inspection.txt
             build/d3d9/*/meson-logs/meson-log.txt
             build/tls-build/*/config.log
