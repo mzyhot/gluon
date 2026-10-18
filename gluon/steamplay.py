@@ -109,18 +109,41 @@ def _plist(app):
     return value
 
 
-def find_app(explicit=None):
+def _app_candidates():
+    choices = [Path.home() / "Applications/Steam.app", Path("/Applications/Steam.app")]
+    try:
+        found = _run("/usr/bin/mdfind", "kMDItemCFBundleIdentifier == 'com.valvesoftware.steam'")
+        choices += [Path(line) for line in found.splitlines() if line.endswith(".app")]
+    except SteamPlayError:
+        pass
+    return choices
+
+
+def find_app(explicit=None, *, recorded=(), excluded=()):
+    """Reuse the registered app for upgrades; discover only on first install.
+
+    Restoration bundles retain Steam's identifier and can appear in Spotlight.
+    They must never compete with the registered app or become install targets.
+    An explicit path still permits choosing another real Steam installation.
+    """
     if explicit:
         choices = [Path(explicit).expanduser()]
+    elif recorded:
+        choices = [Path(name) for name in recorded]
+        for app in choices:
+            if not app.is_dir():
+                raise SteamPlayError("tracked Steam app is missing; restore it before upgrading, or choose another installation with --steam-app PATH: " + str(app))
     else:
-        choices = [Path.home() / "Applications/Steam.app", Path("/Applications/Steam.app")]
-        try:
-            found = _run("/usr/bin/mdfind", "kMDItemCFBundleIdentifier == 'com.valvesoftware.steam'")
-            choices += [Path(line) for line in found.splitlines() if line.endswith(".app")]
-        except SteamPlayError:
-            pass
+        choices = _app_candidates()
+    excluded = [Path(path).resolve() for path in excluded]
     valid = []
     for app in choices:
+        if not explicit and not recorded:
+            resolved = app.resolve()
+            if (any(resolved == path or path in resolved.parents for path in excluded)
+                    or app.name.startswith((".gluon-old-", ".gluon-stage-"))
+                    or resolved.name.startswith((".gluon-old-", ".gluon-stage-"))):
+                continue
         if app.exists() and app.resolve() not in valid:
             _plist(app)
             valid.append(app.resolve())
@@ -352,7 +375,7 @@ class Installation:
             self.idle()
             data = self.receipt()
             self._recover(data)
-            app = find_app(explicit)
+            app = find_app(explicit, recorded=data["apps"], excluded=(self.home / "backups",))
             self._writable(app)
             locks.enter_context(self.bundle_lock(app))
             manifest, build = self.payload_check()

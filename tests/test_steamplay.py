@@ -104,6 +104,93 @@ class SteamPlayTests(unittest.TestCase):
         self.installation.uninstall()
         self.assertEqual(steamplay._tree(self.app), self.original)
 
+    def test_upgrade_reuses_registered_app_without_searching_backups_or_other_apps(self):
+        self.install()
+        receipt = self.installation.receipt()['apps'][str(self.app)]
+        backup = Path(receipt['backup'])
+        other = self.app.parent / 'Other Steam.app'
+        shutil.copytree(backup, other)
+        before = steamplay._tree(other)
+        (self.payload / steamplay.DYLIB).write_text('upgraded payload')
+        self.inventory()
+        with patch.object(steamplay, '_app_candidates', return_value=[backup, other]) as discovery:
+            self.installation.install()
+        discovery.assert_not_called()
+        self.assertEqual((self.app / 'Contents/MacOS' / steamplay.DYLIB).read_text(), 'upgraded payload')
+        self.assertEqual(self.installation.receipt()['apps'][str(self.app)]['backup'], str(backup))
+        self.assertEqual(steamplay._tree(backup), self.original)
+        self.assertEqual(steamplay._tree(other), before)
+        self.installation.uninstall()
+        self.assertEqual(steamplay._tree(self.app), self.original)
+
+    def test_missing_registered_app_never_switches_to_another_copy(self):
+        self.install()
+        other = self.app.parent / 'Moved Steam.app'
+        os.rename(self.app, other)
+        before = steamplay._tree(other)
+        with patch.object(steamplay, '_app_candidates', return_value=[other]) as discovery:
+            with self.assertRaisesRegex(steamplay.SteamPlayError, 'tracked Steam app is missing'):
+                self.installation.install()
+        discovery.assert_not_called()
+        self.assertEqual(steamplay._tree(other), before)
+        self.assertIn(str(self.app), self.installation.receipt()['apps'])
+
+    def test_first_install_excludes_recovery_and_interrupted_installation_bundles(self):
+        backup = self.home / 'backups/steamplay/old/Steam.app'
+        stage = self.app.parent / '.gluon-stage-fixture.app'
+        old = self.app.parent / '.gluon-old-fixture.app'
+        for app in (backup, stage, old):
+            shutil.copytree(self.app, app)
+        alias = self.app.parent / 'Recovery alias.app'
+        alias.symlink_to(backup)
+        with patch.object(steamplay, '_app_candidates', return_value=[backup, stage, old, alias, self.app]):
+            self.installation.install()
+        self.assertEqual(list(self.installation.receipt()['apps']), [str(self.app)])
+        for app in (backup, stage, old):
+            self.assertEqual(steamplay._tree(app), self.original)
+
+    def test_first_install_still_requires_a_choice_between_live_apps(self):
+        other = self.app.parent / 'Other Steam.app'
+        shutil.copytree(self.app, other)
+        with patch.object(steamplay, '_app_candidates', return_value=[self.app, other]):
+            with self.assertRaisesRegex(steamplay.SteamPlayError, 'multiple Steam apps found'):
+                self.installation.install()
+        self.assertEqual(steamplay._tree(self.app), self.original)
+        self.assertEqual(steamplay._tree(other), self.original)
+        self.assertEqual(self.installation.receipt()['apps'], {})
+
+    def test_explicit_choice_overrides_receipt_and_multiple_tracked_apps_remain_ambiguous(self):
+        self.install()
+        receipt = self.installation.receipt()['apps'][str(self.app)]
+        other = self.app.parent / 'Other Steam.app'
+        shutil.copytree(receipt['backup'], other)
+        with patch.object(steamplay, '_app_candidates') as discovery:
+            self.installation.install(str(other))
+            with self.assertRaisesRegex(steamplay.SteamPlayError, 'multiple Steam apps found'):
+                self.installation.install()
+            self.installation.install(str(self.app))
+        discovery.assert_not_called()
+        self.assertEqual(set(self.installation.receipt()['apps']), {str(self.app), str(other)})
+
+    def test_upgrade_recovers_interrupted_rename_before_selecting_registered_app(self):
+        self.install()
+        old = self.app.parent / '.gluon-old-fixture.app'
+        stage = self.app.parent / '.gluon-stage-fixture.app'
+        shutil.copytree(self.app, stage)
+        os.rename(self.app, old)
+        data = self.installation.receipt()
+        data['transaction'] = {'app': str(self.app), 'old': str(old), 'stage': str(stage),
+                               'new_tree': steamplay._tree(stage)}
+        steamplay._write_json(self.installation.state, data)
+        with patch.object(steamplay, '_app_candidates') as discovery:
+            self.installation.install()
+        discovery.assert_not_called()
+        self.assertNotIn('transaction', self.installation.receipt())
+        self.assertFalse(old.exists())
+        self.assertFalse(stage.exists())
+        self.installation.uninstall()
+        self.assertEqual(steamplay._tree(self.app), self.original)
+
     def test_signed_channel_manifest_in_nested_client_is_detected(self):
         package = self.root / 'Steam.AppBundle/Steam/Contents/MacOS/package'
         package.mkdir(parents=True)
