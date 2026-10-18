@@ -57,7 +57,7 @@ cp "$here/LICENSE" "$payload/licenses/Gluon-LICENSE"
 printf 'gluon\t1\trosetta\tGluon\n' > "$payload/tools"
 codesign -f -s - "$payload/gluon-steamplay.dylib" "$payload/appinfo"
 python3 "$here/steamplay/manifest.py" "$src" "$payload" "$here"
-lipo -verify_arch arm64 x86_64 "$payload/gluon-steamplay.dylib"
+lipo "$payload/gluon-steamplay.dylib" -verify_arch arm64 x86_64
 codesign --verify --strict "$payload/gluon-steamplay.dylib"
 codesign --verify --strict "$payload/appinfo"
 otool -L "$payload/gluon-steamplay.dylib" > "$payload/dependencies.txt"
