@@ -22,8 +22,13 @@ so this currently requires space for both copies. System staging and its receipt
 remain after per-user uninstall and support subsequent account deployments.
 
 
+Package upgrades and `gluonctl install`/`repair` reuse the Steam app recorded by
+the previous installation, including apps outside the standard locations. They
+do not search for another app when that recorded app is missing. On first install,
 `gluonctl install [--steam-app PATH]` discovers a single Steam app through standard
-locations and Spotlight. Multiple copies require an explicit choice. The account
+locations and Spotlight, excluding Gluon's restoration backups and temporary
+installation bundles. Multiple live copies require an explicit choice; an explicit
+`--steam-app PATH` also overrides the recorded selection. The account
 must own and be able to write the bundle; its parent must be writable and
 owned by that account or root. Steam and Wine must
 be stopped. The installer refuses foreign injections and requires an original

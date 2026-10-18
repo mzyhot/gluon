@@ -1,5 +1,6 @@
 """Actions-only fixture: compile a fake Steam bundle and test real codesign recovery."""
 import os
+import json
 from pathlib import Path
 import plistlib
 import shutil
@@ -47,7 +48,26 @@ with tempfile.TemporaryDirectory() as temporary:
     with patch.object(install, 'idle'), patch.object(migration, 'migrate', return_value=[]):
         install.install(str(app))
         install.system.verify(app)
+        record = install.receipt()['apps'][str(app)]
+        backup = Path(record['backup'])
+        other = base / 'Other Steam.app'
+        shutil.copytree(backup, other)
+        # Exercise a real signed upgrade through automatic selection, with the
+        # same extra Steam copies Spotlight can return on an installed system.
+        tools = install.payload / 'tools'
+        tools.write_bytes(tools.read_bytes() + b'\n')
+        manifest_path = install.payload / 'payload.json'
+        manifest = steamplay._json(manifest_path)
+        manifest['files']['tools'] = steamplay._digest(tools)
+        manifest_path.write_text(json.dumps(manifest))
+        with patch.object(steamplay, '_app_candidates', return_value=[backup, other]) as discovery:
+            install.install()
+        discovery.assert_not_called()
+        install.system.verify(app)
+        assert install.receipt()['apps'][str(app)]['backup'] == str(backup)
+        assert steamplay._tree(backup) == original, 'upgrade changed the restoration backup'
+        assert steamplay._tree(other) == original, 'upgrade changed another Steam installation'
         install.uninstall()
         install.system.verify(app)
     assert steamplay._tree(app) == original, 'original signed fixture did not restore exactly'
-print('Native signing, installation and exact restoration fixture passed')
+print('Native signing, installation, automatic upgrade and exact restoration fixture passed')
