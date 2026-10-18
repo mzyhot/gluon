@@ -116,12 +116,16 @@ def main():
         # Match the launcher's first-run barrier before probing other DLLs.
         run("wine-prefix-idle", [server, "-w"], seconds=30)
         cloud_command('--check', str(compat))
-        _, saved = run('native-cloud-read', [wine, 'cmd', '/c',
-                        'type "%USERPROFILE%\\Documents\\cloud-fixture.txt"'])
+        # Batch files avoid an extra Unix argv -> Windows command-line quoting
+        # layer around cmd's /c expression. Quotes belong to the Windows script.
+        (probes / 'native-cloud-read.cmd').write_text(
+            '@echo off\r\ntype "%USERPROFILE%\\Documents\\cloud-fixture.txt"\r\n')
+        (probes / 'native-cloud-write.cmd').write_text(
+            '@echo off\r\necho Wine-written-save > "%USERPROFILE%\\Documents\\cloud-fixture.txt"\r\n')
+        _, saved = run('native-cloud-read', [wine, 'cmd', '/c', 'native-cloud-read.cmd'])
         if 'Steam-written-save' not in saved:
             raise ProbeFailed('Wine did not read the native Cloud save view')
-        run('native-cloud-write', [wine, 'cmd', '/c',
-            'echo Wine-written-save > "%USERPROFILE%\\Documents\\cloud-fixture.txt"'])
+        run('native-cloud-write', [wine, 'cmd', '/c', 'native-cloud-write.cmd'])
         if 'Wine-written-save' not in (cloud_documents / 'cloud-fixture.txt').read_text():
             raise ProbeFailed('Native Cloud view did not see Wine\'s saved file')
         cloud_command('--check', str(compat))
