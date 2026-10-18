@@ -29,11 +29,13 @@ static unsigned long long gluon_installed_build(const char *root) {
             if (snprintf(path, sizeof(path), "%s%s/package/%s", root, bases[b], names[i]) >= (int)sizeof(path)) return 0;
             char *extension = strrchr(path, '.');
             if (extension && !strcmp(extension, ".manifest")) {
-                strcpy(extension, ".installed");
-                FILE *inventory = fopen(path, "r");
+                char inventory_path[sizeof(path)];
+                int length = snprintf(inventory_path, sizeof(inventory_path), "%.*s.installed",
+                                      (int)(extension - path), path);
+                if (length < 0 || length >= (int)sizeof(inventory_path)) return 0;
+                FILE *inventory = fopen(inventory_path, "r");
                 if (!inventory) continue;
                 fclose(inventory);
-                strcpy(extension, ".manifest");
             }
             FILE *f = fopen(path, "r");
             if (!f) continue;

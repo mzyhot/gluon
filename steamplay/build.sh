@@ -33,6 +33,7 @@ make -C "$src" dobby
 make -C "$src" dylib appinfo
 mkdir -p "$here/build/evidence"
 clang -arch arm64 -mmacosx-version-min=15.0 -Wall -Wextra -Werror \
+    -fsanitize=address,undefined -fno-sanitize-recover=all \
     "$here/steamplay/check-build-gate.c" -o "$here/build/evidence/check-build-gate"
 "$here/build/evidence/check-build-gate"
 # These tests use synthetic fixtures, not an installed Steam client.
