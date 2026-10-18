@@ -167,6 +167,102 @@ class NativeCloudTests(unittest.TestCase):
         self.prepare()
         self.assertEqual(cloud.check(self.compat), self.prefix / 'drive_c/users/crossover')
 
+    def test_rule_change_requires_a_new_backup_before_readiness(self):
+        self.rules({'savefiles': {'0': {'root': 'WinAppDataRoaming', 'path': 'FirstGame'}}})
+        self.prepare()
+        self.assertEqual(cloud.check_app('123'), 'prefix')
+        before = list((self.home / 'backups/cloud').iterdir())
+        self.rules({'savefiles': {'0': {'root': 'WinAppDataRoaming', 'path': 'SecondGame'}}})
+        with self.assertRaisesRegex(cloud.CloudError, 'save rules changed'):
+            cloud.check_app('123')
+        self.assertFalse(cloud.index()['apps']['123']['ready'])
+        self.prepare()
+        self.assertEqual(cloud.check_app('123'), 'prefix')
+        self.assertEqual(len(list((self.home / 'backups/cloud').iterdir())), len(before) + 1)
+
+    def test_install_preflight_prepares_good_games_and_reports_conflicts(self):
+        other = self.library / 'steamapps/compatdata/456/pfx'
+        other.mkdir(parents=True)
+        (other / 'save').write_bytes(b'foreign save')
+        (self.library / 'steamapps/appmanifest_456.acf').write_text('fixture')
+        notes = cloud.prepare_installed()
+        self.assertEqual(cloud.check_app('123'), 'prefix')
+        self.assertTrue(any('Cloud needs attention for 456' in line for line in notes))
+        self.assertEqual((other / 'save').read_bytes(), b'foreign save')
+        self.assertIn('separate pfx', cloud.status('456')[0])
+
+    def test_native_root_change_to_windows_is_not_treated_as_ready(self):
+        self.rules({'quota': 10})
+        self.assertTrue(cloud.index()['apps']['123']['ready'])
+        self.rules({'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}})
+        self.assertFalse(cloud.index()['apps']['123']['ready'])
+
+    def test_malformed_metadata_cannot_bypass_preflight(self):
+        self.rules({'savefiles': {'0': 'invalid'}})
+        with self.assertRaisesRegex(cloud.CloudError, 'save root'):
+            self.prepare()
+        self.assertFalse(self.compat.exists())
+
+    def test_layout_change_during_catalogue_validation_is_not_cached_as_ready(self):
+        self.prepare()
+        validate = cloud.check_app
+        def replace_view(appid, compat=None):
+            result = validate(appid, compat)
+            (self.compat / 'pfx').unlink()
+            (self.compat / 'pfx').mkdir()
+            return result
+        with patch.object(cloud, 'check_app', side_effect=replace_view):
+            data = cloud.index()
+        self.assertFalse(data['apps']['123']['ready'])
+
+    def test_metadata_changed_during_index_invalidates_its_global_stamps(self):
+        self.rules({'quota': 1})
+        classify = cloud.needs_prefix
+        changed = False
+        def change(appid):
+            nonlocal changed
+            result = classify(appid)
+            if not changed:
+                changed = True
+                self.rules({'savefiles': {'0': {'root': 'WinAppDataRoaming', 'path': 'Game'}}})
+            return result
+        with patch.object(cloud, 'needs_prefix', side_effect=change):
+            data = cloud.index()
+        self.assertNotEqual(data['watch'][steam.APPINFO], cloud._stamp(Path(steam.APPINFO)))
+
+    def test_userprofile_documents_rule_backs_up_only_affected_host_files(self):
+        mac = self.root / 'MacHome'
+        documents = mac / 'Documents'
+        game = documents / 'FixtureGame'
+        game.mkdir(parents=True)
+        (game / 'save').write_bytes(b'host save')
+        (documents / 'unrelated').write_bytes(b'personal')
+        profile = self.prefix / 'drive_c/users/crossover'
+        profile.mkdir(parents=True)
+        (profile / 'Documents').symlink_to(documents)
+        self.rules({'savefiles': {'0': {'root': 'WinUserProfile', 'path': 'Documents/FixtureGame'}}})
+        with patch.object(Path, 'home', return_value=mac):
+            self.prepare()
+        self.assertEqual(len(list((self.home / 'backups/cloud').glob('*/documents-*/save'))), 1)
+        self.assertFalse(list((self.home / 'backups/cloud').rglob('unrelated')))
+        self.assertEqual((game / 'save').read_bytes(), b'host save')
+
+    def test_wine_mac_desktop_link_preserves_and_protects_the_game_subtree(self):
+        mac = self.root / 'MacHome'
+        desktop = mac / 'Desktop'
+        game = desktop / 'FixtureGame'
+        game.mkdir(parents=True)
+        (game / 'save').write_bytes(b'desktop save')
+        (desktop / 'unrelated').write_bytes(b'personal')
+        profile = self.prefix / 'drive_c/users/crossover'
+        (profile / 'Desktop').mkdir(parents=True)
+        (profile / 'Desktop/My Mac Desktop').symlink_to(desktop)
+        self.rules({'savefiles': {'0': {'root': 'WinUserProfile', 'path': 'Desktop/My Mac Desktop/FixtureGame'}}})
+        with patch.object(Path, 'home', return_value=mac):
+            self.prepare()
+        self.assertEqual(len(list((self.home / 'backups/cloud').glob('*/documents-*/save'))), 1)
+        self.assertFalse(list((self.home / 'backups/cloud').rglob('unrelated')))
+
     def test_fresh_prefix_shares_one_profile_without_metadata_edits(self):
         before = (self.library / 'steamapps/appmanifest_123.acf').read_bytes()
         self.prepare()
@@ -300,7 +396,7 @@ class NativeCloudTests(unittest.TestCase):
         launcher.write_text('#!/bin/sh\nprintf launched > "$CLOUD_FIXTURE_TRACE"\n')
         launcher.chmod(0o755)
         env = dict(os.environ, GLUON_HOME=str(self.home), STEAM_COMPAT_DATA_PATH=str(self.compat),
-                   STEAM_COMPAT_APP_ID='123', CLOUD_FIXTURE_TRACE=str(trace))
+                   STEAM_ROOT=str(self.library), STEAM_COMPAT_APP_ID='123', CLOUD_FIXTURE_TRACE=str(trace))
         command = ['/bin/sh', str(shim.parent) + '/./run', 'waitforexitandrun', 'fixture.exe']
         failed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
         self.assertNotEqual(failed.returncode, 0)

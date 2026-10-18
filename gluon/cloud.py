@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,7 @@ HOST_FOLDERS = {'Documents': 'Documents', 'Desktop': 'Desktop', 'Downloads': 'Do
                 'Music': 'Music', 'Pictures': 'Pictures', 'Videos': 'Movies'}
 INDEX = 'cloud-index.json'
 MIGRATION = '.gluon-cloud-migration.json'
+RULES = '.gluon-cloud-rules.json'
 _metadata_cache = None
 _metadata_stamp = None
 
@@ -55,7 +57,10 @@ def _rules(appid):
             raise CloudError('Steam Cloud metadata is incomplete; let Steam finish updating and retry') from error
         _metadata_stamp = stamp
     entry = _metadata_cache.get(int(appid)) if _metadata_cache else None
-    return entry.kv['appinfo'].get('ufs', {}) if entry else None
+    rules = entry.kv['appinfo'].get('ufs', {}) if entry else None
+    if rules is not None and not isinstance(rules, dict):
+        raise CloudError('Invalid Steam Cloud metadata')
+    return rules
 
 
 def needs_prefix(appid):
@@ -68,11 +73,16 @@ def needs_prefix(appid):
     overrides = rules.get('rootoverrides', {})
     if not isinstance(saves, dict) or not isinstance(overrides, dict):
         raise CloudError('Invalid Steam Cloud path rules')
+    if any(not isinstance(rule, dict) or not isinstance(rule.get('root'), str) or not rule['root']
+           for rule in saves.values()):
+        raise CloudError('Invalid Steam Cloud save root')
+    if any(not isinstance(rule, dict) for rule in overrides.values()):
+        raise CloudError('Invalid Steam Cloud root override')
     if not saves:
         return False  # RemoteStorage API games do not use AutoCloud prefix paths.
     roots = [str(rule.get('root', '')).lower() for rule in saves.values() if isinstance(rule, dict)]
-    roots += [str(rule.get('useinstead', '')).lower() for rule in overrides.values() if isinstance(rule, dict)]
-    return any(root not in ('gameinstall', 'machome', 'macappsupport', 'macdocuments',
+    roots += [str(rule.get('useinstead', rule.get('root', ''))).lower() for rule in overrides.values()]
+    return any(root not in ('gameinstall', 'appinstalldirectory', 'steamclouddocuments', 'machome', 'macappsupport', 'macdocuments',
                            'linuxhome', 'linuxxdgdatahome', 'linuxxdgconfighome') for root in roots)
 
 
@@ -83,7 +93,20 @@ def check_app(appid, compat=None):
     if compat is not None and Path(compat).resolve() != expected.resolve():
         raise CloudError('Launcher and Steam selected different compatibility directories')
     check(expected)
+    if not _rules_current(expected, _rules_token(appid)):
+        raise CloudError('Cloud save rules changed; a new verified backup is required before synchronization')
     return 'prefix'
+
+
+def _rules_token(appid):
+    return hashlib.sha256(json.dumps(_rules(appid), sort_keys=True).encode()).hexdigest()
+
+
+def _rules_current(compat, token):
+    path = compat / RULES
+    if path.is_symlink():
+        raise CloudError('Cloud rules record must be an ordinary file')
+    return path.is_file() and steamplay._json(path) == {'schema': 1, 'rules': token}
 
 
 def _legacy_prefix(compat):
@@ -251,48 +274,72 @@ def _candidates(appid):
 
 
 def _document_backups(appid, profile):
-    """Back up affected shared Documents subtrees, without copying unrelated documents.
-
-    This is conservative backup selection only. Steam evaluates the original
-    rules, variables, patterns and conflicts itself; no appinfo is ever rewritten.
-    """
-    documents = profile / 'Documents'
-    if not documents.is_symlink():
+    """Back up affected host subtrees; leave rule evaluation to Steam itself."""
+    host_links = []
+    known = {**HOST_FOLDERS, 'Desktop/My Mac Desktop': 'Desktop'}
+    for relative, host_name in known.items():
+        link = profile / relative
+        if link.is_symlink():
+            target = (Path.home() / host_name).resolve()
+            if link.resolve() != target:
+                raise CloudError('Unexpected host-folder link; saves were left unchanged: ' + str(link))
+            host_links.append((link, target))
+    if not host_links:
         return []
     ufs = _rules(appid)
     if ufs is None:
-        raise CloudError('Cannot protect shared Documents without this game\'s Cloud metadata')
+        raise CloudError("Cannot protect shared Documents without this game's Cloud metadata")
+    roots = {'winmydocuments': profile / 'Documents', 'windesktop': profile / 'Desktop',
+             'winuserprofile': profile, 'winsavedgames': profile / 'Saved Games',
+             'winappdatalocal': profile / 'AppData/Local',
+             'winappdatalocallow': profile / 'AppData/LocalLow',
+             'winappdataroaming': profile / 'AppData/Roaming'}
     overrides = list(ufs.get('rootoverrides', {}).values())
     paths = set()
     for rule in ufs.get('savefiles', {}).values():
         root = str(rule.get('root', '')).lower()
-        # Include every possible Windows Documents override, even when the
-        # developer's platform filter would exclude it on this installation.
-        targets = [('', root)] + [(str(o.get('addpath', '')), str(o.get('useinstead', root)).lower())
-                                for o in overrides if str(o.get('root', '')).lower() == root]
-        for extra, target in targets:
-            if target != 'winmydocuments':
+        # Include both add and replacement interpretations conservatively. This
+        # covers publisher overrides without implementing a second sync engine.
+        targets = [(root, str(rule.get('path', '')))]
+        for override in overrides:
+            if str(override.get('root', '')).lower() != root:
+                continue
+            destination = str(override.get('useinstead', root)).lower()
+            extra = str(override.get('addpath', ''))
+            targets.append((destination, extra + '/' + str(rule.get('path', ''))))
+            if extra or str(override.get('replacepath', '0')).lower() in ('1', 'true'):
+                targets.append((destination, extra))
+        for root, below in targets:
+            if root not in roots:
                 continue
             if rule.get('pathtransforms') or any(o.get('pathtransforms') for o in overrides):
-                raise CloudError('Transformed Cloud paths in shared Documents need reconciliation; saves were left unchanged')
-            fragments = (extra + '/' + str(rule.get('path', ''))).replace('\\', '/').split('/')
-            below = []
-            for fragment in fragments:
+                raise CloudError('Transformed Cloud paths in host folders need reconciliation; saves were left unchanged')
+            candidate = roots[root]
+            for fragment in below.replace(chr(92), '/').split('/'):
                 if fragment in ('', '.'):
                     continue
-                if fragment == '..':
-                    raise CloudError('Cloud Documents path leaves its root; saves were left unchanged')
-                if any(c in fragment for c in '*?{['):
-                    break  # Back up the enclosing subtree for dynamic user IDs.
-                below.append(fragment)
-            if not below:
-                raise CloudError('Cloud uses the shared Documents root; reconcile this prefix before enabling native sync')
-            candidate = documents.resolve().joinpath(*below)
-            if not _inside(candidate, documents):
-                raise CloudError('Cloud save subtree leaves Documents; saves were left unchanged')
-            if candidate.is_dir():
-                paths.add(candidate)
-    # Avoid duplicating a nested subtree when an enclosing one is already selected.
+                if fragment == '..' or ':' in fragment:
+                    raise CloudError('Cloud save path leaves its root; saves were left unchanged')
+                if any(c in fragment for c in '*?{[%$'):
+                    break  # Back up the enclosing game subtree for dynamic IDs.
+                candidate /= fragment
+            for ancestor in (candidate, *candidate.parents):
+                if ancestor == profile:
+                    break
+                if ancestor.is_symlink() and not any(ancestor == link for link, _ in host_links):
+                    if not _inside(ancestor, profile):
+                        raise CloudError('Cloud save subtree follows an unexpected external link: ' + str(ancestor))
+            for link, target in host_links:
+                if candidate == link or candidate in link.parents:
+                    raise CloudError('Cloud uses a shared host folder root; reconcile this prefix before enabling native sync')
+                if link not in candidate.parents:
+                    continue
+                source = target / candidate.relative_to(link)
+                if not _inside(source, target):
+                    raise CloudError('Cloud save subtree leaves its host folder; saves were left unchanged')
+                if source.is_dir():
+                    paths.add(source)
+    # Back up each affected subtree once, preserving unrelated personal folders.
     return [('documents-' + str(i), p) for i, p in enumerate(sorted(paths))
             if not any(other != p and other in p.parents for other in paths)]
 
@@ -320,6 +367,23 @@ def status(appid):
                 'Existing prefixes and saves are retained. Details: ' + str(Path(steam.GLUON_HOME) / 'steamplay/cloud.log')]
 
 
+def prepare_installed():
+    """Prepare upgrades while Steam is closed, before its first Cloud scan."""
+    notes = []
+    for appid in index()['apps']:
+        try:
+            notes += prepare(appid)
+            _error_path(appid).unlink(missing_ok=True)
+        except (CloudError, steamplay.SteamPlayError, OSError, ValueError) as error:
+            notes.append('Cloud needs attention for %s: %s; prefixes retained' % (appid, error))
+            try:
+                steamplay._write_json(_error_path(appid), {'schema': 1, 'reason': str(error)})
+            except OSError:
+                pass
+    index()
+    return notes
+
+
 def _show_error(message):
     if sys.platform != 'darwin' or os.environ.get('GITHUB_ACTIONS') == 'true':
         return
@@ -340,6 +404,7 @@ def prepare(appid, *, automatic=False):
         if not needs_prefix(appid):
             return ['Steam Cloud uses native/API paths for ' + appid + '; existing prefixes are unchanged']
         compat = _candidates(appid)
+        token = _rules_token(appid)
         idle = _wine_idle if automatic else installation.idle
         if (compat / MIGRATION).exists() and not (compat / MARKER).exists():
             idle()
@@ -351,7 +416,8 @@ def prepare(appid, *, automatic=False):
             raise CloudError('Cloud readiness record must be an ordinary file')
         if marker.exists():
             check(compat)
-            return ['Native Cloud is already prepared for ' + appid]
+            if _rules_current(compat, token):
+                return ['Native Cloud is already prepared for ' + appid]
         idle()
         sources = []
         if profile.exists():
@@ -380,7 +446,7 @@ def prepare(appid, *, automatic=False):
                 raise CloudError('Save backup verification failed; no layout changed')
         # Revalidate immediately before changing only this game's prefix aliases.
         idle()
-        if (_layout(compat, legacy) != (prefix, users, profile)
+        if (_rules_token(appid) != token or _layout(compat, legacy) != (prefix, users, profile)
                 or legacy != _legacy_prefix(compat)
                 or any(steamplay._tree(source) != snapshots[name] for name, source in sources)):
             raise CloudError('Cloud profile changed during preparation; backup retained')
@@ -405,7 +471,8 @@ def prepare(appid, *, automatic=False):
         if not os.path.lexists(compat / 'pfx'):
             (compat / 'pfx').symlink_to('pfx-wine')
         steamplay._write_json(marker, {'schema': 1, 'profile': str(profile.relative_to(prefix))})
-        check(compat)
+        steamplay._write_json(compat / RULES, {'schema': 1, 'rules': token})
+        check_app(appid, compat)
         return ['Prepared native Steam Cloud for ' + appid,
                 'Recovery backup: ' + str(backup)]
 
@@ -425,38 +492,45 @@ def index():
     installs, library changes or a replaced prefix. No helper runs on warm lookups.
     """
     home = Path(steam.GLUON_HOME)
-    libraries = list(dict.fromkeys(Path(p).resolve() for p in steam.library_dirs()))
     watch = [Path(steam.STEAM_ROOT) / 'steamapps/libraryfolders.vdf',
              Path(steam.APPINFO), home / 'compatdata', home / 'runtime/current',
              home / 'settings.env', home / 'games']
+    # Capture before reading metadata/enumerating manifests. A concurrent update
+    # must invalidate this catalogue, not stamp a stale decision as current.
+    global_stamps = {str(p): _stamp(p) for p in watch}
+    libraries = list(dict.fromkeys(Path(p).resolve() for p in steam.library_dirs()))
     apps = {}
     for library in libraries:
         base = library / 'steamapps'
-        watch += [base, base / 'compatdata']
+        global_stamps.update({str(p): _stamp(p) for p in (base, base / 'compatdata')})
         for manifest in sorted(base.glob('appmanifest_*.acf')):
             appid = manifest.stem.removeprefix('appmanifest_')
             if not appid.isdigit() or int(appid) <= 0:
                 continue
             compat = base / 'compatdata' / appid
             watched = [manifest, compat, compat / 'pfx', compat / 'pfx-wine', compat / MARKER,
-                       compat / 'pfx-wine/drive_c/users', compat / MIGRATION,
+                       compat / 'pfx-wine/drive_c/users', compat / MIGRATION, compat / RULES,
                        home / 'games' / (appid + '.env')]
+            watched += [compat / name for name in ('.gluon-steam-bridge', 'config_info', 'version', 'tracked_files')]
             watched += [compat / 'pfx-wine' / name for name in SHARED_FOLDERS]
             watched += [p / 'steamapps/compatdata' / appid for p in libraries]
             watched += [home / 'compatdata' / appid]
+            stamps = {str(p): _stamp(p) for p in watched}
             try:
                 if needs_prefix(appid) and _candidates(appid) != compat:
                     raise CloudError('Conflicting library')
                 if needs_prefix(appid):
                     profile = check(compat)
                     watched += [profile / p for p in (*FOLDERS, *ALIASES)]
-                ready = True
-            except (CloudError, OSError, ValueError):
+                    stamps.update({str(p): _stamp(p) for p in watched if str(p) not in stamps})
+                check_app(appid, compat)
+                ready = all(_stamp(Path(p)) == stamp for p, stamp in stamps.items())
+            except (CloudError, steamplay.SteamPlayError, OSError, ValueError):
                 ready = False
             # Duplicate installed copies are a conflict, even if one is ready.
             apps[appid] = {'ready': ready and appid not in apps,
-                           'watch': {str(p): _stamp(p) for p in watched}}
-    data = {'schema': 1, 'apps': apps, 'watch': {str(p): _stamp(p) for p in watch}}
+                           'watch': stamps}
+    data = {'schema': 1, 'apps': apps, 'watch': global_stamps}
     steamplay._write_json(home / 'steamplay' / INDEX, data)
     return data
 
@@ -490,10 +564,13 @@ def main():
     except WineBusy as error:
         appid = args.automatic or args.check_app or args.explain
         if appid:
-            steamplay._write_json(_error_path(appid), {'schema': 1, 'reason': str(error)})
+            try:
+                steamplay._write_json(_error_path(appid), {'schema': 1, 'reason': str(error)})
+            except OSError:
+                pass
         print('gluon: Cloud for %s: %s' % (appid, error), file=sys.stderr)
         return 75
-    except (CloudError, OSError, ValueError) as error:
+    except (CloudError, steamplay.SteamPlayError, OSError, ValueError) as error:
         appid = args.automatic or args.check_app or args.explain
         message = 'Cloud for %s: %s' % (appid, error) if appid else str(error)
         if appid and str(appid).isdigit() and int(appid) > 0 and not args.explain:

@@ -41,6 +41,11 @@ int main(void) {
     assert(gluon_cloud_ready(456));
     snprintf(view, sizeof(view), "%s/steamapps/compatdata/456/pfx", root);
     assert(lstat(view, &st) == 0 && S_ISLNK(st.st_mode));
-    puts("native Cloud preflight: fresh, cached, conflicting and newly installed games passed");
+    assert(gluon_cloud_select(789, &cloud_tool, &recovery_tool) == &cloud_tool);
+    assert(gluon_cloud_select(790, &cloud_tool, &recovery_tool) == &cloud_tool);
+    assert(gluon_cloud_select(791, &cloud_tool, &recovery_tool) == &cloud_tool);
+    snprintf(view, sizeof(view), "%s/steamapps/compatdata/791/pfx", root);
+    assert(lstat(view, &st) == 0 && S_ISLNK(st.st_mode));
+    puts("native Cloud preflight: fresh, cached, conflicting, API, GameInstall, legacy and newly installed games passed");
     return 0;
 }

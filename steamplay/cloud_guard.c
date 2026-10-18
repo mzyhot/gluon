@@ -149,7 +149,8 @@ bool gluon_cloud_ready(uint32_t appid) {
     if (result == 0) {
         int loaded = load_catalogue();
         app = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(catalogue, "apps"), key);
-        ready = loaded && app && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(app, "ready"));
+        ready = loaded && app && paths_unchanged(cJSON_GetObjectItemCaseSensitive(app, "watch")) &&
+                cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(app, "ready"));
     }
     if (!ready) {
         // Retry busy Wine sessions, but do not repeatedly copy a failed backup

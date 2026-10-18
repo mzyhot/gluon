@@ -12,6 +12,7 @@ case "$verb" in
 esac
 [ $# -gt 0 ] || { echo 'gluon: no Windows executable supplied' >&2; exit 1; }
 gluon_home="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
+export STEAM_ROOT="${GLUON_STEAM_ROOT:-${STEAM_ROOT:-$HOME/Library/Application Support/Steam}}"
 launcher="$gluon_home/bin/gluon"
 [ -x "$launcher" ] || { echo "gluon: reinstall Gluon; launcher missing: $launcher" >&2; exit 1; }
 tool_directory="$(cd "$(dirname "$0")" && pwd -P)" || exit 1

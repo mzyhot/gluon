@@ -32,6 +32,7 @@ def main():
         if args.command in ("install", "repair"):
             lines = steamplay.Installation().install(args.steam_app)
             lines += runtime.activate_pending()
+            lines += cloud.prepare_installed()
         elif args.command == "uninstall":
             lines = steamplay.Installation().uninstall() + migration.migrate()
         elif args.command == "migrate":
