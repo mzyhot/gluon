@@ -1,10 +1,22 @@
 #!/bin/sh
-# Runs as the installing user. Registers the background helper for this user and starts it.
+# Per-user package: install native Steam Play and retain idle runtime maintenance.
+set -eu
 home="$HOME"
 gluon="$home/Library/Application Support/Gluon"
 plist="$home/Library/LaunchAgents/com.gluon.agent.plist"
 
 mkdir -p "$home/Library/LaunchAgents" "$gluon/logs"
+# Stop the old metadata synchronizer before migration. Its replacement only
+# selects complete runtimes; it cannot edit game metadata.
+launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null || true
+rm -f "$gluon/lib/gluon/enable.py" "$gluon/lib/gluon/metadata.py"
+PYTHONPATH="$gluon/lib" /usr/bin/arch -arm64 /usr/bin/python3 -m gluon install \
+    > "$gluon/logs/install.log" 2>&1 || {
+    cat "$gluon/logs/install.log" >&2
+    echo "Gluon Steam Play installation failed. Quit Steam and run $gluon/bin/gluonctl repair." >&2
+    exit 1
+}
+
 cat > "$plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,6 +40,6 @@ cat > "$plist" <<PLIST
 </plist>
 PLIST
 
-launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null
+launchctl bootout "gui/$(id -u)/com.gluon.agent" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null
 exit 0

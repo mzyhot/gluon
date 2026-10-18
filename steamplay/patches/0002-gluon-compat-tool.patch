@@ -1,0 +1,116 @@
+Register Gluon as the compatibility tool.
+
+The tool directory and its names start with "gluon", the tool list is read from
+Gluon's folder, and the run script is recognised by Gluon's marker. The name
+deliberately leaves out "proton" so Steam does not map AutoCloud rules into a
+prefix layout Gluon does not use. The explicit no-tool choice is stored as
+gluon.none.
+
+--- a/dylib/feats/compat.c
++++ b/dylib/feats/compat.c
+@@ -20,4 +20,5 @@
+ // the tool's name contains "proton" so without a match every AutoCloud rule silently
+-// skips the app.
+-#define TOOL_DIR_NAME "notproton"
++// skips the app. Gluon leaves it out on purpose: its plain-Wine prefixes are not laid
++// out like Proton's, so mapped rules would point at folders the game never writes.
++#define TOOL_DIR_NAME "gluon"
+ #define TOOL_RUN      "/run"
+@@ -63,8 +64,13 @@
+ static int write_file(const char *path, const char *content, int executable) {
+-    FILE *f = fopen(path, "w");
+-    if (!f) return -1;
+-    fputs(content, f);
+-    int err = fclose(f);
+-    if (executable)
+-        chmod(path, 0755);
++    char temporary[1024];
++    if (snprintf(temporary, sizeof(temporary), "%s.gluon-XXXXXX", path) >= (int)sizeof(temporary)) return -1;
++    int fd = mkstemp(temporary);
++    if (fd < 0) return -1;
++    FILE *f = fdopen(fd, "w");
++    if (!f) { close(fd); unlink(temporary); return -1; }
++    int err = fputs(content, f) < 0;
++    if (fchmod(fd, executable ? 0755 : 0644) != 0) err = 1;
++    if (fclose(f) != 0) err = 1;
++    if (!err && rename(temporary, path) != 0) err = 1;
++    if (err) unlink(temporary);
+     return err ? -1 : 0;
+@@ -407,3 +413,3 @@
+         NP_WARN("np_compat_load_tool_list: %s is missing, so no build has a tool "
+-                "until NotProton sets one up", path);
++                "until Gluon sets one up", path);
+         return 0;
+@@ -456,3 +462,7 @@
+     if (!home) return -1;
+-    snprintf(out, size, "%s/Library/Application Support/Steam/compatibilitytools.d", home);
++    const char *root = getenv("GLUON_STEAM_ROOT");
++    if (root && root[0])
++        snprintf(out, size, "%s/compatibilitytools.d", root);
++    else
++        snprintf(out, size, "%s/Library/Application Support/Steam/compatibilitytools.d", home);
+     return 0;
+@@ -466,3 +476,3 @@
+     char path[512];
+-    snprintf(path, sizeof(path), "%s/Library/Application Support/notproton/tools", home);
++    np_support_path(path, sizeof(path), home, "tools");
+     np_compat_load_tool_list(path, tools_dir);
+@@ -480,3 +490,22 @@
+ 
++static int written_here(const char *tool_dir);
++
++static int empty_tool_dir(const char *path) {
++    DIR *dir = opendir(path);
++    if (!dir) return 0;
++    struct dirent *entry;
++    int empty = 1;
++    while ((entry = readdir(dir)) != NULL)
++        if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, "..")) { empty = 0; break; }
++    closedir(dir);
++    return empty;
++}
++
+ static int write_tool(const tool_entry_t *tool) {
++    struct stat existing;
++    if (lstat(tool->dir, &existing) == 0 &&
++        (!S_ISDIR(existing.st_mode) || (!written_here(tool->dir) && !empty_tool_dir(tool->dir)))) {
++        NP_ERR("foreign compatibility tool at %s; left unchanged", tool->dir);
++        return -1;
++    }
+     if (ensure_dir(tool->dir) != 0) {
+@@ -492,2 +521,5 @@
+     int wrote = 0;
++    snprintf(path, sizeof(path), "%s/run", tool->dir);
++    if (write_file(path, RUN_SCRIPT, 1) != 0) return -1;
++    wrote++;
+ 
+@@ -505,8 +537,2 @@
+ 
+-    // The run script is the shim this project owns and updates, so rewrite it
+-    // every launch rather than leaving a stale copy behind.
+-    snprintf(path, sizeof(path), "%s/run", tool->dir);
+-    if (write_file(path, RUN_SCRIPT, 1) == 0) wrote++;
+-    else NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
+-
+     char line[80];
+@@ -528,3 +554,3 @@
+ 
+-#define RUN_SCRIPT_MARK "\n# notproton CrossOver compatibility tool shim\n"
++#define RUN_SCRIPT_MARK "\n# gluon Steam Play compatibility tool shim\n"
+ 
+@@ -532,6 +558,5 @@
+     char path[768];
+-    snprintf(path, sizeof(path), "%s/flavor", tool_dir);
+-    if (access(path, F_OK) == 0) return 1;
+-
+     snprintf(path, sizeof(path), "%s/run", tool_dir);
++    struct stat info;
++    if (lstat(path, &info) != 0 || !S_ISREG(info.st_mode)) return 0;
+     FILE *f = fopen(path, "r");
+--- a/dylib/feats/compatsvc.h
++++ b/dylib/feats/compatsvc.h
+@@ -23,3 +23,3 @@
+ // Sentinel name for "no tool".
+-#define NP_COMPAT_TOOL_NONE "notproton.none"
++#define NP_COMPAT_TOOL_NONE "gluon.none"
+ 

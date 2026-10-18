@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check installation recovery and metadata protection
+      - name: Check installation recovery, legacy migration, and runtime policy
         run: timeout 30s python3 -m unittest discover -s tests -v
 
       - name: Cache verified source downloads

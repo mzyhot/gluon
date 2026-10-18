@@ -215,7 +215,7 @@ if role == 'wine' and sys.argv[1:3] == ['wineboot', '--init']:
                                DYLD_INSERT_LIBRARIES="/must/not/reach/setup.dylib", OVERLAY_TEST_TRACE=str(trace))
             for name in ("GLUON_DRY_RUN", "GLUON_WINE_ROOT", "STEAM_COMPAT_DATA_PATH", "STEAM_CLIENT_CONFIG_FILE"):
                 environment.pop(name, None)
-            subprocess.run([str(launcher), "run", str(game)], env=environment, check=True, timeout=5,
+            subprocess.run([str(launcher), "waitforexitandrun", str(game)], env=environment, check=True, timeout=5,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             events = [json.loads(line) for line in trace.read_text().splitlines()]
             return events, insertions

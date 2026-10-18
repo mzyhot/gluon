@@ -1,0 +1,52 @@
+name: Steam Play
+on:
+  push:
+    branches: ["codex/notproton-steamplay"]
+  pull_request:
+    paths: ["steamplay/**", "gluon/**", "tool/**", "packaging/**", "tests/**", ".github/workflows/steamplay.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: steamplay-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  steamplay:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Synthetic installation, migration, launcher and runtime tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s tests -v
+      - name: Build tools
+        run: brew install cmake
+      - name: Build and inspect Steam Play payload
+        run: |
+          set -o pipefail
+          mkdir -p build/evidence
+          steamplay/build.sh 2>&1 | tee build/evidence/steamplay-build.log
+      - name: Native signing and restoration fixture
+        run: python3 steamplay/check-bundle.py
+      - name: Package layout fixture
+        run: |
+          mkdir -p build/fixture-runtime/bin build/fixture-runtime/licenses
+          printf '#!/bin/sh\nexit 0\n' > build/fixture-runtime/bin/wine
+          chmod +x build/fixture-runtime/bin/wine
+          cp LICENSE build/fixture-runtime/licenses/
+          GLUON_PKG_RUNTIME="$PWD/build/fixture-runtime" packaging/build-pkg.sh 0.0.0-ci-fixture
+          pkgutil --expand-full dist/Gluon-0.0.0-ci-fixture.pkg build/pkg-expanded
+          python3 steamplay/check-package.py build/pkg-expanded
+          rm dist/Gluon-0.0.0-ci-fixture.pkg
+      - name: Evidence and corresponding source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: steamplay-evidence-${{ github.run_id }}
+          path: |
+            build/evidence/
+            build/steamplay-payload/
+            dist/Gluon-SteamPlay-source.tar.gz
+          if-no-files-found: error
+          retention-days: 14

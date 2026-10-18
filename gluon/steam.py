@@ -11,11 +11,11 @@ GLUON_HOME = os.environ.get("GLUON_HOME") or os.path.expanduser("~/Library/Appli
 CLIENT_DIR = os.path.join(STEAM_ROOT, "Steam.AppBundle", "Steam", "Contents", "MacOS")
 APPINFO = os.path.join(STEAM_ROOT, "appcache", "appinfo.vdf")
 CONFIG_VDF = os.path.join(STEAM_ROOT, "config", "config.vdf")
-TOOL_DIR = os.path.join(CLIENT_DIR, "compatibilitytools.d", "gluon")
+TOOL_DIR = os.path.join(STEAM_ROOT, "compatibilitytools.d", "gluon")
 # The package installs the launcher into Gluon's own folder; scripts/install-tool.sh puts a
 # development copy into Steam's tool folder. Launch options written for either are ours.
 INSTALLED_LAUNCHER = os.path.join(GLUON_HOME, "bin", "gluon")
-DEV_LAUNCHER = os.path.join(TOOL_DIR, "gluon")
+DEV_LAUNCHER = os.path.join(CLIENT_DIR, "compatibilitytools.d", "gluon", "gluon")
 LAUNCHERS = (INSTALLED_LAUNCHER, DEV_LAUNCHER)
 LAUNCHER = INSTALLED_LAUNCHER if os.access(INSTALLED_LAUNCHER, os.X_OK) else DEV_LAUNCHER
 

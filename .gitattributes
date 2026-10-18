@@ -1,2 +1,2 @@
-# Unified diff context for a blank source line is a single space.
-packaging/patches/*.patch whitespace=-blank-at-eol
+# Unified-diff context includes a mandatory leading space and original tabs.
+steamplay/patches/*.patch -whitespace

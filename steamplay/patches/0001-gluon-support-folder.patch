@@ -1,0 +1,53 @@
+Keep the hook library's files in Gluon's folder.
+
+Signatures, the tool list, the appinfo helper and the log live in
+~/Library/Application Support/Gluon/steamplay instead of NotProton's folder.
+
+--- a/dylib/util/file.c
++++ b/dylib/util/file.c
+@@ -5,2 +5,3 @@
+ #include <stdlib.h>
++#include <string.h>
+ #include <unistd.h>
+@@ -59,7 +60,17 @@
+ void np_support_path(char *buf, size_t bufsz, const char *home, const char *rel) {
+-    static const char base[] = "/Library/Application Support/notproton";
++    char base[1024];
++    const char *gluon = getenv("GLUON_HOME");
++    if (gluon && gluon[0])
++        snprintf(base, sizeof(base), "%s/steamplay", gluon);
++    else
++        snprintf(base, sizeof(base), "%s/Library/Application Support/Gluon/steamplay", home);
++    const char *payload = getenv("GLUON_STEAMPLAY_PAYLOAD");
++    if (payload && payload[0] && rel &&
++        (!strncmp(rel, "signatures/", 11) || !strcmp(rel, "tools") ||
++         !strcmp(rel, "builds") || !strcmp(rel, "appinfo")))
++        snprintf(base, sizeof(base), "%s", payload);
+     if (rel && rel[0])
+-        snprintf(buf, bufsz, "%s%s/%s", home, base, rel);
++        snprintf(buf, bufsz, "%s/%s", base, rel);
+     else
+-        snprintf(buf, bufsz, "%s%s", home, base);
++        snprintf(buf, bufsz, "%s", base);
+ }
+--- a/dylib/util/log.c
++++ b/dylib/util/log.c
+@@ -76,3 +76,3 @@
+     mkdir(folder, 0755);
+-    snprintf(logpath, sizeof(logpath), "%s/notproton.log", folder);
++    snprintf(logpath, sizeof(logpath), "%s/steamplay.log", folder);
+ 
+--- a/dylib/util/log.h
++++ b/dylib/util/log.h
+@@ -19,3 +19,3 @@
+ 
+-#define NP_LOG_PREFIX "[notproton]"
++#define NP_LOG_PREFIX "[gluon-steamplay]"
+ 
+--- a/dylib/version.h
++++ b/dylib/version.h
+@@ -4,3 +4,3 @@
+ 
+-#define NOTPROTON_VERSION "1.1.9"
++#define NOTPROTON_VERSION "1.1.9+gluon"
+ 

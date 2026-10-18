@@ -1,0 +1,21 @@
+"""Check the expanded installer layout without touching a user's Steam."""
+from pathlib import Path
+import json
+import sys
+root = Path(sys.argv[1])
+manifests = list(root.rglob('steamplay/payloads/*/payload.json'))
+assert len(manifests) == 1, 'expected one versioned Steam Play payload'
+payload = manifests[0].parent
+home = payload.parents[2]
+assert (home / 'steamplay/pending.json').is_file()
+assert json.loads((home / 'steamplay/pending.json').read_text())['name'] == payload.name
+for path in ('bin/gluon', 'bin/gluonctl', 'bin/gluon-agent', 'bin/gluon-uninstall',
+             'lib/gluon/steamplay.py', 'lib/gluon/migration.py', 'runtime/pending.json'):
+    assert (home / path).is_file(), path
+for path in ('lib/gluon/enable.py', 'lib/gluon/metadata.py'):
+    assert not (home / path).exists(), 'retired metadata mutator packaged'
+manifest = json.loads(manifests[0].read_text())
+for path in manifest['files']:
+    assert (payload / path).is_file(), path
+assert list((payload / 'signatures/macos.arm64').glob('*.json'))
+print('Package contains launcher, installer, native library, signatures, licenses and staged runtime')
