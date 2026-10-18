@@ -171,7 +171,9 @@ esac
 tool_launcher="${STEAM_ROOT:-$HOME/Library/Application Support/Steam}/Steam.AppBundle/Steam/Contents/MacOS/compatibilitytools.d/gluon/gluon"
 while [ $# -gt 0 ]; do
     nested_gluon=""
-    for known_launcher in "$0" "$GLUON_HOME/bin/gluon" "$source_root/tool/gluon" "$tool_launcher"; do
+    for known_launcher in "$0" "$GLUON_HOME/bin/gluon" "$source_root/tool/gluon" "$tool_launcher" \
+        "${STEAM_ROOT:-$HOME/Library/Application Support/Steam}/compatibilitytools.d/gluon/run" \
+        "${STEAM_ROOT:-$HOME/Library/Application Support/Steam}/compatibilitytools.d/gluon-proton/run"; do
         # Steam can retain install_path's "." in its command. File identity also
         # accepts that spelling and symlinks without matching unrelated names.
         if [ "$1" = "$known_launcher" ] || [ "$1" -ef "$known_launcher" ]; then
@@ -191,6 +193,14 @@ while [ $# -gt 0 ]; do
 done
 exe="$1"
 shift
+# A legacy wrapper can expose waitforexitandrun only after peeling. Give that
+# normalized game command the same single native host as a direct invocation.
+if [ -n "$game_session" ] && [ "${GLUON_LAUNCHER_HOST:-}" != 1 ] && [ -z "$GLUON_DRY_RUN" ]; then
+    launcher_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+    if [ -x "$launcher_dir/gluon-launcher-host" ]; then
+        exec "$launcher_dir/gluon-launcher-host" "$0" "$verb" "$exe" "$@" 2>> "$LOG"
+    fi
+fi
 
 select_runtime() {
     runtime=""
@@ -478,7 +488,9 @@ else
             || fail "Wine prefix setup failed (see $WINE_LOG)"
         run_wait "$wineserver" -w || fail "Wine prefix setup did not finish (see $WINE_LOG)"
     elif [ "$verb" = waitforexitandrun ]; then
+        log "  waiting for previous prefix session"
         run_wait "$wineserver" -w || fail "Could not wait for the previous session (see $WINE_LOG)"
+        log "  previous prefix session is idle"
     fi
     overlay_insert=""
     if [ -n "$game_session" ] && [ "${GLUON_OVERLAY:-1}" != 0 ] && [ "${SteamClientLaunch:-}" = 1 ] \

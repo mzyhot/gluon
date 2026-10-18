@@ -16,7 +16,7 @@ class NativeCloudTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.home = self.root / 'Gluon'
         self.library = self.root / 'Steam'
         (self.library / 'steamapps').mkdir(parents=True)

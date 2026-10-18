@@ -83,6 +83,14 @@ class LauncherWrappingTests(unittest.TestCase):
         self.assertIn("incomplete nested Gluon", (self.home / "logs/launch-123.log").read_text())
         self.assertFalse((self.root / "argv").exists())
 
+    def test_native_wrapper_exposes_one_game_host_after_peeling(self):
+        self.environment['STEAM_COMPAT_APP_ID'] = '123'
+        native = self.steam_root / 'compatibilitytools.d/gluon/run'
+        native.parent.mkdir(parents=True)
+        native.touch()
+        result = self.run_command('run', str(native.parent) + '/./run', 'waitforexitandrun', self.game)
+        self.assert_session(result, [self.game], 2)
+
     def test_unknown_nested_verb_fails_before_starting_runtime(self):
         result = self.run_command("run", self.launcher, "unsupported", self.game)
         self.assertNotEqual(result.returncode, 0)
