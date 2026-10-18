@@ -94,7 +94,8 @@ Details go to `Gluon/steamplay/cloud.log` and per-app error records. Closing an 
 preparation to retry automatically. Prefix views, saves and backups survive uninstall.
 
 The native guard caches validated filesystem stamps. Warm lookups do not spawn
-Python or run Wine. Installation/library/layout changes invalidate the cache.
+Python or run Wine. Installation, library, layout, metadata and runtime-selection
+changes invalidate cached refusals as well as successful checks.
 Gluon's automatic views require its plain-Wine runtime; a conflicting third-party
 Proton prefix is not adopted or overwritten. `gluonctl cloud prepare APPID` remains
 a recovery command for use while Steam is closed, not an enablement step.

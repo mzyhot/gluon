@@ -32,6 +32,20 @@ int main(void) {
     assert(!gluon_cloud_ready(123));
     assert(gluon_cloud_select(123, &cloud_tool, &recovery_tool) == &recovery_tool);
     assert(lstat(view, &st) == 0 && S_ISDIR(st.st_mode));
+    // Steam can learn the game's API-only Cloud rules after an initial refusal.
+    // The old negative result must not survive that metadata update.
+    char source[2048], target[2048];
+    snprintf(source, sizeof(source), "%s/api-appinfo.vdf", home);
+    snprintf(target, sizeof(target), "%s/appcache/appinfo.vdf", root);
+    FILE *input = fopen(source, "rb"), *output = fopen(target, "wb");
+    assert(input && output);
+    char buffer[4096];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), input)) != 0)
+        assert(fwrite(buffer, 1, count, output) == count);
+    assert(!ferror(input) && fclose(input) == 0 && fclose(output) == 0);
+    assert(gluon_cloud_select(123, &cloud_tool, &recovery_tool) == &cloud_tool);
+    assert(lstat(view, &st) == 0 && S_ISDIR(st.st_mode));
     // An uninstalled app keeps Install available. A newly created manifest
     // invalidates that result and prepares its Cloud view automatically.
     assert(gluon_cloud_ready(456));

@@ -122,6 +122,12 @@ class NativeCloudTests(unittest.TestCase):
             self.prepare()
         self.assertFalse((self.compat / cloud.MIGRATION).exists())
 
+    def test_empty_runtime_setting_still_uses_the_packaged_wine_prefix(self):
+        self.legacy()
+        (self.home / 'settings.env').write_text('GLUON_RUNTIME=\n')
+        self.prepare()
+        self.assertEqual(cloud.check_app('123'), 'prefix')
+
     def test_failed_backup_is_detected_before_retiring_old_prefix(self):
         import shutil
         self.legacy()

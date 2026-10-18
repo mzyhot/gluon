@@ -130,7 +130,7 @@ def _legacy_prefix(compat):
     if not (current / 'bin/wine').is_file() or (current / 'proton').exists():
         return None
     for settings in (home / 'settings.env', home / 'games' / (compat.name + '.env')):
-        if settings.is_file() and any(line.startswith('GLUON_RUNTIME=') or line.startswith('GLUON_WINE_ROOT=')
+        if settings.is_file() and any(line.startswith(('GLUON_RUNTIME=', 'GLUON_WINE_ROOT=')) and line.partition('=')[2]
                                       for line in settings.read_text().splitlines()):
             return None
     lines = (compat / 'config_info').read_text().splitlines()

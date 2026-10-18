@@ -1,6 +1,7 @@
 /* Native AutoCloud preparation boundary. No additional Steam offsets or hooks.
  * Steam's Cloud root resolver asks FindToolForTargetApp before returning a path.
- * Refusing the tool here prevents access to an unprepared Windows save root.
+ * A non-Proton recovery transport keeps unprepared Windows roots unavailable
+ * without disabling Play or silently starting a game without synchronization.
  */
 #include "cloud_guard.h"
 #include "../util/file.h"
@@ -108,6 +109,20 @@ static int unchanged(void) {
     return catalogue && paths_unchanged(cJSON_GetObjectItemCaseSensitive(catalogue, "watch"));
 }
 
+static cJSON *failure_watch(cJSON *app) {
+    cJSON *copy = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(app, "watch"), true);
+    if (!copy) return NULL;
+    cJSON *global = cJSON_GetObjectItemCaseSensitive(catalogue, "watch");
+    for (cJSON *p = global ? global->child : NULL; p; p = p->next) {
+        if (!p->string) continue;
+        cJSON *value = cJSON_Duplicate(p, true);
+        if (!value) { cJSON_Delete(copy); return NULL; }
+        cJSON_DeleteItemFromObjectCaseSensitive(copy, p->string);
+        cJSON_AddItemToObject(copy, p->string, value);
+    }
+    return copy;
+}
+
 static int load_catalogue(void) {
     char path[1200];
     np_support_path(path, sizeof(path), np_home_dir(), "cloud-index.json");
@@ -157,8 +172,7 @@ bool gluon_cloud_ready(uint32_t appid) {
         // on each UI query. A changed layout or a Steam restart allows recovery.
         if (result != 75) {
             if (!failures) failures = cJSON_CreateObject();
-            cJSON *watch = cJSON_GetObjectItemCaseSensitive(app, "watch");
-            cJSON *copy = cJSON_Duplicate(watch, true);
+            cJSON *copy = failure_watch(app);
             if (copy) cJSON_AddItemToObject(failures, key, copy);
         }
         failed_app = appid; failed_until = now_ms() + 1000;

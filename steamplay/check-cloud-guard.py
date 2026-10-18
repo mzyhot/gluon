@@ -28,6 +28,7 @@ with tempfile.TemporaryDirectory() as temporary:
     (steam / 'steamapps').mkdir(parents=True)
     (steam / 'steamapps/appmanifest_123.acf').write_text('fixture')
     # API and GameInstall games must keep their original separate pfx untouched.
+    sys.path.insert(0, str(root))
     sys.path.insert(0, str(root / 'tests'))
     from test_migration import cache_bytes
     entries = []
@@ -43,6 +44,8 @@ with tempfile.TemporaryDirectory() as temporary:
         (legacy / 'old-save').write_bytes(b'original prefix retained')
     (steam / 'appcache').mkdir()
     (steam / 'appcache/appinfo.vdf').write_bytes(data[:8] + b''.join(entries) + b'\0' * 4)
+    api = bytearray(cache_bytes({'ufs': {'quota': 100}}))
+    (home / 'api-appinfo.vdf').write_bytes(api[:8] + api[8:-4] + b''.join(entries) + b'\0' * 4)
     compat = steam / 'steamapps/compatdata/791'
     (compat / 'pfx/drive_c/users/steamuser').mkdir(parents=True)
     (compat / 'pfx/system.reg').write_text('old registry')
