@@ -98,8 +98,8 @@ def main():
                                 str(runtime / "lib/libMoltenVK.dylib"), "--device"],
                            allow_unavailable=True)
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
-        # wineboot may return before setup/service children finish. Match the
-        # launcher's first-run barrier before loading other DLLs in the prefix.
+        # wineboot can return while setup/service children are still running.
+        # Match the launcher's first-run barrier before probing other DLLs.
         run("wine-prefix-idle", [server, "-w"], seconds=30)
         for arch in ("x86_64", "i686"):
             run(f"runtime-dependencies-{arch}", [wine, str(probes / f"dependencies-{arch}.exe")])
@@ -107,21 +107,36 @@ def main():
             run(f"vulkan-loader-{arch}", [wine, str(probes / f"vulkan-{arch}.exe")],
                 overrides={"WINEDEBUG": "fixme-all,+vulkan,+loaddll"})
             if native_gl["status"] == "passed":
+                # Without the opt-in, a 3.3 compatibility request must still be rejected.
                 run(f"wgl-alias-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--require-alias"])
+                run(f"wgl-compat-as-core-{arch}",
+                    [wine, str(probes / f"wgl-{arch}.exe"), "--require-alias", "--compat-as-core"],
+                    overrides={"GLUON_GL_COMPAT_AS_CORE": "1"})
             else:
-                results.append(dict(name=f"wgl-alias-{arch}", status="skipped",
-                                    reason="Native CGL prerequisite did not pass."))
+                for name in (f"wgl-alias-{arch}", f"wgl-compat-as-core-{arch}"):
+                    results.append(dict(name=name, status="skipped",
+                                        reason="Native CGL prerequisite did not pass."))
             if native_vk["status"] == "passed":
                 device, contents = run(f"vulkan-device-1.0-{arch}",
                                        [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.0"],
                                        overrides={"WINEDEBUG": "fixme-all,+vulkan", "MVK_CONFIG_LOG_LEVEL": "3"})
                 require_native_portability(device, contents)
+                # A game asking for Vulkan 1.3 gets a 1.3 device with dynamic rendering
+                # and synchronization2. Hosted runners' paravirtual GPU may stop below
+                # 1.3; the probe then reports itself unavailable and this is a skip.
+                modern, contents = run(f"vulkan-device-1.3-{arch}",
+                                       [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.3"],
+                                       allow_unavailable=True,
+                                       overrides={"WINEDEBUG": "fixme-all,+vulkan", "MVK_CONFIG_LOG_LEVEL": "3"})
+                if modern["status"] == "passed":
+                    require_native_portability(modern, contents)
                 rendered, contents = run(f"d3d9-render-{arch}", [wine, str(probes / f"d3d9-{arch}.exe")],
                                          overrides={"MVK_CONFIG_LOG_LEVEL": "3"})
                 require_native_portability(rendered, contents)
             else:
-                results.append(dict(name=f"vulkan-device-1.0-{arch}", status="skipped",
-                                    reason="Native Metal device prerequisite did not pass."))
+                for name in (f"vulkan-device-1.0-{arch}", f"vulkan-device-1.3-{arch}"):
+                    results.append(dict(name=name, status="skipped",
+                                        reason="Native Metal device prerequisite did not pass."))
                 results.append(dict(name=f"d3d9-render-{arch}", status="skipped",
                                     reason="Native Metal device prerequisite did not pass."))
     except (ProbeFailed, OSError) as error:

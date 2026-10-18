@@ -47,6 +47,9 @@ jobs:
       - name: Build tools
         run: brew install bison flex cmake pkg-config
 
+      - name: Native launcher lifecycle fixtures
+        run: packaging/check-launcher-host.sh
+
       - name: Cache downloads
         uses: actions/cache@v4
         with:

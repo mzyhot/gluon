@@ -1,0 +1,44 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -538,30 +538,37 @@
+ static char *extract_exe_name(const char *exe_path)
+ {
+     char *exe_name, *exe_path_copy, *p, *ret;
+     size_t exe_name_len;
+ 
+     exe_path_copy = strdup(exe_path);
+     exe_name = exe_path_copy;
+ 
+     if ((p = strrchr(exe_name, '\\'))) exe_name = p + 1;
+     if ((p = strrchr(exe_name, '/'))) exe_name = p + 1;
+     if (strspn(exe_name, "0123456789abcdefABCDEF") == 32 &&
+         exe_name[32] == '.')
+         exe_name += 33;
+-    if ((p = strrchr(exe_name, '.')) && p != exe_name)
+-        exe_name_len = p - exe_name;
+-    else
+-        exe_name_len = strlen(exe_name);
++    /* Trim only the Windows executable suffix from the display-name copy.
++     * Keep other dots and suffixes, and never change the executable path. */
++    exe_name_len = strlen(exe_name);
++    if (exe_name_len > 4 && exe_name[exe_name_len - 4] == '.' &&
++        (exe_name[exe_name_len - 3] == 'e' || exe_name[exe_name_len - 3] == 'E') &&
++        (exe_name[exe_name_len - 2] == 'x' || exe_name[exe_name_len - 2] == 'X') &&
++        (exe_name[exe_name_len - 1] == 'e' || exe_name[exe_name_len - 1] == 'E'))
++    {
++        exe_name_len -= 4;
++        exe_name[exe_name_len] = 0;
++    }
+ 
+     if (exe_name_len)
+         ret = strdup(exe_name);
+     else
+         ret = NULL;
+ 
+     free(exe_path_copy);
+     return ret;
+ }
+ 
+ /* Returns a path to $TMPDIR/winetemp-<wineloader_inode>-<wineloader_size_in_bytes>-<wineloader_mtime_sec>-<-wineloader_mtime_nsec>
+  * The intention is that all links to the same wineloader will go in the same directory, and a different directory
+  * will be used if wineloader is updated or modified.

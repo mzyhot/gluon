@@ -1,0 +1,74 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -318,11 +318,25 @@
+ /* build a path to a binary and exec it */
+ static int build_path_and_exec( pid_t *pid, const char *dir, const char *name, char **argv )
+ {
+-    int ret;
++    char **env = environ;
++    int ret, count = 0, kept = 0;
+ 
+-    argv[0] = build_path( dir, name );
+-    ret = posix_spawn( pid, argv[0], NULL, NULL, argv, environ );
++    /* Gluon: the server never receives Steam's overlay (see scope_steam_overlay). */
++    if (getenv( "GLUON_OVERLAY_INSERT" ))
++    {
++        while (environ[count]) count++;
++        if ((env = malloc( (count + 1) * sizeof(*env) )))
++        {
++            for (count = 0; environ[count]; count++)
++                if (strncmp( environ[count], "DYLD_INSERT_LIBRARIES=", 22 )) env[kept++] = environ[count];
++            env[kept] = NULL;
++        }
++        else env = environ;
++    }
++    argv[0] = build_path( dir, name );
++    ret = posix_spawn( pid, argv[0], NULL, NULL, argv, env );
+     free( argv[0] );
++    if (env != environ) free( env );
+     return ret;
+ }
+ 
+@@ -669,10 +683,42 @@
+     }
+ }
+ #endif
++
++
++/* Gluon: Steam's overlay, passed as GLUON_OVERLAY_INSERT, belongs only in game
++ * processes. Injected into Wine's own programs or the server, it can end them
++ * when Steam's pipe closes and leave the rest of the prefix behind. A game is
++ * any program outside the prefix's Windows directory; a bare built-in name
++ * such as "wineboot" is not one. */
++static BOOL is_game_image( const char *program, const char *image_path )
++{
++    const char *path = program;
++    char *lower, *p;
++    BOOL game;
++
++    if (image_path && ((image_path[0] && image_path[1] == ':') || !strncmp( image_path, "\\??\\", 4 )))
++        path = image_path;
++    if (!path || (!strchr( path, '/' ) && !strchr( path, '\\' ))) return FALSE;
++    if (!(lower = strdup( path ))) return FALSE;
++    for (p = lower; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
++    game = !strstr( lower, ":\\windows\\" ) && !strstr( lower, "/drive_c/windows/" );
++    free( lower );
++    return game;
++}
+ 
++static void scope_steam_overlay( const char *program, const char *image_path )
++{
++    const char *overlay = getenv( "GLUON_OVERLAY_INSERT" );
+ 
++    if (!overlay) return;
++    if (*overlay && is_game_image( program, image_path )) setenv( "DYLD_INSERT_LIBRARIES", overlay, 1 );
++    else unsetenv( "DYLD_INSERT_LIBRARIES" );
++}
++
+ static void preloader_exec( char **argv, const char *image_path )
+ {
++    scope_steam_overlay( argv[2], image_path );
++
+ #ifdef HAVE_WINE_PRELOADER
+     asprintf( &argv[0], "%s-preloader", argv[1] );
+ #ifdef __APPLE__

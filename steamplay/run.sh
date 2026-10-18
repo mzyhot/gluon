@@ -4,8 +4,10 @@
 unset DYLD_INSERT_LIBRARIES
 verb="${1:-}"
 case "$verb" in
-  getcompatpath) printf '%s\n' "${STEAM_COMPAT_DATA_PATH:-}"; exit 0 ;;
-  run|runinprefix|waitforexitandrun) shift ;;
+  getcompatpath)
+    if [ "$#" -eq 1 ]; then printf '%s\n' "${STEAM_COMPAT_DATA_PATH:-}"; exit 0; fi
+    shift ;;
+  getnativepath|run|runinprefix|waitforexitandrun) shift ;;
   *) printf 'gluon: unsupported Steam Play verb: %s\n' "$verb" >&2; exit 1 ;;
 esac
 [ $# -gt 0 ] || { echo 'gluon: no Windows executable supplied' >&2; exit 1; }
