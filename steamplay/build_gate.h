@@ -18,21 +18,33 @@ static unsigned long long gluon_parse_build(const char *text) {
 }
 
 static unsigned long long gluon_installed_build(const char *root) {
-    static const char *names[] = {"steam_client_macos.installed", "steam_client_osx.installed"};
+    static const char *bases[] = {"", "/Steam.AppBundle/Steam/Contents/MacOS"};
+    static const char *names[] = {"steam_client_macos.installed", "steam_client_osx.installed",
+        "steam_client_macos.manifest", "steam_client_osx.manifest",
+        "steam_client_signed_osx.manifest", "steam_client_signed-2_osx.manifest"};
     unsigned long long build = 0;
-    for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
-        char path[2048], buf[65536];
-        if (snprintf(path, sizeof(path), "%s/package/%s", root, names[i]) >= (int)sizeof(path)) return 0;
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        size_t got = fread(buf, 1, sizeof(buf)-1, f);
-        int complete = feof(f);
-        fclose(f);
-        if (!complete) return 0;
-        buf[got] = 0;
-        unsigned long long found = gluon_parse_build(buf);
-        if (!found || (build && found != build)) return 0;
-        build = found;
+    for (size_t b = 0; b < sizeof(bases)/sizeof(bases[0]); b++) {
+        for (size_t i = 0; i < sizeof(names)/sizeof(names[0]); i++) {
+            char path[2048], buf[65536];
+            if (snprintf(path, sizeof(path), "%s%s/package/%s", root, bases[b], names[i]) >= (int)sizeof(path)) return 0;
+            char *extension = strrchr(path, '.');
+            if (extension && !strcmp(extension, ".manifest")) {
+                strcpy(extension, ".installed");
+                FILE *inventory = fopen(path, "r");
+                if (!inventory) continue;
+                fclose(inventory);
+                strcpy(extension, ".manifest");
+            }
+            FILE *f = fopen(path, "r");
+            if (!f) continue;
+            size_t got = fread(buf, 1, sizeof(buf)-1, f);
+            int complete = feof(f);
+            fclose(f);
+            if (!complete) continue;
+            buf[got] = 0;
+            unsigned long long found = gluon_parse_build(buf);
+            if (found > build) build = found;
+        }
     }
     return build;
 }

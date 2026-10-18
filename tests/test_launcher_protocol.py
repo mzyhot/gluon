@@ -68,6 +68,7 @@ with open(os.environ['GLUON_TEST_TRACE'], 'a') as f:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.trace.read_text().splitlines()[-1])['prefix'], str(compat / 'pfx-wine'))
         self.assertEqual((compat / 'pfx-wine/save.dat').read_text(), 'save')
+        self.assertIsNone(json.loads(self.trace.read_text().splitlines()[-1])['appid'])
 
     def test_getcompatpath_never_starts_wine(self):
         result = self.run_tool('getcompatpath', STEAM_COMPAT_DATA_PATH='/fixture compat')

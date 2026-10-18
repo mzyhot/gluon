@@ -132,19 +132,30 @@ def find_app(explicit=None):
 
 def client_build(root):
     versions = set()
-    for name in ("steam_client_macos.installed", "steam_client_osx.installed"):
-        path = root / "package" / name
-        if not path.exists():
-            continue
-        data = vdf.load(str(path))
-        for section in data.values():
-            if isinstance(section, dict):
-                version = vdf.iget(section, "version")
-                if isinstance(version, str) and version.isdigit():
-                    versions.add(version)
-    if len(versions) != 1:
+    for base in (root, root / "Steam.AppBundle/Steam/Contents/MacOS"):
+        for name in ("steam_client_macos.installed", "steam_client_osx.installed",
+                     "steam_client_macos.manifest", "steam_client_osx.manifest",
+                     "steam_client_signed_osx.manifest", "steam_client_signed-2_osx.manifest"):
+            path = base / "package" / name
+            if not path.is_file() or path.is_symlink():
+                continue
+            if path.suffix == ".manifest" and not path.with_suffix(".installed").is_file():
+                continue
+            try:
+                data = vdf.load(str(path))
+            except vdf.VDFError:
+                continue
+            for section in data.values():
+                if isinstance(section, dict):
+                    version = vdf.iget(section, "version")
+                    if isinstance(version, str) and version.isdigit():
+                        versions.add(version)
+    if not versions:
         raise SteamPlayError("cannot identify the installed Steam build; open Steam to finish its update, then quit it")
-    return versions.pop()
+    # Signed-channel manifests coexist with stale unsigned-channel manifests.
+    # Only manifests with an installed inventory count; runtime resolution is
+    # still mandatory and never trusts the version number alone.
+    return max(versions, key=int)
 
 
 class System:

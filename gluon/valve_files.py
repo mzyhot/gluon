@@ -6,6 +6,8 @@ and each member must pass the upstream SHA-256 check before anything is installe
 from __future__ import annotations
 import hashlib
 import io
+import json
+import os
 from pathlib import Path
 import urllib.request
 import zipfile
@@ -15,8 +17,18 @@ from .steamplay import Installation, SteamPlayError, _atomic, _digest
 
 def ensure():
     installation = Installation()
+    active = os.environ.get('GLUON_STEAMPLAY_PAYLOAD')
+    if active:
+        candidate = Path(active).resolve(strict=True)
+        if candidate.parent != (installation.home / 'steamplay/payloads').resolve():
+            raise SteamPlayError('invalid active Steam Play payload')
+        installation.payload = candidate
     # Running during a Steam launch is intended: this writes only Gluon's files.
     manifest = installation.payload / 'valve-packages.manifest'
+    inventory = json.loads((installation.payload / 'payload.json').read_text())
+    expected = inventory.get('files', {}).get('valve-packages.manifest')
+    if manifest.is_symlink() or not expected or _digest(manifest) != expected:
+        raise SteamPlayError('Valve helper manifest failed payload verification')
     bases, packages, files = [], {}, []
     for line in manifest.read_text().splitlines():
         fields = line.split()

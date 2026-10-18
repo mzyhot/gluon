@@ -36,12 +36,23 @@ gluon.none.
 +    if (!err && rename(temporary, path) != 0) err = 1;
 +    if (err) unlink(temporary);
      return err ? -1 : 0;
-@@ -407,3 +413,3 @@
+@@ -330,4 +336,8 @@
+     char tools_dir[512];
+-    snprintf(tools_dir, sizeof(tools_dir),
+-             "%s/Library/Application Support/Steam/compatibilitytools.d", home);
++    const char *root = getenv("GLUON_STEAM_ROOT");
++    if (root && root[0])
++        snprintf(tools_dir, sizeof(tools_dir), "%s/compatibilitytools.d", root);
++    else
++        snprintf(tools_dir, sizeof(tools_dir),
++                 "%s/Library/Application Support/Steam/compatibilitytools.d", home);
+ 
+@@ -407,3 +417,3 @@
          NP_WARN("np_compat_load_tool_list: %s is missing, so no build has a tool "
 -                "until NotProton sets one up", path);
 +                "until Gluon sets one up", path);
          return 0;
-@@ -456,3 +462,7 @@
+@@ -456,3 +466,7 @@
      if (!home) return -1;
 -    snprintf(out, size, "%s/Library/Application Support/Steam/compatibilitytools.d", home);
 +    const char *root = getenv("GLUON_STEAM_ROOT");
@@ -50,12 +61,12 @@ gluon.none.
 +    else
 +        snprintf(out, size, "%s/Library/Application Support/Steam/compatibilitytools.d", home);
      return 0;
-@@ -466,3 +476,3 @@
+@@ -466,3 +480,3 @@
      char path[512];
 -    snprintf(path, sizeof(path), "%s/Library/Application Support/notproton/tools", home);
 +    np_support_path(path, sizeof(path), home, "tools");
      np_compat_load_tool_list(path, tools_dir);
-@@ -480,3 +490,22 @@
+@@ -480,3 +494,22 @@
  
 +static int written_here(const char *tool_dir);
 +
@@ -78,13 +89,13 @@ gluon.none.
 +        return -1;
 +    }
      if (ensure_dir(tool->dir) != 0) {
-@@ -492,2 +521,5 @@
+@@ -492,2 +525,5 @@
      int wrote = 0;
 +    snprintf(path, sizeof(path), "%s/run", tool->dir);
 +    if (write_file(path, RUN_SCRIPT, 1) != 0) return -1;
 +    wrote++;
  
-@@ -505,8 +537,2 @@
+@@ -505,8 +541,2 @@
  
 -    // The run script is the shim this project owns and updates, so rewrite it
 -    // every launch rather than leaving a stale copy behind.
@@ -93,12 +104,12 @@ gluon.none.
 -    else NP_WARN("np_compat_ensure_tool_manifest: failed to write %s", path);
 -
      char line[80];
-@@ -528,3 +554,3 @@
+@@ -528,3 +558,3 @@
  
 -#define RUN_SCRIPT_MARK "\n# notproton CrossOver compatibility tool shim\n"
 +#define RUN_SCRIPT_MARK "\n# gluon Steam Play compatibility tool shim\n"
  
-@@ -532,6 +558,5 @@
+@@ -532,6 +562,5 @@
      char path[768];
 -    snprintf(path, sizeof(path), "%s/flavor", tool_dir);
 -    if (access(path, F_OK) == 0) return 1;

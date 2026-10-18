@@ -27,7 +27,10 @@
 unset DYLD_INSERT_LIBRARIES
 
 GLUON_HOME="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
-appid="${STEAM_COMPAT_APP_ID:-${SteamAppId:-${SteamGameId:-0}}}"
+appid="${STEAM_COMPAT_APP_ID:-0}"
+case "$appid" in ''|0) appid="${SteamAppId:-0}" ;; esac
+case "$appid" in ''|0) appid="${SteamGameId:-0}" ;; esac
+case "$appid" in ''|0) appid="${STEAM_COMPAT_DATA_PATH##*/}" ;; esac
 case "$appid" in ''|0|*[!0-9]*) printf '%s\n' 'gluon: Steam did not supply a valid app ID' >&2; exit 1 ;; esac
 LOG_DIR="$GLUON_HOME/logs"
 LOG="$LOG_DIR/launch-$appid.log"
@@ -125,7 +128,12 @@ if [ ! -d "$compat/pfx-wine" ] && [ -d "$GLUON_HOME/compatdata/$appid/pfx-wine" 
 fi
 mkdir -p "$compat" || fail "cannot create $compat"
 export STEAM_COMPAT_DATA_PATH="$compat" STEAM_COMPAT_APP_ID="$appid"
-export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+if [ "$verb" = waitforexitandrun ]; then
+    export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+else
+    # Install-script helpers must not register as the running game (AppError_16).
+    unset SteamAppId SteamGameId
+fi
 [ -n "$install_dir" ] && export STEAM_COMPAT_INSTALL_PATH="${STEAM_COMPAT_INSTALL_PATH:-$install_dir}"
 
 # A Steam Play tool insists on <compat>/pfx and fills it with its own files, so a plain
@@ -160,7 +168,9 @@ if [ "$kind" = proton ]; then
     export STEAM_COMPAT_CLIENT_INSTALL_PATH="${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$client_dir}"
     export STEAM_COMPAT_APP_ID="$appid"
     [ -n "$install_dir" ] && export STEAM_COMPAT_INSTALL_PATH="${STEAM_COMPAT_INSTALL_PATH:-$install_dir}"
-    export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+    if [ "$verb" = waitforexitandrun ]; then
+        export SteamAppId="$appid" SteamGameId="${SteamGameId:-$appid}"
+    fi
     log "  client    = $STEAM_COMPAT_CLIENT_INSTALL_PATH"
 fi
 
@@ -168,11 +178,11 @@ fi
 # layers here cannot present into another process's window, which leaves a blank
 # window. Keeping the GPU work inside the window's own process avoids that.
 exe_dir="$(dirname "$exe")"
-if [ -z "$GLUON_NO_AUTO_ARGS" ] && { [ -f "$exe_dir/chrome_100_percent.pak" ] || [ -f "$exe_dir/resources/app.asar" ] || [ -f "$exe_dir/LICENSES.chromium.html" ]; }; then
+if [ "$verb" = waitforexitandrun ] && [ -z "$GLUON_NO_AUTO_ARGS" ] && { [ -f "$exe_dir/chrome_100_percent.pak" ] || [ -f "$exe_dir/resources/app.asar" ] || [ -f "$exe_dir/LICENSES.chromium.html" ]; }; then
     log "  Chromium-based app detected: adding --in-process-gpu"
     set -- "$@" --in-process-gpu
 fi
-if [ -n "$GLUON_EXTRA_ARGS" ]; then
+if [ "$verb" = waitforexitandrun ] && [ -n "$GLUON_EXTRA_ARGS" ]; then
     log "  extra arguments: $GLUON_EXTRA_ARGS"
     # shellcheck disable=SC2086  # word splitting is intended: one argument per word
     set -- "$@" $GLUON_EXTRA_ARGS

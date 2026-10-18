@@ -53,6 +53,18 @@ cp "$src/LICENSE" "$payload/licenses/NotProton-LICENSE"
 cp "$src/NOTICE" "$payload/licenses/NotProton-NOTICE"
 cp "$src/vendor/dobby/LICENSE" "$payload/licenses/Dobby-LICENSE"
 cp "$src/vendor/cJSON.h" "$payload/licenses/cJSON-header.txt"
+# Preserve notices of Dobby's compiled external dependencies as well.
+python3 - "$src/vendor/dobby" "$payload/licenses/dobby-dependencies" <<'LICENSES'
+from pathlib import Path
+import shutil
+import sys
+source, destination = map(Path, sys.argv[1:])
+for path in source.rglob('*'):
+    if path.is_file() and path.name.upper().startswith(('LICENSE', 'COPYING', 'NOTICE')) and '.git' not in path.parts:
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+LICENSES
 cp "$here/LICENSE" "$payload/licenses/Gluon-LICENSE"
 printf 'gluon\t1\trosetta\tGluon\n' > "$payload/tools"
 codesign -f -s - "$payload/gluon-steamplay.dylib" "$payload/appinfo"

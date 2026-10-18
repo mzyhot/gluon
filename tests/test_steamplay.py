@@ -104,6 +104,14 @@ class SteamPlayTests(unittest.TestCase):
         self.installation.uninstall()
         self.assertEqual(steamplay._tree(self.app), self.original)
 
+    def test_signed_channel_manifest_in_nested_client_is_detected(self):
+        package = self.root / 'Steam.AppBundle/Steam/Contents/MacOS/package'
+        package.mkdir(parents=True)
+        (package / 'steam_client_signed-2_osx.manifest').write_text('"osx" { "version" "789" }')
+        self.assertEqual(steamplay.client_build(self.root), '123')
+        (package / 'steam_client_signed-2_osx.installed').write_text('fixture installed inventory')
+        self.assertEqual(steamplay.client_build(self.root), '789')
+
     def test_missing_steam(self):
         with self.assertRaisesRegex(steamplay.SteamPlayError, 'missing'):
             self.installation.install(str(self.app.parent / 'absent.app'))
