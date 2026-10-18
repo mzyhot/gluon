@@ -26,8 +26,8 @@
 #   GLUON_STEAM_BRIDGE       let the game reach the Steam client (achievements, overlay)
 #   GLUON_GL_COMPAT_AS_CORE  map OpenGL 3.x compatibility requests to the core profile
 #   WINEMSYNC                msync for plain Wine runtimes
-# Native AutoCloud is prepared explicitly with gluonctl cloud prepare APPID,
-# then selected through Steam's Compatibility settings. No cache edits are used.
+# Native AutoCloud is prepared automatically before Steam resolves save paths.
+# The launcher verifies the same prefix view again. No cache edits are used.
 #
 # Settings are NAME=value lines in $GLUON_HOME/settings.env (every game) and
 # $GLUON_HOME/games/<appid>.env (one game), or "%command% NAME=value" in a game's
@@ -290,7 +290,7 @@ fi
 # keep Wine from writing launchers/file associations into the user's macOS account
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}winemenubuilder.exe=d"
 if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ]; then
-    [ "$kind" = wine ] || fail "Gluon's native Cloud mode requires its plain-Wine runtime"
+    [ "$kind" = wine ] || fail "Gluon's native Steam Cloud requires its plain-Wine runtime"
     PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
         -m gluon.cloud --check "$compat" >> "$LOG" 2>&1 || fail "native Cloud layout is not prepared"
 fi

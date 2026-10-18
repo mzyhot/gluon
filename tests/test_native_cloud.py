@@ -31,6 +31,8 @@ class NativeCloudTests(unittest.TestCase):
         context.start(); self.addCleanup(context.stop)
         context = patch.object(steamplay.Installation, 'idle')
         self.idle = context.start(); self.addCleanup(context.stop)
+        context = patch.object(cloud, '_wine_idle')
+        self.wine_idle = context.start(); self.addCleanup(context.stop)
 
     def prepare(self):
         return cloud.prepare('123')
@@ -128,7 +130,7 @@ class NativeCloudTests(unittest.TestCase):
             cloud.check(self.compat)
 
     def test_unprepared_game_is_rejected(self):
-        with self.assertRaisesRegex(cloud.CloudError, 'not prepared'):
+        with self.assertRaisesRegex(cloud.CloudError, 'automatic preparation'):
             cloud.check(self.compat)
 
     def test_invalid_appid_cannot_select_other_paths(self):
@@ -142,12 +144,14 @@ class NativeCloudTests(unittest.TestCase):
         with self.assertRaisesRegex(cloud.CloudError, 'changed'):
             cloud.check(self.compat)
 
-    def test_profile_backup_limit_leaves_layout_unchanged(self):
+    def test_insufficient_backup_space_leaves_layout_unchanged(self):
         profile = self.prefix / 'drive_c/users/crossover'
         profile.mkdir(parents=True)
         (profile / 'save').write_bytes(b'large save')
-        with patch.object(cloud, 'BACKUP_LIMIT', 1):
-            with self.assertRaisesRegex(cloud.CloudError, 'backup limit'):
+        from collections import namedtuple
+        usage = namedtuple('usage', 'total used free')
+        with patch.object(cloud.shutil, 'disk_usage', return_value=usage(10, 9, 1)):
+            with self.assertRaisesRegex(cloud.CloudError, 'free space'):
                 self.prepare()
         self.assertFalse((self.compat / cloud.MARKER).exists())
         self.assertFalse((self.compat / 'pfx').exists())
@@ -170,9 +174,73 @@ class NativeCloudTests(unittest.TestCase):
         command = ['/bin/sh', str(shim.parent) + '/./run', 'waitforexitandrun', 'fixture.exe']
         failed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
         self.assertNotEqual(failed.returncode, 0)
-        self.assertIn('not prepared', failed.stderr)
+        self.assertIn('automatic preparation', failed.stderr)
         self.assertFalse(trace.exists())
         self.prepare()
         passed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(passed.returncode, 0, passed.stderr)
         self.assertTrue(trace.exists())
+
+    def test_automatic_preparation_runs_while_steam_is_active(self):
+        self.idle.side_effect = steamplay.SteamPlayError('Steam is active')
+        cloud.prepare('123', automatic=True)
+        self.assertEqual(cloud.check(self.compat), self.prefix / 'drive_c/users/steamuser')
+        self.idle.assert_not_called()
+        self.wine_idle.assert_called()
+
+    def test_automatic_preparation_refuses_active_wine_without_changes(self):
+        self.wine_idle.side_effect = cloud.CloudError('Wine is active')
+        with self.assertRaisesRegex(cloud.CloudError, 'Wine is active'):
+            cloud.prepare('123', automatic=True)
+        self.assertFalse(self.prefix.exists())
+
+    def test_catalogue_detects_installation_and_layout_conflicts(self):
+        data = cloud.index()
+        self.assertFalse(data['apps']['123']['ready'])
+        self.prepare()
+        data = cloud.index()
+        self.assertTrue(data['apps']['123']['ready'])
+        before = data['apps']['123']['watch']
+        (self.compat / 'pfx').unlink()
+        (self.compat / 'pfx').mkdir()
+        data = cloud.index()
+        self.assertFalse(data['apps']['123']['ready'])
+        self.assertNotEqual(before, data['apps']['123']['watch'])
+
+    def test_legacy_prefix_in_another_location_is_never_silently_ignored(self):
+        legacy = self.home / 'compatdata/123/pfx-wine'
+        legacy.mkdir(parents=True)
+        (legacy / 'save').write_bytes(b'legacy')
+        with self.assertRaisesRegex(cloud.CloudError, 'ambiguous'):
+            self.prepare()
+        self.assertEqual((legacy / 'save').read_bytes(), b'legacy')
+        self.assertFalse(self.prefix.exists())
+
+    def test_shared_mac_documents_location_and_affected_saves_are_preserved(self):
+        from test_migration import cache_bytes
+        mac_home = self.root / 'MacHome'
+        documents = mac_home / 'Documents'
+        game = documents / 'FixtureGame'
+        game.mkdir(parents=True)
+        save = game / 'save.dat'
+        save.write_bytes(b'existing shared save')
+        (documents / 'unrelated.txt').write_bytes(b'personal')
+        profile = self.prefix / 'drive_c/users/crossover'
+        profile.mkdir(parents=True)
+        (profile / 'Documents').symlink_to(documents)
+        cache = self.library / 'appcache/appinfo.vdf'
+        cache.parent.mkdir()
+        content = cache_bytes({'ufs': {'savefiles': {'0': {
+            'root': 'WinMyDocuments', 'path': 'FixtureGame', 'pattern': '*'}}}})
+        cache.write_bytes(content)
+        with patch.object(Path, 'home', return_value=mac_home), patch.object(steam, 'APPINFO', str(cache)):
+            self.prepare()
+            self.assertEqual(cloud.check(self.compat), profile)
+            self.assertTrue((profile / 'Documents').is_symlink())
+            self.assertEqual((profile / 'Documents').resolve(), documents)
+        self.assertEqual(save.read_bytes(), b'existing shared save')
+        copies = list((self.home / 'backups/cloud').glob('*/documents-*/save.dat'))
+        self.assertEqual(len(copies), 1)
+        self.assertEqual(copies[0].read_bytes(), b'existing shared save')
+        self.assertFalse(list((self.home / 'backups/cloud').rglob('unrelated.txt')))
+        self.assertEqual(cache.read_bytes(), content)

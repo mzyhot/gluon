@@ -87,7 +87,7 @@ The read-only legacy Cloud recognizer restores a recorded Cloud section only
 when the live value is exactly the old mapper's output. Independently changed
 Cloud fields still block migration.
 
-The optional native Cloud mode uses prefix aliases and Steam's own compatibility
+Automatic native Cloud uses prefix aliases and Steam's own compatibility
 path handling. It never reapplies legacy mappings. See [runtime features](RUNTIME.md)
 for preparation, prefix conflict checks and manual acceptance requirements.
 

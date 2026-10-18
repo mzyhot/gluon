@@ -1,0 +1,66 @@
+Prepare native Cloud paths before handing a Gluon compatibility tool to Steam.
+
+The existing FindToolForTargetApp boundary is also used by Steam's Cloud root
+resolver. A failed filesystem preflight returns no tool, so its Windows roots
+cannot be exposed. Legacy Gluon selections resolve to the current Cloud-enabled
+tool without changing the user's recorded mapping or any appinfo data.
+
+--- a/Makefile
++++ b/Makefile
+@@ -39,6 +39,7 @@
+ 	dylib/hooks/hook_launch.c \
+ 	dylib/hooks/hook_activate.c \
+ 	dylib/feats/compat.c \
++	dylib/feats/cloud_guard.c \
+ 	dylib/feats/webui.c \
+ 	dylib/feats/compatsvc.c \
+ 	dylib/feats/usershortcuts.c \
+--- a/dylib/hooks/hook_compat.c
++++ b/dylib/hooks/hook_compat.c
+@@ -1,6 +1,7 @@
+ // Compat tool hooks
+ #include "hooks.h"
+ #include "../feats/compat.h"
++#include "../feats/cloud_guard.h"
+ #include "../feats/compatsvc.h"
+ #include "../feats/usershortcuts.h"
+ #include "../util/ptr.h"
+@@ -72,8 +73,16 @@
+     }
+     void *tool = orig(self, appid);
+ 
+-    if (tool || appid == 0)
++    if (appid == 0) return tool;
++    const char *name = tool ? *(const char *const *)((const uint8_t *)tool + COMPAT_TOOL_NAME_OFF) : NULL;
++    const char *old_mapping = np_compat_app_mapping(self, appid);
++    if ((name && !strcmp(name, "gluon")) || (!tool && old_mapping && !strcmp(old_mapping, "gluon")))
++        tool = np_compat_registered_tool(self);
++    if (tool) {
++        name = *(const char *const *)((const uint8_t *)tool + COMPAT_TOOL_NAME_OFF);
++        if (name && !strncmp(name, "gluon", 5) && !gluon_cloud_ready(appid)) return NULL;
+         return tool;
++    }
+ 
+     // The NP_COMPAT_TOOL_NONE sentinel is honored as an explicit refusal.
+     const char *mapping = np_compat_app_mapping(self, appid);
+@@ -84,6 +93,7 @@
+         return NULL;
+ 
+     void *crossover = np_compat_registered_tool(self);
++    if (crossover && !gluon_cloud_ready(appid)) return NULL;
+     if (crossover)
+         NP_DBG("hook_FindToolForTargetApp: appID %u is windows-only, defaulting to Gluon tool",
+                appid);
+--- a/dylib/feats/compat.c
++++ b/dylib/feats/compat.c
+@@ -18,8 +18,8 @@
+ 
+ // The client maps Cloud's Windows path roots into the compat prefix only when
+ // the tool's name contains "proton" so without a match every AutoCloud rule silently
+-// skips the app. Gluon leaves it out on purpose: its plain-Wine prefixes are not laid
+-// out like Proton's, so mapped rules would point at folders the game never writes.
++// skips the app. The default gluon-proton tool uses verified prefix views; the
++// tool-resolution preflight must finish before its native Cloud roots are exposed.
+ #define TOOL_DIR_NAME "gluon"
+ #define TOOL_RUN      "/run"
+ 

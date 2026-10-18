@@ -1,0 +1,71 @@
+# Native Steam Cloud integration
+
+The earlier optional design was a conservative implementation choice, not a
+requirement of native Steam Play. Gluon now uses automatic preparation and a
+single compatibility tool. It leaves Steam responsible for synchronization,
+rule evaluation, user preferences and Cloud conflict decisions.
+
+## Why the launcher is too late
+
+[Valve documents synchronization before and after each game session](https://partner.steamgames.com/doc/features/cloud).
+The local client logs also place AutoCloud's launch scan before Gluon's game
+launcher. Validating or migrating a prefix only in `waitforexitandrun` cannot
+protect the preceding synchronization.
+
+The pinned [NotProton compatibility registration](https://github.com/NotProtonNot/NotProton/blob/8562a6320279224125a80cd66bf8d1af9b04bb2d/dylib/feats/compat.c)
+explains that a tool identifier containing `proton` enables the client's Windows
+Cloud roots. Its [profile setup](https://github.com/NotProtonNot/NotProton/blob/8562a6320279224125a80cd66bf8d1af9b04bb2d/dylib/feats/compat_run.sh)
+also establishes that the shared profile must exist before Wine initialization.
+Gluon's prior default identifier omitted `proton`, so those roots were absent.
+
+## Preparation boundary
+
+Read-only inspection of the installed supported client established that its
+compatibility Cloud path resolver calls `FindToolForTargetApp` before reading
+the tool's Windows roots and joining them to the per-game compatibility path.
+A missing tool makes this path lookup fail. This is static control-flow evidence,
+not an observed network synchronization or a universal claim about future clients.
+
+Gluon already hooks that function through the pinned public signature resolver.
+The new guard prepares the installed game's layout before returning its tool;
+failure returns no tool. No new Steam offsets, byte patterns or binary-derived
+addresses are introduced. Only supported, fully resolved Steam builds remain
+eligible. `getcompatpath` is retained for the tool protocol; it is not assumed to
+be an obligatory pre-Cloud callback.
+
+A filesystem catalogue avoids launching helpers on warm lookups. Library and
+manifest changes invalidate installed-game decisions. Per-game prefix, profile,
+folder, alias and readiness stamps invalidate prepared decisions. Uninstalled
+games keep their Install choice; a new appmanifest causes preparation before the
+installed game receives a tool. The launch shim independently validates the view.
+
+## Save preservation
+
+The existing Wine prefix and profile remain authoritative. Alias creation does
+not rename or merge save directories. A fresh prefix receives real Windows save
+folders, while a recognized pre-existing Mac Documents link retains its target.
+The first preparation backs up the profile, per-game Steam userdata and affected
+shared Documents subtrees. Cloud metadata is read solely to select conservative
+backup subtrees; it is never edited, and Gluon does not implement a second sync
+engine. An unrestricted shared Documents root is refused rather than backing up
+unrelated personal documents or proceeding without protection.
+
+Separate Proton prefixes, multiple real profiles, ambiguous legacy locations,
+unexpected links, conflicting real legacy directories and incomplete
+backups or insufficient backup space are rejected. A running Wine server postpones the first preparation;
+prepared layouts can be checked while another game is running. Steam's own Cloud
+preferences and conflict prompts retain their normal meaning.
+
+## Validation limits
+
+CI runs the production native guard against disposable libraries, including a
+conflicting prefix, a replaced layout, cached lookups and installation after an
+initial uninstalled lookup. Filesystem fixtures cover existing save contents,
+backup preservation and shared Documents without copying unrelated documents.
+The complete runtime job initializes Wine in a prepared prefix and verifies that
+Steam's profile view and Wine's Documents path see the same save files.
+
+These checks do not demonstrate a live Steam Cloud download, upload or conflict
+dialog. Those remain owner-run acceptance checks. The implementation must not be
+described as validated for every publisher's Cloud configuration before that
+evidence exists.

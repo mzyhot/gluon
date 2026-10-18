@@ -18,7 +18,7 @@ def main():
         command.add_argument("--steam-app", help="path to the Steam application to configure")
     sub.add_parser("uninstall", help="restore all Steam apps managed by Gluon; preserve saves and backups")
     sub.add_parser("migrate", help="restore legacy Gluon metadata once; keep originals and backups")
-    command = sub.add_parser("cloud", help="prepare an optional native Steam Cloud view while Steam is closed")
+    command = sub.add_parser("cloud", help="inspect or repair automatic native Steam Cloud preparation")
     command.add_argument("operation", choices=("prepare",))
     command.add_argument("appid")
     command = sub.add_parser("sync", help="select complete runtime updates only; never edit Steam metadata")

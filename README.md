@@ -57,7 +57,7 @@ It never enables games or edits Steam metadata.
 Game sessions use a native launcher host for Steam Stop and quit, and run as
 named Mac app bundles for focus and Dock/menu-bar identity. Wine's overlay is
 scoped to games rather than its server or system helpers. msync and keep-awake
-are enabled for plain-Wine games. Settings, optional native Steam Cloud and
+are enabled for plain-Wine games. Settings, automatic native Steam Cloud and
 graphics switches are described in [runtime features](docs/RUNTIME.md).
 
 Builds and tests run through GitHub Actions. The **Steam Play** workflow compiles

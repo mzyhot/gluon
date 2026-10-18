@@ -28,7 +28,10 @@ def main():
     if not (runtime / ".gluon-wine-patches").is_file():
         raise SystemExit("Expected the complete source-built Gluon runtime.")
     probes.mkdir(parents=True, exist_ok=True)
-    prefix = probes / "prefix"
+    fixture_steam = probes / 'cloud-steam'
+    fixture_home = probes / 'cloud-gluon'
+    compat = fixture_steam / 'steamapps/compatdata/123'
+    prefix = compat / 'pfx-wine'
     if prefix.exists():
         raise SystemExit("Probe prefix already exists; use a fresh probe directory.")
     env = os.environ.copy()
@@ -41,6 +44,14 @@ def main():
                GST_PLUGIN_SCANNER_1_0=str(runtime / "libexec/gstreamer-1.0/gst-plugin-scanner"),
                GST_REGISTRY_1_0=str(probes / "gstreamer-registry.bin"))
     results = []
+    (fixture_steam / 'steamapps').mkdir(parents=True)
+    (fixture_steam / 'steamapps/appmanifest_123.acf').write_text('fixture')
+    cloud_env = dict(env, GLUON_HOME=str(fixture_home), STEAM_ROOT=str(fixture_steam),
+                     PYTHONPATH=str(Path(__file__).resolve().parents[1]), PYTHONDONTWRITEBYTECODE='1')
+
+    def cloud_command(*arguments):
+        subprocess.run([sys.executable, '-m', 'gluon.cloud', *arguments],
+                       env=cloud_env, check=True, timeout=15)
 
     def run(name, command, seconds=30, allow_unavailable=False, cleanup=False, overrides=None):
         path = probes / (name + ".log")
@@ -97,10 +108,23 @@ def main():
                                [str(probes / "vulkan-native"),
                                 str(runtime / "lib/libMoltenVK.dylib"), "--device"],
                            allow_unavailable=True)
+        cloud_command('--automatic', '123')
+        cloud_documents = compat / 'pfx/drive_c/users/steamuser/Documents'
+        (cloud_documents / 'cloud-fixture.txt').write_text('Steam-written-save\n')
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
         # wineboot can return while setup/service children are still running.
         # Match the launcher's first-run barrier before probing other DLLs.
         run("wine-prefix-idle", [server, "-w"], seconds=30)
+        cloud_command('--check', str(compat))
+        _, saved = run('native-cloud-read', [wine, 'cmd', '/c',
+                        'type "%USERPROFILE%\\Documents\\cloud-fixture.txt"'])
+        if 'Steam-written-save' not in saved:
+            raise ProbeFailed('Wine did not read the native Cloud save view')
+        run('native-cloud-write', [wine, 'cmd', '/c',
+            'echo Wine-written-save > "%USERPROFILE%\\Documents\\cloud-fixture.txt"'])
+        if 'Wine-written-save' not in (cloud_documents / 'cloud-fixture.txt').read_text():
+            raise ProbeFailed('Native Cloud view did not see Wine\'s saved file')
+        cloud_command('--check', str(compat))
         for arch in ("x86_64", "i686"):
             run(f"runtime-dependencies-{arch}", [wine, str(probes / f"dependencies-{arch}.exe")])
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])

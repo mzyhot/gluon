@@ -50,33 +50,40 @@ per game when appropriate. The checked GL/WGL aliases and Vulkan 1.0/1.3 device
 probes are retained. Hosted runners without native CGL cannot verify actual WGL
 rendering and record those dependent cases as skipped.
 
-## Optional native Steam Cloud
+## Automatic native Steam Cloud
 
-Steam API Cloud calls continue to use the existing bridge. AutoCloud uses a separate
-**Gluon (Steam Cloud)** compatibility choice. Its tool identifier contains `proton`,
-as the pinned upstream implementation requires for Steam's Windows Cloud roots.
-The ordinary **Gluon** choice remains the default and does not enable AutoCloud.
+**Gluon** automatically supports Steam API Cloud and native AutoCloud. There is
+one compatibility choice and no per-game Gluon Cloud setting or preparation
+command to run. Steam's existing global/per-game Cloud preferences still apply.
+The internal tool identifier is `gluon-proton`, because the pinned Steam Play
+implementation uses that name to populate Steam's Windows save roots. Existing
+`gluon` selections resolve to this tool without rewriting the saved mapping.
 
-With Steam and Wine closed, prepare an installed game's layout:
+Preparation runs at `FindToolForTargetApp`, before the native Cloud root resolver
+can return a Windows save path. It keeps the real `pfx-wine` and its existing
+profile, adding `pfx` and `steamuser` views onto those same files. Fresh prefixes
+get real save directories before Wine starts. Existing links to the account's
+Mac Documents folder stay in place; affected game subtrees are backed up using
+read-only Cloud metadata. Unrelated personal documents are not copied. Profile
+files and Steam's per-game userdata are also backed up before first preparation.
 
-```sh
-"$HOME/Library/Application Support/Gluon/bin/gluonctl" cloud prepare APPID
-```
+A separate Proton `pfx`, another library/legacy prefix with saves, competing
+profiles, unexpected external links, conflicting legacy save directories or a
+failed/incomplete backup stop preparation. No saves are merged, relocated or
+replaced. Insufficient space or an incomplete backup refuses preparation safely.
+The native tool lookup returns no Gluon tool while preparation is unsuccessful,
+and the launch shim independently checks the prepared layout before running Wine.
+Details go to `Gluon/steamplay/cloud.log`. Closing an active Wine session allows
+preparation to retry automatically. Prefix views, saves and backups survive uninstall.
 
-Then select **Gluon (Steam Cloud)** in that game's Steam Compatibility settings.
-Preparation keeps the real `pfx-wine` and existing user profile, and adds a `pfx`
-view and a `steamuser` alias pointing at those same files. Fresh profiles use real
-Windows save folders. Existing profile files and Steam Cloud records are backed
-up first, within a 256 MiB automatic backup limit. Games reject Cloud mode when
-its readiness record/layout is missing or changed. Native path conversion verbs
-delegate to the selected Wine prefix without a game identity or overlay.
+The native guard caches validated filesystem stamps. Warm lookups do not spawn
+Python or run Wine. Installation/library/layout changes invalidate the cache.
+Gluon's automatic views require its plain-Wine runtime; a conflicting third-party
+Proton prefix is not adopted or overwritten. `gluonctl cloud prepare APPID` remains
+a recovery command for use while Steam is closed, not an enablement step.
 
-A separate Proton `pfx`, multiple user profiles, external Documents/AppData links,
-or conflicting legacy save folders stop preparation. Nothing is merged, relocated
-or replaced in those cases; the ordinary Gluon choice remains available. Prefix
-views and saves are retained by uninstall. The Cloud option targets Gluon's plain
-Wine layout; third-party Proton runtimes keep their own Cloud behavior.
-
-CI verifies filesystem layout, backup preservation, idempotence and conflict
-rejection. Real Cloud download/upload, conflict resolution and first-sync behavior
-require manual Steam acceptance tests before relying on this mode for saves.
+CI checks the native guard with fresh, changed, conflicting and newly installed
+synthetic games, plus backup preservation and real Wine save-path round trips.
+Live Steam Cloud download/upload and conflict dialogs remain manual acceptance
+checks; CI does not operate the owner's Steam account. See
+[the investigation](STEAM-CLOUD.md) for the timing boundary and evidence limits.

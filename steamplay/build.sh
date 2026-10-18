@@ -25,6 +25,8 @@ for patch in "$here"/steamplay/patches/*.patch; do
 done
 cp "$here/steamplay/run.sh" "$src/dylib/feats/compat_run.sh"
 cp "$here/steamplay/build_gate.h" "$src/dylib/gluon_build.h"
+cp "$here/steamplay/cloud_guard.c" "$src/dylib/feats/cloud_guard.c"
+cp "$here/steamplay/cloud_guard.h" "$src/dylib/feats/cloud_guard.h"
 [ "${1:-}" != --source ] || exit 0
 rmdir "$src/vendor/dobby" 2>/dev/null || true
 fetch "$DOBBY_REPO" "$DOBBY_COMMIT" "$src/vendor/dobby"
@@ -36,6 +38,7 @@ clang -arch arm64 -mmacosx-version-min=15.0 -Wall -Wextra -Werror \
     -fsanitize=address,undefined -fno-sanitize-recover=all \
     "$here/steamplay/check-build-gate.c" -o "$here/build/evidence/check-build-gate"
 "$here/build/evidence/check-build-gate"
+python3 "$here/steamplay/check-cloud-guard.py"
 # These tests use synthetic fixtures, not an installed Steam client.
 # A missing test is an error; upstream Make's optional checks otherwise skip it.
 for file in sigcheck.py callscheck.c spawn-env.c activatecheck.c compatsvc-check.c; do
@@ -67,7 +70,7 @@ for path in source.rglob('*'):
         shutil.copy2(path, target)
 LICENSES
 cp "$here/LICENSE" "$payload/licenses/Gluon-LICENSE"
-printf 'gluon\t1\trosetta\tGluon\ngluon-proton\t1\trosetta\tGluon (Steam Cloud)\n' > "$payload/tools"
+printf 'gluon-proton\t1\trosetta\tGluon\n' > "$payload/tools"
 codesign -f -s - "$payload/gluon-steamplay.dylib" "$payload/appinfo"
 python3 "$here/steamplay/manifest.py" "$src" "$payload" "$here"
 lipo "$payload/gluon-steamplay.dylib" -verify_arch arm64 x86_64
