@@ -1,7 +1,8 @@
 
 # Gluon
-Steam Play; for MacOS.
+Steam Play; for MacOS. (without CrossOver)
 ![Gluon slogan](gluon-slogan.svg)
+(p.s. thank you so much to the devs of NotProton for making great steam handling.)
 ## Layout
 
     gluon/            Python package (stdlib only)
