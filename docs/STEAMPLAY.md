@@ -5,7 +5,7 @@ existing Gluon Wine runtime, Python management commands,
 and an immutable, versioned Steam Play payload. The installer configures the
 selected Steam bundle's `LSEnvironment` to load `gluon-steamplay.dylib`, following
 NotProton's implementation. The dylib hooks Steam's compatibility manager,
-registers the `windows → macos` Gluon tool and embeds Gluon's launcher shim.
+registers the `windows → macos` Gluon tools and embeds Gluon's launcher shim.
 Steam launches `run`, `runinprefix` or `waitforexitandrun`; helpers use the same
 per-game prefix, and only game sessions use the Steam bridge and native overlay.
 
@@ -83,6 +83,13 @@ only while its value still matches Gluon's old setting. Ambiguous fields,
 unavailable libraries and non-round-tripping files stop migration. Originals
 and before/after journals remain available; a repeat migration is idempotent.
 Game folders, prefixes and saves are never removed or copied by migration.
+The read-only legacy Cloud recognizer restores a recorded Cloud section only
+when the live value is exactly the old mapper's output. Independently changed
+Cloud fields still block migration.
+
+Automatic native Cloud uses prefix aliases and Steam's own compatibility
+path handling. It never reapplies legacy mappings. See [runtime features](RUNTIME.md)
+for preparation, prefix conflict checks and manual acceptance requirements.
 
 ## Third-party components
 

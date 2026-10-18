@@ -29,12 +29,16 @@ class CloudProbeTests(unittest.TestCase):
                 output = kwargs["stdout"]
                 name = Path(output.name).stem
                 code = 0
-                if name.startswith("native-"):
+                if name in ("native-opengl", "native-vulkan-device"):
                     output.write("GLUON_PROBE_UNAVAILABLE: fixture has no GPU\n")
                     output.flush()
                     code = 77
-                if name == "wine-prefix":
-                    (probes / "prefix").mkdir()
+                documents = probes / 'cloud-steam/steamapps/compatdata/123/pfx/drive_c/users/steamuser/Documents'
+                if name == 'native-cloud-read':
+                    output.write('Steam-written-save\n')
+                    output.flush()
+                if name == 'native-cloud-write':
+                    (documents / 'cloud-fixture.txt').write_text('Wine-written-save\n')
                 if name == "wine-prefix-idle":
                     code = idle_code
                 process = mock.Mock(pid=123456)
@@ -44,11 +48,17 @@ class CloudProbeTests(unittest.TestCase):
                     process.wait.return_value = code
                 return process
 
+            def support(command, **kwargs):
+                if 'gluon.cloud' in command and '--automatic' in command:
+                    compat = probes / 'cloud-steam/steamapps/compatdata/123'
+                    (compat / 'pfx-wine/drive_c/users/steamuser/Documents').mkdir(parents=True)
+                    (compat / 'pfx').symlink_to('pfx-wine')
+
             with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}, clear=True), \
                     mock.patch.object(cloud_probes.sys, "platform", "darwin"), \
                     mock.patch.object(cloud_probes.sys, "argv", ["probes", str(runtime), str(probes)]), \
                     mock.patch.object(cloud_probes.subprocess, "Popen", side_effect=start), \
-                    mock.patch.object(cloud_probes.subprocess, "run") as sample, \
+                    mock.patch.object(cloud_probes.subprocess, "run", side_effect=support) as sample, \
                     mock.patch.object(cloud_probes.os, "killpg") as kill:
                 code = cloud_probes.main()
             results = json.loads((probes / "results.json").read_text())
@@ -75,7 +85,7 @@ class CloudProbeTests(unittest.TestCase):
         self.assertEqual(code, 1)
         failed = next(item for item in results if item["name"] == "vulkan-loader-x86_64")
         self.assertEqual(failed["status"], "timed_out")
-        sample.assert_called_once()
-        self.assertEqual(sample.call_args.args[0], ["/usr/bin/sample", "123456", "3"])
+        diagnostics = [call.args[0] for call in sample.call_args_list if call.args[0][0] == '/usr/bin/sample']
+        self.assertEqual(diagnostics, [["/usr/bin/sample", "123456", "3"]])
         kill.assert_called_once_with(123456, cloud_probes.signal.SIGKILL)
         self.assertEqual([item["name"] for item in results][-2:], ["wine-stop", "wine-wait"])

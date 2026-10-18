@@ -15,9 +15,13 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 
-EXTENSION = "GL_EXT_gpu_shader4"
-PAIR_COUNT = 34
+ALIAS_GROUPS = (("GL_VERSION_3_0", "GL_EXT_gpu_shader4", 34),
+                ("GL_VERSION_3_1", "GL_ARB_draw_instanced", 2),
+                ("GL_VERSION_3_1", "GL_EXT_draw_instanced", 2))
 PATCH = Path(__file__).parent / "patches/wine-opengl-promoted-aliases.patch"
+GL_CAPABILITY_GATE = re.compile(
+    r'if\s*\(\s*!strncmp\s*\(\s*name\s*,\s*"gl"\s*,\s*2\s*\)\s*&&\s*'
+    r'!is_any_extension_supported\s*\(\s*ctx\s*,\s*found->extension\s*\)\s*\)\s*\{')
 
 
 def require(condition, message):
@@ -127,23 +131,32 @@ def validate(wine_root, registry, wrapper):
     commands = {command.findtext("proto/name"): command
                 for command in xml.findall("commands/command")
                 if command.find("proto") is not None}
-    feature = xml.find("feature[@name='GL_VERSION_3_0']")
-    extension = xml.find(f"extensions/extension[@name='{EXTENSION}']")
-    require(feature is not None and extension is not None,
-            "Registry is missing desktop GL 3.0 or EXT_gpu_shader4")
-    require(feature.get("api") == "gl" and "gl" in extension.get("supported", "").split("|"),
-            "Registry entries must describe desktop OpenGL")
-    core_commands = {command.get("name") for command in feature.findall("require/command")}
-    ext_commands = {command.get("name") for command in extension.findall("require/command")}
-    pairs = set()
-    for name in ext_commands:
-        command = commands.get(name)
-        require(command is not None, f"Registry is missing command {name}")
-        alias = command.find("alias")
-        require(alias is not None and alias.get("name") in core_commands,
-                f"Missing GL 3.0 registry alias for {name}")
-        pairs.add((alias.get("name"), name))
-    require(len(pairs) == PAIR_COUNT, f"Expected {PAIR_COUNT} aliases, got {len(pairs)}")
+    requirements = {}
+    groups = []
+    for version, extension_name, count in ALIAS_GROUPS:
+        feature = xml.find(f"feature[@name='{version}']")
+        extension = xml.find(f"extensions/extension[@name='{extension_name}']")
+        require(feature is not None and extension is not None,
+                f"Registry is missing desktop {version} or {extension_name}")
+        require(feature.get("api") == "gl" and
+                "gl" in extension.get("supported", "").split("|"),
+                f"Registry entries must describe desktop OpenGL: {extension_name}")
+        core_commands = {command.get("name") for command in feature.findall("require/command")}
+        ext_commands = {command.get("name") for command in extension.findall("require/command")}
+        group = set()
+        for name in ext_commands:
+            command = commands.get(name)
+            require(command is not None, f"Registry is missing command {name}")
+            alias = command.find("alias")
+            require(alias is not None and alias.get("name") in core_commands,
+                    f"Missing {version} registry alias for {name}")
+            pair = (alias.get("name"), name)
+            group.add(pair)
+            requirements[pair] = (version, extension_name)
+        require(len(group) == count,
+                f"Expected {count} aliases for {extension_name}, got {len(group)}")
+        groups.append((extension_name, count, ext_commands, group))
+    pairs = set(requirements)
 
     wrapper = without_comments(wrapper)
     entry = re.search(r"PROC\s+wrap_wglGetProcAddress\s*\([^)]*\)\s*\{", wrapper)
@@ -153,29 +166,50 @@ def validate(wine_root, registry, wrapper):
     require(table is not None, "Wine is missing the explicit alternatives table")
     actual_pairs = re.findall(r'\{\s*"(gl\w+)"\s*,\s*"(gl\w+)"\s*\}',
                               block(function, table.end() - 1))
-    added_pairs = [(core, ext) for core, ext in actual_pairs if ext in ext_commands]
-    require(len(added_pairs) == PAIR_COUNT and set(added_pairs) == pairs,
-            "Wine alternatives do not contain exactly the 34 registry aliases")
+    for extension_name, count, ext_commands, group in groups:
+        added_pairs = [(core, ext) for core, ext in actual_pairs if ext in ext_commands]
+        require(len(added_pairs) == count and set(added_pairs) == group,
+                f"Wine alternatives do not contain exactly the {count} {extension_name} registry aliases")
     existing_pairs = {("glCopyTexSubImage3DEXT", "glCopyTexSubImage3D"),
                       ("glVertexAttribDivisor", "glVertexAttribDivisorARB"),
                       ("glCompressedTexImage2DARB", "glCompressedTexImage2D")}
-    require(len(actual_pairs) == PAIR_COUNT + len(existing_pairs) and
+    require(len(actual_pairs) == len(pairs) + len(existing_pairs) and
             set(actual_pairs) == pairs | existing_pairs,
             "Wine alternatives contain an unexpected or duplicate fallback")
 
-    # This source guard must precede the shared driver-pointer cache. Otherwise a
-    # lookup made on another context can bypass the current extension/version gate.
+    # GL capability checks must precede the shared driver-pointer cache, while
+    # WGL's prepopulated Wine dispatch slots retain their separate extension path.
     current = re.search(r"get_current_context\s*\(\s*teb\s*,\s*NULL\s*,\s*NULL\s*\)", function)
-    gate = re.search(r"if\s*\(\s*!is_any_extension_supported\s*\(\s*ctx\s*,\s*found->extension\s*\)\s*\)\s*\{",
-                     function)
+    gate = GL_CAPABILITY_GATE.search(function)
     cache = re.search(r"if\s*\(\s*!\*func_ptr\s*\)", function)
     require(current and gate and cache and current.start() < gate.start() < cache.start(),
-            "Current-context capability check must precede the driver-pointer cache")
+            "Current-context GL-only capability check must precede the driver-pointer cache")
+    capability_calls = re.findall(r"\bis_any_extension_supported\s*\(", function[:cache.start()])
+    require(len(capability_calls) == 1,
+            "WGL dispatch must not pass through an additional GL extension gate")
     guarded = block(function, gate.end() - 1)
-    require(re.search(r"if\s*\(\s*strcmp\s*\(\s*name\s*,\s*alternatives\[i\]\.name\s*\)\s*\)\s*continue\s*;", guarded),
-            "Alias fallback must match an explicit name")
-    require(re.search(r"return\s+wrap_wglGetProcAddress\s*\(\s*teb\s*,\s*alternatives\[i\]\.alt\s*\)\s*;", guarded),
+    loop = re.search(r"for\s*\(\s*i\s*=\s*0\s*;\s*i\s*<\s*ARRAY_SIZE\(alternatives\)\s*;\s*i\+\+\s*\)\s*\{",
+                     guarded)
+    require(loop is not None, "Alias fallback must iterate all explicit alternatives")
+    fallback = block(guarded, loop.end() - 1)
+    name_match = re.search(r"if\s*\(\s*strcmp\s*\(\s*name\s*,\s*alternatives\[i\]\.name\s*\)\s*\)\s*continue\s*;",
+                           fallback)
+    require(name_match is not None, "Alias fallback must match an explicit name")
+    require(re.search(r"PROC\s+alternative\s*;", fallback),
+            "Alias fallback must retain the registry-index result")
+    resolution = re.search(r"alternative\s*=\s*wrap_wglGetProcAddress\s*\(\s*teb\s*,\s*alternatives\[i\]\.alt\s*\)\s*;",
+                           fallback)
+    require(resolution and name_match.end() < resolution.start(),
             "Alias fallback must recurse through the extension capability check")
+    success = re.search(r"if\s*\(\s*alternative\s*!=\s*\(void\s*\*\)\s*-1\s*\)\s*return\s+alternative\s*;",
+                        fallback)
+    require(success and resolution.end() < success.start(),
+            "Alias fallback must continue failed candidates and accept registry index zero")
+    # Only -1 means failure. A registry index of zero is a valid PE thunk, and an
+    # unsupported ARB candidate must not prevent trying an advertised EXT alias.
+    remaining = fallback[:success.start()] + fallback[success.end():]
+    require(not re.search(r"\b(?:return|break|goto)\b", remaining),
+            "Alias fallback must continue failed candidates and accept registry index zero")
     require(re.search(r"return\s*\(void\s*\*\)\s*-1\s*;", guarded),
             "Unsupported names must still be rejected")
     require(not re.search(r"ctx->(?:major|minor)_version\s*=", function),
@@ -186,25 +220,38 @@ def validate(wine_root, registry, wrapper):
     entries = {match[1]: match[2].split(r"\0")
                for match in re.finditer(r'\{\s*"(gl\w+)"\s*,\s*"([^"\n]*)"\s*,\s*offsetof\(struct opengl_funcs,\s*p_\1\)\s*\}',
                                          registry_source)}
-    for core, ext in sorted(pairs):
+    for (core, ext), (version, extension_name) in sorted(requirements.items()):
         require(core in commands, f"Registry is missing canonical command {core}")
         canonical = xml_signature(commands[core])
         require(canonical == xml_signature(commands[ext]),
                 f"Registry signature mismatch: {core} / {ext}")
         require(canonical == wine_signature(thunk_source, core) == wine_signature(thunk_source, ext),
                 f"Wine thunk signature mismatch: {core} / {ext}")
-        require("GL_VERSION_3_0" in entries.get(core, []),
+        require(version in entries.get(core, []),
                 f"Wine core requirement is missing: {core}")
-        require(EXTENSION in entries.get(ext, []),
+        require(extension_name in entries.get(ext, []),
                 f"Wine extension requirement is missing: {ext}")
     return pairs
 
 
 def self_test(wine_root, registry, wrapper):
-    for label, mutation in (("missing alias", "alias"), ("changed signature", "signature")):
+    def reject(label, changed_registry, changed_wrapper, expected):
+        try:
+            validate(wine_root, changed_registry, changed_wrapper)
+        except ValueError as error:
+            require(expected in str(error), f"Unexpected rejection for {label}: {error}")
+            print(f"Rejected negative case ({label}): {error}")
+        else:
+            raise ValueError(f"Negative case was incorrectly accepted: {label}")
+
+    for label, name, mutation in (
+            ("missing shader4 alias", "glVertexAttribIPointerEXT", "alias"),
+            ("changed shader4 signature", "glVertexAttribIPointerEXT", "signature"),
+            ("missing draw-instanced ARB alias", "glDrawArraysInstancedARB", "alias"),
+            ("changed draw-instanced EXT signature", "glDrawElementsInstancedEXT", "signature")):
         tree = copy.deepcopy(ET.parse(registry))
         command = next(item for item in tree.findall("commands/command")
-                       if item.findtext("proto/name") == "glVertexAttribIPointerEXT")
+                       if item.findtext("proto/name") == name)
         if mutation == "alias":
             command.remove(command.find("alias"))
         else:
@@ -212,32 +259,55 @@ def self_test(wine_root, registry, wrapper):
         with tempfile.TemporaryDirectory(prefix="gluon-alias-check-") as directory:
             changed = Path(directory) / "gl.xml"
             tree.write(changed, encoding="utf-8", xml_declaration=True)
-            try:
-                validate(wine_root, changed, wrapper)
-            except ValueError as error:
-                require(("alias" if mutation == "alias" else "signature mismatch") in str(error),
-                        f"Unexpected rejection for {label}: {error}")
-                print(f"Rejected negative case ({label}): {error}")
-            else:
-                raise ValueError(f"Negative case was incorrectly accepted: {label}")
+            reject(label, changed, wrapper,
+                   "registry alias" if mutation == "alias" else "signature mismatch")
+
+    tree = copy.deepcopy(ET.parse(registry))
+    tree.find("extensions/extension[@name='GL_EXT_draw_instanced']").set("supported", "gles2")
+    with tempfile.TemporaryDirectory(prefix="gluon-alias-check-") as directory:
+        changed = Path(directory) / "gl.xml"
+        tree.write(changed, encoding="utf-8", xml_declaration=True)
+        reject("non-desktop draw-instanced extension", changed, wrapper, "desktop OpenGL")
+
+    source = without_comments(wrapper)
+    changed, count = re.subn(r'\{\s*"glDrawArraysInstanced"\s*,\s*"glDrawArraysInstancedEXT"\s*\}\s*,',
+                            "", source)
+    require(count == 1, "Self-test requires exactly one DrawArrays EXT fallback")
+    reject("lost draw-instanced EXT fallback", registry, changed,
+           "GL_EXT_draw_instanced registry aliases")
+
+    success = re.compile(r"if\s*\(\s*alternative\s*!=\s*\(void\s*\*\)\s*-1\s*\)\s*return\s+alternative\s*;")
+    for label, replacement in (
+            ("premature failed-branch return", "return alternative;"),
+            ("registry index zero rejected", "if (alternative && alternative != (void *)-1) return alternative;"),
+            ("wrong failure sentinel", "if (alternative != (void *)0) return alternative;")):
+        changed, count = success.subn(replacement, source)
+        require(count == 1, "Self-test requires exactly one successful fallback return")
+        reject(label, registry, changed, "continue failed candidates and accept registry index zero")
+
+    gate = GL_CAPABILITY_GATE.search(source)
+    require(gate is not None, "Self-test requires the GL-only capability gate")
+    changed = source[:gate.start()] + source[gate.start():].replace(
+        '!strncmp( name, "gl", 2 ) && ', "", 1)
+    require(changed != source, "Self-test requires the checked GL namespace condition")
+    reject("unconditional GL gate rejects WGL dispatch", registry, changed,
+           "GL-only capability check must precede")
+
+    cache = re.search(r"if\s*\(\s*!\*func_ptr\s*\)", source)
+    changed = (source[:cache.start()] +
+               "if (!is_any_extension_supported( ctx, found->extension )) return (void *)-1;\n" +
+               source[cache.start():])
+    reject("additional WGL gate before cache", registry, changed,
+           "WGL dispatch must not pass through")
 
     # Model the original cache hazard with valid C: put the extension guard inside
     # the pointer-cache condition, where later contexts would skip it.
-    source = without_comments(wrapper)
-    gate = re.search(r"if\s*\(\s*!is_any_extension_supported\s*\(\s*ctx\s*,\s*found->extension\s*\)\s*\)\s*\{", source)
     guarded = block(source, gate.end() - 1)
     gate_end = gate.end() + len(guarded) + 1
     moved = source[:gate.start()] + source[gate_end:]
     cache = re.search(r"if\s*\(\s*!\*func_ptr\s*\)\s*\{", moved)
     moved = moved[:cache.end()] + source[gate.start():gate_end] + moved[cache.end():]
-    try:
-        validate(wine_root, registry, moved)
-    except ValueError as error:
-        require("capability check must precede" in str(error),
-                f"Unexpected rejection for cached pointer bypass: {error}")
-        print(f"Rejected negative case (cached pointer bypass): {error}")
-    else:
-        raise ValueError("Negative case was incorrectly accepted: cached pointer bypass")
+    reject("cached pointer bypass", registry, moved, "capability check must precede")
 
 
 def main():
@@ -252,7 +322,7 @@ def main():
         if not args.applied:
             wrapper = apply_patch(wrapper, PATCH.read_text())
         pairs = validate(args.wine_source, args.registry, wrapper)
-        print(f"Validated {len(pairs)} desktop GL 3.0 aliases, exact signatures, "
+        print(f"Validated {len(pairs)} desktop GL 3.0/3.1 aliases, exact signatures, "
               "extension entries and current-context fallback guards")
         if args.self_test:
             self_test(args.wine_source, args.registry, wrapper)

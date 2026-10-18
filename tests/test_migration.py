@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from gluon import appinfo, migration, steam, vdf
+from gluon import appinfo, legacy_cloud, migration, steam, vdf
 
 
 def cache_bytes(ai, change=1):
@@ -69,6 +69,32 @@ class MigrationTests(unittest.TestCase):
     def test_running_steam_never_changes_cache(self):
         before = self.cache.read_bytes()
         with patch.object(steam, 'is_running', return_value=True):
+            with self.assertRaises(migration.MigrationError):
+                migration.migrate()
+        self.assertEqual(self.cache.read_bytes(), before)
+
+    def test_exact_legacy_cloud_mapping_is_restored_without_touching_saves(self):
+        original = {'quota': '123', 'savefiles': {'0': {'root': 'WinAppDataLocal', 'path': 'Game'}}}
+        state = json.loads(self.state.read_text())
+        state['123']['original']['ufs'] = {'binary': base64.b64encode(vdf.binary_dumps(original)).decode()}
+        self.state.write_text(json.dumps(state))
+        with patch.object(legacy_cloud, '_mac_root', return_value=('MacHome', 'fixture/profile')):
+            self.enabled['ufs'] = legacy_cloud.mapped(original, 123)
+            self.cache.write_bytes(cache_bytes(self.enabled))
+            migration.migrate()
+        self.assertEqual(self.read()['ufs'], original)
+        self.assertEqual(json.loads(self.state.read_text()), state)
+
+    def test_independently_modified_legacy_cloud_mapping_still_blocks_restore(self):
+        original = {'quota': '123', 'savefiles': {'0': {'root': 'WinAppDataLocal', 'path': 'Game'}}}
+        state = json.loads(self.state.read_text())
+        state['123']['original']['ufs'] = {'binary': base64.b64encode(vdf.binary_dumps(original)).decode()}
+        self.state.write_text(json.dumps(state))
+        with patch.object(legacy_cloud, '_mac_root', return_value=('MacHome', 'fixture/profile')):
+            self.enabled['ufs'] = legacy_cloud.mapped(original, 123)
+            self.enabled['ufs']['quota'] = '999'
+            before = cache_bytes(self.enabled)
+            self.cache.write_bytes(before)
             with self.assertRaises(migration.MigrationError):
                 migration.migrate()
         self.assertEqual(self.cache.read_bytes(), before)

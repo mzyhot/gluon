@@ -272,12 +272,13 @@ class Installation:
             raise SteamPlayError("untracked Steam Play library; recovery receipt required")
 
     def _tool_check(self):
-        tool = self.root / "compatibilitytools.d/gluon"
-        if not os.path.lexists(tool):
-            return
-        marker = tool / "run"
-        if tool.is_symlink() or not tool.is_dir() or marker.is_symlink() or not marker.is_file() or b"# gluon Steam Play compatibility tool shim\n" not in marker.read_bytes()[:128]:
-            raise SteamPlayError("a foreign compatibility tool occupies " + str(tool))
+        for name in ("gluon", "gluon-proton"):
+            tool = self.root / "compatibilitytools.d" / name
+            if not os.path.lexists(tool):
+                continue
+            marker = tool / "run"
+            if tool.is_symlink() or not tool.is_dir() or marker.is_symlink() or not marker.is_file() or b"# gluon Steam Play compatibility tool shim\n" not in marker.read_bytes()[:128]:
+                raise SteamPlayError("a foreign compatibility tool occupies " + str(tool))
 
     def _owned_drift(self, app, current, record):
         """Repair missing/changed owned injection files without accepting foreign edits."""
@@ -439,15 +440,16 @@ class Installation:
                     if stage.exists():
                         shutil.rmtree(stage)
                 notes.append("Restored original signed Steam bundle at " + name)
-            tools = self.root / "compatibilitytools.d/gluon"
-            marker = tools / "run"
-            if not tools.is_symlink() and not marker.is_symlink() and marker.is_file() and b"# gluon Steam Play compatibility tool shim\n" in marker.read_bytes()[:128]:
-                for name in ("run", "toolmanifest.vdf", "compatibilitytool.vdf", "flavor", "build"):
-                    path = tools / name
-                    if path.is_file() or path.is_symlink():
-                        path.unlink()
-                if not any(tools.iterdir()):
-                    tools.rmdir()
+            for tool_name in ("gluon", "gluon-proton"):
+                tools = self.root / "compatibilitytools.d" / tool_name
+                marker = tools / "run"
+                if not tools.is_symlink() and not marker.is_symlink() and marker.is_file() and b"# gluon Steam Play compatibility tool shim\n" in marker.read_bytes()[:128]:
+                    for name in ("run", "toolmanifest.vdf", "compatibilitytool.vdf", "flavor", "build"):
+                        path = tools / name
+                        if path.is_file() or path.is_symlink():
+                            path.unlink()
+                    if not any(tools.iterdir()):
+                        tools.rmdir()
             return notes
 
     def status(self):

@@ -28,19 +28,30 @@ def main():
     if not (runtime / ".gluon-wine-patches").is_file():
         raise SystemExit("Expected the complete source-built Gluon runtime.")
     probes.mkdir(parents=True, exist_ok=True)
-    prefix = probes / "prefix"
+    fixture_steam = probes / 'cloud-steam'
+    fixture_home = probes / 'cloud-gluon'
+    compat = fixture_steam / 'steamapps/compatdata/123'
+    prefix = compat / 'pfx-wine'
     if prefix.exists():
         raise SystemExit("Probe prefix already exists; use a fresh probe directory.")
     env = os.environ.copy()
     for key in ("DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"):
         env.pop(key, None)
-    env.update(WINEPREFIX=str(prefix), WINEDEBUG="fixme-all",
+    env.update(WINEPREFIX=str(prefix), WINEDEBUG="fixme-all", WINEMSYNC="1",
                WINEDLLOVERRIDES="mscoree,mshtml,winemenubuilder.exe=d",
                DXVK_LOG_PATH=str(probes), DXVK_STATE_CACHE_PATH=str(probes))
     env.update(GST_PLUGIN_SYSTEM_PATH_1_0=str(runtime / "lib/gstreamer-1.0"),
                GST_PLUGIN_SCANNER_1_0=str(runtime / "libexec/gstreamer-1.0/gst-plugin-scanner"),
                GST_REGISTRY_1_0=str(probes / "gstreamer-registry.bin"))
     results = []
+    (fixture_steam / 'steamapps').mkdir(parents=True)
+    (fixture_steam / 'steamapps/appmanifest_123.acf').write_text('fixture')
+    cloud_env = dict(env, GLUON_HOME=str(fixture_home), STEAM_ROOT=str(fixture_steam),
+                     PYTHONPATH=str(Path(__file__).resolve().parents[1]), PYTHONDONTWRITEBYTECODE='1')
+
+    def cloud_command(*arguments):
+        subprocess.run([sys.executable, '-m', 'gluon.cloud', *arguments],
+                       env=cloud_env, check=True, timeout=15)
 
     def run(name, command, seconds=30, allow_unavailable=False, cleanup=False, overrides=None):
         path = probes / (name + ".log")
@@ -97,34 +108,66 @@ def main():
                                [str(probes / "vulkan-native"),
                                 str(runtime / "lib/libMoltenVK.dylib"), "--device"],
                            allow_unavailable=True)
+        cloud_command('--automatic', '123')
+        cloud_documents = compat / 'pfx/drive_c/users/steamuser/Documents'
+        (cloud_documents / 'cloud-fixture.txt').write_text('Steam-written-save\n')
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
-        # wineboot may return before setup/service children finish. Match the
-        # launcher's first-run barrier before loading other DLLs in the prefix.
+        # wineboot can return while setup/service children are still running.
+        # Match the launcher's first-run barrier before probing other DLLs.
         run("wine-prefix-idle", [server, "-w"], seconds=30)
+        cloud_command('--check', str(compat))
+        # Batch files avoid an extra Unix argv -> Windows command-line quoting
+        # layer around cmd's /c expression. Quotes belong to the Windows script.
+        (probes / 'native-cloud-read.cmd').write_text(
+            '@echo off\r\ntype "%USERPROFILE%\\Documents\\cloud-fixture.txt"\r\n')
+        (probes / 'native-cloud-write.cmd').write_text(
+            '@echo off\r\necho Wine-written-save > "%USERPROFILE%\\Documents\\cloud-fixture.txt"\r\n')
+        _, saved = run('native-cloud-read', [wine, 'cmd', '/c', 'native-cloud-read.cmd'])
+        if 'Steam-written-save' not in saved:
+            raise ProbeFailed('Wine did not read the native Cloud save view')
+        run('native-cloud-write', [wine, 'cmd', '/c', 'native-cloud-write.cmd'])
+        if 'Wine-written-save' not in (cloud_documents / 'cloud-fixture.txt').read_text():
+            raise ProbeFailed('Native Cloud view did not see Wine\'s saved file')
+        cloud_command('--check', str(compat))
         for arch in ("x86_64", "i686"):
             run(f"runtime-dependencies-{arch}", [wine, str(probes / f"dependencies-{arch}.exe")])
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])
             run(f"vulkan-loader-{arch}", [wine, str(probes / f"vulkan-{arch}.exe")],
                 overrides={"WINEDEBUG": "fixme-all,+vulkan,+loaddll"})
             if native_gl["status"] == "passed":
+                # Without the opt-in, a 3.3 compatibility request must still be rejected.
                 run(f"wgl-alias-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--require-alias"])
+                run(f"wgl-compat-as-core-{arch}",
+                    [wine, str(probes / f"wgl-{arch}.exe"), "--require-alias", "--compat-as-core"],
+                    overrides={"GLUON_GL_COMPAT_AS_CORE": "1"})
             else:
-                results.append(dict(name=f"wgl-alias-{arch}", status="skipped",
-                                    reason="Native CGL prerequisite did not pass."))
+                for name in (f"wgl-alias-{arch}", f"wgl-compat-as-core-{arch}"):
+                    results.append(dict(name=name, status="skipped",
+                                        reason="Native CGL prerequisite did not pass."))
             if native_vk["status"] == "passed":
                 device, contents = run(f"vulkan-device-1.0-{arch}",
                                        [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.0"],
                                        overrides={"WINEDEBUG": "fixme-all,+vulkan", "MVK_CONFIG_LOG_LEVEL": "3"})
                 require_native_portability(device, contents)
+                # A game asking for Vulkan 1.3 gets a 1.3 device with dynamic rendering
+                # and synchronization2. Hosted runners' paravirtual GPU may stop below
+                # 1.3; the probe then reports itself unavailable and this is a skip.
+                modern, contents = run(f"vulkan-device-1.3-{arch}",
+                                       [wine, str(probes / f"vulkan-{arch}.exe"), "--device-1.3"],
+                                       allow_unavailable=True,
+                                       overrides={"WINEDEBUG": "fixme-all,+vulkan", "MVK_CONFIG_LOG_LEVEL": "3"})
+                if modern["status"] == "passed":
+                    require_native_portability(modern, contents)
                 rendered, contents = run(f"d3d9-render-{arch}", [wine, str(probes / f"d3d9-{arch}.exe")],
                                          overrides={"MVK_CONFIG_LOG_LEVEL": "3"})
                 require_native_portability(rendered, contents)
             else:
-                results.append(dict(name=f"vulkan-device-1.0-{arch}", status="skipped",
-                                    reason="Native Metal device prerequisite did not pass."))
+                for name in (f"vulkan-device-1.0-{arch}", f"vulkan-device-1.3-{arch}"):
+                    results.append(dict(name=name, status="skipped",
+                                        reason="Native Metal device prerequisite did not pass."))
                 results.append(dict(name=f"d3d9-render-{arch}", status="skipped",
                                     reason="Native Metal device prerequisite did not pass."))
-    except (ProbeFailed, OSError) as error:
+    except (ProbeFailed, OSError, subprocess.SubprocessError) as error:
         print(f"Stopped runtime checks: {error}", flush=True)
         exit_code = 1
     finally:

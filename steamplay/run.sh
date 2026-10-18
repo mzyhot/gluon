@@ -4,14 +4,25 @@
 unset DYLD_INSERT_LIBRARIES
 verb="${1:-}"
 case "$verb" in
-  getcompatpath) printf '%s\n' "${STEAM_COMPAT_DATA_PATH:-}"; exit 0 ;;
-  run|runinprefix|waitforexitandrun) shift ;;
+  getcompatpath)
+    if [ "$#" -eq 1 ]; then printf '%s\n' "${STEAM_COMPAT_DATA_PATH:-}"; exit 0; fi
+    shift ;;
+  getnativepath|run|runinprefix|waitforexitandrun) shift ;;
   *) printf 'gluon: unsupported Steam Play verb: %s\n' "$verb" >&2; exit 1 ;;
 esac
 [ $# -gt 0 ] || { echo 'gluon: no Windows executable supplied' >&2; exit 1; }
 gluon_home="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
 launcher="$gluon_home/bin/gluon"
 [ -x "$launcher" ] || { echo "gluon: reinstall Gluon; launcher missing: $launcher" >&2; exit 1; }
+tool_directory="$(cd "$(dirname "$0")" && pwd -P)" || exit 1
+case "${tool_directory##*/}" in
+  gluon|gluon-proton)
+    [ -n "${STEAM_COMPAT_DATA_PATH:-}" ] || { echo 'gluon: missing Cloud compatibility directory' >&2; exit 1; }
+    PYTHONPATH="$gluon_home/lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
+      -m gluon.cloud --check "$STEAM_COMPAT_DATA_PATH" || exit 1
+    export GLUON_NATIVE_CLOUD=1
+    ;;
+esac
 # Steam references its Windows install-script evaluator under legacycompat. Obtain
 # Valve's pinned files on the user's machine, then redirect only these helper paths.
 case "$1" in

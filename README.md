@@ -54,6 +54,12 @@ Runtime packages are staged under unique names and activated only while Steam
 and Wine are idle. The remaining background helper performs runtime selection.
 It never enables games or edits Steam metadata.
 
+Game sessions use a native launcher host for Steam Stop and quit, and run as
+named Mac app bundles for focus and Dock/menu-bar identity. Wine's overlay is
+scoped to games rather than its server or system helpers. msync and keep-awake
+are enabled for plain-Wine games. Settings, automatic native Steam Cloud and
+graphics switches are described in [runtime features](docs/RUNTIME.md).
+
 Builds and tests run through GitHub Actions. The **Steam Play** workflow compiles
 the pinned library, runs upstream synthetic checks, tests actual signing with a
 fake Steam bundle, and inspects a package fixture. The **Build** workflow combines

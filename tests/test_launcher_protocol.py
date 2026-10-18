@@ -29,6 +29,8 @@ with open(os.environ['GLUON_TEST_TRACE'], 'a') as f:
     f.write(json.dumps({'args': sys.argv[1:], 'prefix': str(p), 'cwd': os.getcwd(),
         'appid': os.environ.get('SteamAppId'), 'compat_id': os.environ.get('STEAM_COMPAT_APP_ID'),
         'insert': os.environ.get('DYLD_INSERT_LIBRARIES')}) + '\\n')
+if sys.argv[1:2] == ['winepath']:
+    print(sys.argv[-1])
 ''')
         wine.chmod(0o755)
         server = runtime / 'bin/wineserver'
@@ -74,6 +76,28 @@ with open(os.environ['GLUON_TEST_TRACE'], 'a') as f:
         result = self.run_tool('getcompatpath', STEAM_COMPAT_DATA_PATH='/fixture compat')
         self.assertEqual(result.stdout, '/fixture compat\n')
         self.assertFalse(self.trace.exists())
+
+    def test_native_path_conversion_uses_selected_prefix_and_no_game_identity(self):
+        for verb, direction, path in (('getcompatpath', '-w', '/unix/path with spaces'),
+                                      ('getnativepath', '-u', 'C:\\windows\\path with spaces')):
+            with self.subTest(verb=verb):
+                result = self.run_tool(verb, path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), path)
+                row = json.loads(self.trace.read_text().splitlines()[-1])
+                self.assertEqual(row['args'], ['winepath', direction, path])
+                self.assertIsNone(row['appid'])
+                self.assertIsNone(row['insert'])
+
+    def test_native_run_helper_preserves_helper_arguments_and_clears_game_identity(self):
+        host = self.home / 'bin/gluon-launcher-host'
+        host.write_text('#!/bin/sh\nexit 99\n')
+        host.chmod(0o755)
+        result = self.run_tool('run', str(self.game), 'GLUON_FOCUS=0', SteamAppId='123', SteamGameId='123')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = json.loads(self.trace.read_text().splitlines()[-1])
+        self.assertEqual(row['args'], [str(self.game), 'GLUON_FOCUS=0'])
+        self.assertIsNone(row['appid'])
 
     def test_unknown_verb_fails(self):
         self.assertNotEqual(self.run_tool('unknown', str(self.game)).returncode, 0)

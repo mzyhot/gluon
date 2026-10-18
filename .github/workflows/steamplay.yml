@@ -1,9 +1,9 @@
 name: Steam Play
 on:
   push:
-    branches: ["codex/notproton-steamplay"]
+    branches: ["codex/notproton-steamplay", "codex/steamplay-runtime-polish"]
   pull_request:
-    paths: ["steamplay/**", "gluon/**", "tool/**", "packaging/**", "tests/**", ".github/workflows/steamplay.yml"]
+    paths: ["steamplay/**", "gluon/**", "tool/**", "tools/**", "packaging/**", "tests/**", ".github/workflows/steamplay.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,6 +22,8 @@ jobs:
         run: python3 -m unittest discover -s tests -v
       - name: Build tools
         run: brew install cmake
+      - name: Native launcher lifecycle fixtures
+        run: packaging/check-launcher-host.sh
       - name: Build and inspect Steam Play payload
         run: |
           set -o pipefail
