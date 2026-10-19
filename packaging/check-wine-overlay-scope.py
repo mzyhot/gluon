@@ -25,6 +25,8 @@ CASES = (
     (r"c:\windows\system32\steam.exe", r"/bundle/Game.app/Contents/MacOS/wine", (), None, False),
     (r'"Game.exe"', r"Z:\Users\me\Steam\steamapps\common\Game\Game.exe", (), None, True),
     (r"services.exe", r"C:\windows\system32\services.exe", (), None, False),
+    (r"services.exe", "C:/Windows/system32/services.exe", (), None, False),
+    (r"services.exe", r"\\?\C:\Windows\system32\services.exe", (), None, False),
     (r"winedevice.exe", r"C:\WINDOWS\System32\winedevice.exe", (), None, False),
     (r"Launcher.exe", r"C:\Program Files\Game\Launcher.exe", (), None, True),
     (r"x.exe", r"\??\C:\windows\syswow64\x.exe", (), None, False),
@@ -75,6 +77,15 @@ CASES = tuple((program, image, arguments, marker, "game", expected)
     (GAME, LOADER, ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
     (GAME, "Game.exe", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
     (GAME, "Z:Game.exe", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    (GAME, "", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    (GAME, "Z", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    (GAME, "Z:", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    (GAME, "\\??\\", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    (GAME, "\\\\?\\", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    (GAME, r"\??\Z:", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    (GAME, r"\??\Z:Game.exe", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
+    ("wineboot", "Z:Game.exe", ("--type=utility",), CHROMIUM_SCOPE, "game", False),
+    (r"C:\Windows\system32\services.exe", "Z:Game.exe", ("--type=utility",), CHROMIUM_SCOPE, "game", False),
     (GAME, None, ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
     (GAME, r"\\server\share\Game.exe", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
     (GAME, r"\??\UNC\server\share\Game.exe", ("--type=renderer",), CHROMIUM_SCOPE, "game", True),
@@ -104,7 +115,8 @@ def check_source(source):
     spawn = extract(source, "static int build_path_and_exec( pid_t *pid, const char *dir, const char *name, char **argv )")
     preloader = extract(source, "static void preloader_exec( char **argv, const char *image_path )")
     required = (
-        (game, 'game = !strstr( lower, ":\\\\windows\\\\" ) && !strstr( lower, "/drive_c/windows/" );'),
+        (game, 'image[1] == \':\' && (image[2] == \'\\\\\' || image[2] == \'/\')) path = image;'),
+        (game, 'game = !strstr( lower, ":/windows/" ) && !strstr( lower, "/drive_c/windows/" );'),
         (identity, 'expected.st_dev == actual.st_dev && expected.st_ino == actual.st_ino;'),
         (background, 'if (!marker || strcmp( marker, "in-process-gpu-v1" )) return FALSE;'),
         (background, '&& is_chromium_game_image( image_path );'),
@@ -319,6 +331,7 @@ def main():
             duplicate_role = background.replace('        if (role) return FALSE;\n', '')
             positional_role = background.replace('        if (!strcmp( argv[i], "--" )) break;\n', '')
             wrong_image = identity.replace("    return same;", "    (void)same;\n    return TRUE;")
+            relative_image = game.replace(r" && (image[2] == '\\' || image[2] == '/')", "")
             mutations = (
                 ("everywhere", (everywhere, identity, background, scope, spawn)),
                 ("server", (game, identity, background, scope, leaky)),
@@ -328,6 +341,7 @@ def main():
                 ("duplicate-role", (game, identity, duplicate_role, scope, spawn)),
                 ("positional-role", (game, identity, positional_role, scope, spawn)),
                 ("image-identity", (game, wrong_image, background, scope, spawn)),
+                ("relative-image", (relative_image, identity, background, scope, spawn)),
             )
             for name, mutation in mutations:
                 if mutation == parts:
@@ -336,7 +350,7 @@ def main():
                 if result.returncode != 1:
                     raise ValueError("overlay scope fixture accepted the %s mutation" % name)
     print("Wine overlay scope passed %d program cases and the server environment%s" % (
-        len(CASES), "; eight unsafe scope mutations rejected" if args.self_test else ""))
+        len(CASES), "; nine unsafe scope mutations rejected" if args.self_test else ""))
     return 0
 
 

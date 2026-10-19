@@ -29,7 +29,7 @@
      return ret;
  }
  
-@@ -669,10 +683,93 @@
+@@ -669,10 +683,98 @@
      }
  }
  #endif
@@ -42,16 +42,21 @@
 + * such as "wineboot" is not one. */
 +static BOOL is_game_image( const char *program, const char *image_path )
 +{
-+    const char *path = program;
++    const char *path = program, *image = image_path;
 +    char *lower, *p;
 +    BOOL game;
 +
-+    if (image_path && ((image_path[0] && image_path[1] == ':') || !strncmp( image_path, "\\??\\", 4 )))
-+        path = image_path;
++    if (image && (!strncmp( image, "\\??\\", 4 ) || !strncmp( image, "\\\\?\\", 4 ))) image += 4;
++    if (image && ((image[0] >= 'A' && image[0] <= 'Z') || (image[0] >= 'a' && image[0] <= 'z')) &&
++        image[1] == ':' && (image[2] == '\\' || image[2] == '/')) path = image;
 +    if (!path || (!strchr( path, '/' ) && !strchr( path, '\\' ))) return FALSE;
 +    if (!(lower = strdup( path ))) return FALSE;
-+    for (p = lower; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
-+    game = !strstr( lower, ":\\windows\\" ) && !strstr( lower, "/drive_c/windows/" );
++    for (p = lower; *p; p++)
++    {
++        if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
++        if (*p == '\\') *p = '/';
++    }
++    game = !strstr( lower, ":/windows/" ) && !strstr( lower, "/drive_c/windows/" );
 +    free( lower );
 +    return game;
 +}

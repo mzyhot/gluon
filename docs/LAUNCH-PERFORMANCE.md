@@ -23,6 +23,12 @@ file identity. Other executables, unknown roles and ambiguous arguments retain
 the overlay. This removes redundant native overlay initialization in background
 processes without changing the graphics backend or game files.
 
+Window handoff checks readiness every 50 ms for at most ten seconds. A hidden
+window no longer consumes an activation attempt or waits through the old
+0.3/1.2/2.5-second backoff. Visible activation requests remain bounded to three,
+and switching to another application cancels the delayed handoff. This removes
+a possible delay after a window exists; it does not shorten game initialization.
+
 The per-game bundle includes a real ICNS resource and `CFBundleIconFile` using
 Steam's locally cached client icon. Conversion happens only when the cached icon
 changes. No artwork is fetched during Play. A failed conversion is remembered
@@ -53,6 +59,10 @@ Apple's Symbol font. A source-extracted sanitizer fixture checks those rejection
 paths separately. These scans do not cover a real game's heaps or prove that all
 Wine, graphics-driver or Steam-client allocations are leak-free.
 Evidence is retained in the native and complete-runtime workflow artifacts.
+The native fixtures also block AppKit startup until the real shell has started,
+and exercise the exact window-handoff methods with a virtual clock. The complete
+runtime checks both PE architectures with an inert native insertion library to
+verify overlay initialization is retained or skipped in the intended child roles.
 
 The resolver fallback also frees its temporary hostnames before returning a
 canonical-name error, preserving the original error and last-error semantics.

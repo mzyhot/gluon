@@ -49,6 +49,8 @@ jobs:
 
       - name: Native launcher lifecycle fixtures
         run: packaging/check-launcher-host.sh
+      - name: Native first-window focus fixtures
+        run: python3 packaging/check-wine-focus.py --self-test
 
       - name: Cache downloads
         uses: actions/cache@v4
@@ -184,6 +186,10 @@ jobs:
       - name: Check complete runtime on GitHub macOS
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
+
+      - name: Check compiled Chromium child overlay routing
+        timeout-minutes: 4
+        run: python3 packaging/check-runtime-overlay.py build/gluon-wine build/graphics-probes
 
       - name: Compare repeat launch overhead with v0.4.1-fixed
         timeout-minutes: 10
