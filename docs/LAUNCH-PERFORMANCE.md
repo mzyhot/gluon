@@ -41,3 +41,10 @@ Apple's Symbol font. A source-extracted sanitizer fixture checks those rejection
 paths separately. These scans do not cover a real game's heaps or prove that all
 Wine, graphics-driver or Steam-client allocations are leak-free.
 Evidence is retained in the native and complete-runtime workflow artifacts.
+
+The resolver fallback also frees its temporary hostnames before returning a
+canonical-name error, preserving the original error and last-error semantics.
+The Steam helper is rebuilt from its pinned public source with balanced launch
+buffers, DOS-path allocations, COM references and detached thread handles. Its
+bridge DLLs retain their original ABI. Separate source-extracted sanitizer
+fixtures exercise repeated resolver failures and helper-managed restarts.

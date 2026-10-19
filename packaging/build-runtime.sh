@@ -72,8 +72,9 @@ python3 "$ROOT/packaging/check-gl-compat-as-core.py" "$SRC/wine" --source-only -
 python3 "$ROOT/packaging/check-wine-app-bundle.py" "$SRC/wine" --source-only --self-test
 python3 "$ROOT/packaging/check-wine-overlay-scope.py" "$SRC/wine" --source-only --self-test
 python3 "$ROOT/packaging/check-wine-font-ownership.py" "$SRC/wine" --source-only --self-test
+python3 "$ROOT/packaging/check-wine-resolver-ownership.py" "$SRC/wine" --source-only --self-test
 WINE_PATCH_SHA="$("$ROOT/packaging/apply-wine-patches.sh" --hash)"
-RUNTIME_BUILD_KEY="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py; do
+RUNTIME_BUILD_KEY="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh patches/steam-helper-resource-ownership.patch; do
     printf '%s %s\n' "$helper" "$(shasum -a 256 "$ROOT/packaging/$helper" | cut -d' ' -f1)"
 done | shasum -a 256 | cut -d' ' -f1)"
 if [ -x "$OUT/bin/wine" ] && { [ ! -f "$OUT/.gluon-wine-patches" ] || [ "$(cat "$OUT/.gluon-wine-patches")" != "$WINE_PATCH_SHA" ]; }; then
@@ -196,6 +197,7 @@ bridge="$(ls "$WORK"/inputs/steam-bridge-*.tar.gz 2>/dev/null | head -1 || true)
 if [ -n "$bridge" ]; then
     log "Adding the Steam API bridge from $(basename "$bridge")"
     tar -xzf "$bridge" -C "$OUT"
+    WORK="$WORK" OUT="$OUT" "$ROOT/packaging/build-steam-helper.sh"
 else
     log "No Steam API bridge input; games will not see the Steam client"
 fi
@@ -224,6 +226,7 @@ DXVK 1.10.3 (Direct3D 9 only) - compiled by Gluon's build from sources/dxvk
 MoltenVK - $MOLTENVK_URL
 DXMT - $DXMT_URL  (source: https://github.com/3Shain/dxmt, tag v0.80)
 Steam API bridge, when present - see licenses/steam-bridge/
+steam.exe rebuilt with Gluon ownership fixes - see licenses/steam-helper/
 TLS dependencies - see licenses/tls/
 Media and SDL dependencies - see licenses/media/
 Wine Mono and Gecko - see licenses/wine-addons/

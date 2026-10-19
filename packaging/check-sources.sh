@@ -70,6 +70,7 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/opengl32/unix_thunks.c \
     sources/wine/dlls/win32u/vulkan.c \
     sources/wine/dlls/win32u/freetype.c \
+    sources/wine/dlls/ws2_32/protocol.c \
     sources/wine/dlls/ntdll/unix/loader.c \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
@@ -110,6 +111,13 @@ else
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-font-ownership.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
 fi
 
+echo "Checking Wine resolver fallback ownership and error semantics"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-resolver-ownership.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-resolver-ownership.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
+
 echo "Checking that Wine gives Steam's overlay only to game processes"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-overlay-scope.py" "$GLUON_SOURCE_TEMP/wine" --self-test
@@ -131,5 +139,9 @@ for patch_name in dxvk-explicit-algorithm dxvk-mingw-resource-manager dxvk-suppo
     patch --forward --batch --fuzz=0 -p1 -d "$GLUON_SOURCE_TEMP/dxvk" < "$patch_file"
     patch --dry-run --reverse --batch --fuzz=0 -p1 -d "$GLUON_SOURCE_TEMP/dxvk" < "$patch_file"
 done
+
+echo "Checking the exact pinned Steam helper ownership paths"
+WORK="$GLUON_SOURCE_TEMP" "$GLUON_SOURCE_ROOT/packaging/build-steam-helper.sh" --source-only
+python3 "$GLUON_SOURCE_ROOT/packaging/check-steam-helper-ownership.py" "$GLUON_SOURCE_TEMP/steam-helper-source/steam.c" --self-test
 
 echo "Cloud source checks passed; runtime compilation and rendering are untested by this job."

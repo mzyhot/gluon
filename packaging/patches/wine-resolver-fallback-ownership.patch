@@ -1,0 +1,11 @@
+--- a/dlls/ws2_32/protocol.c
++++ b/dlls/ws2_32/protocol.c
+@@ -214,6 +214,8 @@
+             {
+                 freeaddrinfo( *info );
+                 *info = NULL;
++                free( fqdn );
++                free( nodev6 );
+                 return EAI_NONAME;
+             }
+         }
