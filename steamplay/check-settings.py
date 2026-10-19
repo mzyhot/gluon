@@ -138,6 +138,7 @@ with tempfile.TemporaryDirectory() as temporary:
     entries[8]['depots'] = app()['depots']
     entries[8]['depots']['102'] = {'depotfromapp': '16'}
     entries[16] = {'common': {'type':'DLC','oslist':'macos'}, 'depots': {'102': {'manifests': {'public': {'gid':'5000'}}}}}
+    install_native() # This new referenced Mac/shared version must be installed before attesting it.
     assert '8' in classified()
     native.unlink()
     assert '8' in classified()
