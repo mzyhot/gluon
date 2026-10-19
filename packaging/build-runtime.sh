@@ -71,6 +71,7 @@ log "Applying Wine OpenGL and Vulkan changes"
 python3 "$ROOT/packaging/check-gl-compat-as-core.py" "$SRC/wine" --source-only --self-test
 python3 "$ROOT/packaging/check-wine-app-bundle.py" "$SRC/wine" --source-only --self-test
 python3 "$ROOT/packaging/check-wine-overlay-scope.py" "$SRC/wine" --source-only --self-test
+python3 "$ROOT/packaging/check-wine-font-ownership.py" "$SRC/wine" --source-only --self-test
 WINE_PATCH_SHA="$("$ROOT/packaging/apply-wine-patches.sh" --hash)"
 RUNTIME_BUILD_KEY="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py; do
     printf '%s %s\n' "$helper" "$(shasum -a 256 "$ROOT/packaging/$helper" | cut -d' ' -f1)"

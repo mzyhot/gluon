@@ -33,8 +33,11 @@ another Steam client SDK into the native host. The existing Cocoa Stop, owner
 monitor and exit-log monitor handle shutdown. An unavailable or rotated log
 enables the SDK callback fallback, and CI checks that transition explicitly.
 
-The full-runtime job also records a live Wine native-allocation scan while running
-disposable Notepad. Third-party findings or scan errors are reported separately;
-they are never called clean. These scans do not cover a real game's heaps or
-prove that all Wine, graphics-driver or Steam-client allocations are leak-free.
+The full-runtime job also gates a live Wine native-allocation scan while running
+disposable Notepad. A complete report must explicitly confirm zero leaked bytes;
+findings, an exited target or a scan error fail the check. The font rejection
+patch releases the names and FreeType face owned by a rejected font, including
+Apple's Symbol font. A source-extracted sanitizer fixture checks those rejection
+paths separately. These scans do not cover a real game's heaps or prove that all
+Wine, graphics-driver or Steam-client allocations are leak-free.
 Evidence is retained in the native and complete-runtime workflow artifacts.

@@ -1,0 +1,38 @@
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -886,6 +886,8 @@
+     struct bitmap_font_size size;
+ };
+ 
++static void unix_face_destroy( struct unix_face *This );
++
+ static struct unix_face *unix_face_create( const char *unix_name, void *data_ptr, UINT data_size,
+                                            UINT face_index, UINT flags )
+ {
+@@ -998,7 +1000,7 @@
+     }
+     else
+     {
+-        free( This );
++        unix_face_destroy( This );
+         This = NULL;
+     }
+ 
+@@ -1011,7 +1013,7 @@
+         {
+             /* These fonts (ukai.ttf, samyak-oriya.ttf) cause native gdiplus to crash */
+             TRACE("Skipping %s\n", debugstr_w(This->family_name));
+-            free( This );
++            unix_face_destroy( This );
+             This = NULL;
+         }
+         /* Ignore Apple's Symbol font */
+@@ -1020,7 +1022,7 @@
+             if(!(This->fs.fsCsb[0] & 0x80000000))
+             {
+                 TRACE( "Skipping Apple's Symbol font\n" );
+-                free( This );
++                unix_face_destroy( This );
+                 This = NULL;
+                 goto done;
+             }

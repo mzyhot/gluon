@@ -116,8 +116,9 @@ with (probes / 'wine-memory-target.log').open('w') as log:
         if target.poll() is None:
             target.terminate()
         target.wait(timeout=10)
-# Keep a third-party Wine finding visible as evidence, distinct from the
-# first-party host/guard checks that gate the build. Never label an error clean.
+# The live scan gates the bounded Notepad fixture. Retain its report even when
+# it finds a regression; neither an incomplete scan nor exit status alone is
+# evidence that the native allocations are clean.
 report = (probes / 'wine-native-leaks.log').read_text(errors='replace')
 native_scan = {'exit_code': scan_code,
                'result': ('clean' if scan_code == 0 and '0 leaks for 0 total leaked bytes' in report
@@ -125,6 +126,8 @@ native_scan = {'exit_code': scan_code,
                'scope': 'Live Wine native allocations with disposable Notepad, not game heaps'}
 (probes / 'wine-native-leaks.json').write_text(json.dumps(native_scan, indent=2))
 print('Wine native memory scan:', native_scan)
+if native_scan['result'] != 'clean':
+    raise RuntimeError('Live Wine memory scan found leaks or did not complete; see wine-native-leaks.log')
 summary = os.environ.get('GITHUB_STEP_SUMMARY')
 if summary:
     with open(summary, 'a') as output:

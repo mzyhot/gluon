@@ -42,6 +42,8 @@ with tempfile.TemporaryDirectory(prefix='gluon-memory-') as temporary:
             with (evidence / 'launcher-leaks.log').open('w') as output:
                 subprocess.run(['/usr/bin/leaks', '-quiet', str(process.pid)], stdout=output,
                                stderr=subprocess.STDOUT, check=True, timeout=30)
+            if '0 leaks for 0 total leaked bytes' not in (evidence / 'launcher-leaks.log').read_text():
+                raise RuntimeError('Launcher memory scan did not confirm zero leaks; see launcher-leaks.log')
         finally:
             if process.poll() is None:
                 process.terminate()

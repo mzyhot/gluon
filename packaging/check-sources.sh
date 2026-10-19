@@ -69,6 +69,7 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/opengl32/thunks.c \
     sources/wine/dlls/opengl32/unix_thunks.c \
     sources/wine/dlls/win32u/vulkan.c \
+    sources/wine/dlls/win32u/freetype.c \
     sources/wine/dlls/ntdll/unix/loader.c \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
@@ -100,6 +101,13 @@ if [ "${GITHUB_ACTIONS:-}" = true ]; then
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-app-bundle.py" "$GLUON_SOURCE_TEMP/wine" --self-test
 else
     python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-app-bundle.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
+
+echo "Checking Wine rejected-font ownership with the exact constructor/destructor"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-font-ownership.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-font-ownership.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
 fi
 
 echo "Checking that Wine gives Steam's overlay only to game processes"
