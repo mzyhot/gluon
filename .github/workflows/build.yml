@@ -221,6 +221,7 @@ jobs:
           path: |
             build/graphics-probes/*.log
             build/graphics-probes/*.json
+            build/graphics-probes/profile-*/logs/*.log
             build/evidence/*.log
             build/graphics-probes/*.exe
             build/original-run.json

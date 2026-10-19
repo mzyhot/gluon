@@ -71,8 +71,11 @@ for label, source in (('released', baseline), ('candidate', root)):
                 ready = time.monotonic() - started
                 if process.wait(timeout=45):
                     raise RuntimeError('%s launcher failed after Windows started' % label)
+                print('%s launch %d: Windows ready after %.4f s' % (label, attempt, ready), flush=True)
             finally:
-                subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=env, timeout=10, check=True)
+                # -k also returns 1 when the launcher already stopped its server.
+                # As in production shutdown, -w confirms that it is actually idle.
+                subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=env, timeout=10)
                 subprocess.run([str(runtime / 'bin/wineserver'), '-w'], env=env, timeout=10, check=True)
                 if process.poll() is None:
                     process.terminate()
@@ -88,12 +91,14 @@ with (probes / 'wine-native-leaks.log').open('w') as output:
     scan = subprocess.run(['/usr/bin/leaks', '--atExit', '--', str(runtime / 'bin/wine'),
                            'cmd', '/c', 'exit', '0'], env=dict(base_env, GLUON_HOME=str(home)),
                           stdout=output, stderr=subprocess.STDOUT, timeout=60)
-subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=base_env, check=True, timeout=10)
+subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=base_env, timeout=10)
 subprocess.run([str(runtime / 'bin/wineserver'), '-w'], env=base_env, check=True, timeout=10)
 # Keep a third-party Wine finding visible as evidence, distinct from the
 # first-party host/guard checks that gate the build. Never label an error clean.
+report = (probes / 'wine-native-leaks.log').read_text(errors='replace')
 native_scan = {'exit_code': scan.returncode,
-               'result': 'clean' if scan.returncode == 0 else 'findings-or-scan-error',
+               'result': ('clean' if scan.returncode == 0 and '0 leaks for 0 total leaked bytes' in report
+                          else 'findings-or-incomplete-scan'),
                'scope': 'Wine native allocations while running a Windows command, not game heaps'}
 (probes / 'wine-native-leaks.json').write_text(json.dumps(native_scan, indent=2))
 print('Wine native memory scan:', native_scan)

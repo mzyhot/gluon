@@ -109,6 +109,7 @@ def info_plist(appid: str, name: str, has_icon: bool = False) -> bytes:
     }
     if has_icon:
         info['CFBundleIconFile'] = ICON
+        info['CFBundleVersion'] = '2'
     return plistlib.dumps(info)
 
 
