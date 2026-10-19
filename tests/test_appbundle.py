@@ -1,9 +1,12 @@
 """Offline fixtures for per-game app bundles."""
 import os
+import base64
 from pathlib import Path
 import plistlib
 import tempfile
+import sys
 import unittest
+from unittest.mock import patch
 
 from gluon import appbundle
 
@@ -77,6 +80,59 @@ class AppBundleTests(unittest.TestCase):
             '"AppState"\n{\n\t"appid"\t\t"4705510"\n\t"name"\t\t"Happy Wheels"\n}\n')
         self.assertEqual(appbundle.game_name(str(self.steamapps), "4705510", "fallback"), "Happy Wheels")
         self.assertEqual(appbundle.game_name(str(self.steamapps), "1", "Install Dir"), "Install Dir")
+
+    def test_steam_cache_selects_the_client_icon_and_ignores_library_art(self):
+        cache = self.root / 'Steam/appcache/librarycache/4705510'
+        cache.mkdir(parents=True)
+        (cache / 'library_hero.jpg').touch()
+        (cache / 'logo.png').touch()
+        icon = cache / ('a' * 40 + '.jpg')
+        icon.write_bytes(b'cached client icon')
+        self.assertEqual(appbundle.steam_icon(str(self.root / 'Steam'), '4705510'), icon)
+
+    def test_icon_is_registered_and_reused_until_the_cached_art_changes(self):
+        source = self.root / 'icon.png'
+        source.write_bytes(b'first icon')
+
+        def convert(path, resources):
+            resources.mkdir(parents=True)
+            (resources / appbundle.ICON).write_bytes(b'icns' + path.read_bytes())
+            return True
+
+        def prepare():
+            return appbundle.prepare(str(self.home), '4705510', 'Happy Wheels',
+                                     str(self.loader), str(self.ntdll), source)
+
+        with patch.object(appbundle, '_build_icon', side_effect=convert) as build:
+            bundle = prepare()
+            info = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
+            self.assertEqual(info['CFBundleIconFile'], appbundle.ICON)
+            prepare()
+            self.assertEqual(build.call_count, 1, 'a warm launch reconverted the icon')
+            source.write_bytes(b'new icon')
+            prepare()
+            self.assertEqual(build.call_count, 2)
+            self.assertEqual((bundle / 'Contents/Resources/Game.icns').read_bytes(), b'icnsnew icon')
+
+    def test_bad_icon_is_not_retried_on_every_launch(self):
+        source = self.root / 'icon.jpg'
+        source.write_bytes(b'incomplete download')
+        with patch.object(appbundle, '_build_icon', return_value=False) as build:
+            for _ in range(2):
+                bundle = appbundle.prepare(str(self.home), '4705510', 'Happy Wheels',
+                                           str(self.loader), str(self.ntdll), source)
+            self.assertEqual(build.call_count, 1)
+            self.assertNotIn('CFBundleIconFile', plistlib.loads((bundle / 'Contents/Info.plist').read_bytes()))
+
+    @unittest.skipUnless(sys.platform == 'darwin' and os.environ.get('GITHUB_ACTIONS') == 'true',
+                         'native image conversion runs on the Actions Mac')
+    def test_native_icon_conversion_produces_a_real_icns(self):
+        source = self.root / 'icon.png'
+        source.write_bytes(base64.b64decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII='))
+        resources = self.root / 'Resources'
+        self.assertTrue(appbundle._build_icon(source, resources))
+        self.assertEqual((resources / appbundle.ICON).read_bytes()[:4], b'icns')
 
 
 if __name__ == "__main__":

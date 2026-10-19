@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the production native Cloud guard against a disposable Actions library."""
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import struct
@@ -12,13 +13,15 @@ if os.environ.get('GITHUB_ACTIONS') != 'true' or sys.platform != 'darwin':
 root = Path(__file__).resolve().parents[1]
 source = root / 'build/notproton'
 executable = root / 'build/evidence/check-cloud-guard'
-subprocess.run(['clang', '-arch', 'arm64', '-std=c17', '-Wall', '-Wextra', '-Werror',
+compile_command = ['clang', '-arch', 'arm64', '-std=c17', '-Wall', '-Wextra', '-Werror',
                 '-Wno-error=deprecated-declarations',  # pinned upstream cJSON uses sprintf
-                '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                 '-I' + str(root / 'steamplay'), str(root / 'steamplay/check-cloud-guard.c'),
                 str(source / 'dylib/feats/cloud_guard.c'), str(source / 'dylib/util/file.c'),
-                str(source / 'dylib/util/log.c'), str(source / 'vendor/cJSON.c'),
+                str(source / 'dylib/util/log.c'), str(source / 'vendor/cJSON.c')]
+subprocess.run([*compile_command, '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
                 '-o', str(executable)], check=True)
+leak_executable = executable.with_name('check-cloud-guard-leaks')
+subprocess.run([*compile_command, '-o', str(leak_executable)], check=True)
 with tempfile.TemporaryDirectory() as temporary:
     base = Path(temporary).resolve()
     home, steam = base / 'Gluon', base / 'Steam'
@@ -65,6 +68,17 @@ with tempfile.TemporaryDirectory() as temporary:
     env = dict(os.environ, GLUON_HOME=str(home), GLUON_STEAM_ROOT=str(steam))
     for name in ('DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH'):
         env.pop(name, None)
+    # Restore the fixture between tools; keep ASan separate from Apple's allocator.
+    seed = base / 'seed'
+    shutil.copytree(home, seed / 'home', symlinks=True)
+    shutil.copytree(steam, seed / 'steam', symlinks=True)
+    with (root / 'build/evidence/cloud-guard-leaks.log').open('w') as output:
+        subprocess.run(['/usr/bin/leaks', '--atExit', '--', str(leak_executable)],
+                       env=env, check=True, timeout=90, stdout=output, stderr=subprocess.STDOUT)
+    shutil.rmtree(home)
+    shutil.rmtree(steam)
+    shutil.copytree(seed / 'home', home, symlinks=True)
+    shutil.copytree(seed / 'steam', steam, symlinks=True)
     subprocess.run([str(executable)], env=env, check=True, timeout=90)
     for appid in (789, 790):
         legacy = steam / ('steamapps/compatdata/%d/pfx' % appid)

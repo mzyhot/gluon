@@ -124,6 +124,9 @@ static NSRunningApplication *steam_owner(NSString *directory)
     self.finished = YES;
     self.result = status;
     [self.timer invalidate];
+    self.timer = nil;
+    if (self.steamLog >= 0) { close(self.steamLog); self.steamLog = -1; }
+    self.steamLogLine = nil;
     [NSApp stop:nil];
     /* Wake run's nextEvent wait when finish was called by a timer/delegate. */
     [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
@@ -506,9 +509,10 @@ int main(int argc, char **argv)
         else if (host.steamDirectory)
             fprintf(stderr, "gluon: owning Steam application not identified; exit fallback inactive\n");
         NSApp.delegate = host;
+        __weak GluonLauncherHost *weakHost = host;
         host.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
             (void)timer;
-            [host poll];
+            [weakHost poll];
         }];
         [NSRunLoop.mainRunLoop addTimer:host.timer forMode:NSRunLoopCommonModes];
         [NSApp run];

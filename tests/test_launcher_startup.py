@@ -83,8 +83,8 @@ with open(output, 'w') as out, open(errors, 'w') as err:
         # creates a missing default and does not load any runtime executable.
         package = self.home / "lib/gluon"
         package.mkdir(parents=True)
-        for name in ("__init__.py", "runtime.py", "steam.py"):
-            shutil.copy2(ROOT / "gluon" / name, package / name)
+        for source in (ROOT / 'gluon').glob('*.py'):
+            shutil.copy2(source, package / source.name)
 
         self.environment = {
             key: value for key, value in os.environ.items()

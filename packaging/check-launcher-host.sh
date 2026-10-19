@@ -42,3 +42,4 @@ except subprocess.TimeoutExpired:
     raise SystemExit('Launcher host fixtures exceeded the 60-second hard deadline.')
 raise SystemExit(code)
 PY
+python3 packaging/check-native-memory.py

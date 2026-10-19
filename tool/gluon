@@ -289,12 +289,6 @@ if [ -d "$runtime/lib/gstreamer-1.0" ]; then
 fi
 # keep Wine from writing launchers/file associations into the user's macOS account
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}winemenubuilder.exe=d"
-if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ]; then
-    [ "$kind" = wine ] || fail "Gluon's native Steam Cloud requires its plain-Wine runtime"
-    PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
-        -m gluon.cloud --check-app "$appid" --compat "$compat" >> "$LOG" 2>&1 || fail "native Cloud layout is not prepared"
-fi
-
 log "  runtime   = $runtime ($kind)"
 log "  prefix    = $WINEPREFIX"
 log "  program   = $exe"
@@ -352,6 +346,30 @@ fi
 if [ -n "$GLUON_DRY_RUN" ]; then
     log "  dry run: not starting the runtime"
     exit 0
+fi
+
+# Cloud validation, overlay validation and bundle/icon preparation share one
+# interpreter. Keep the Cloud check after settings and final prefix selection,
+# before any Wine command can change it. Steam's earlier sync has its own guard.
+bundle="" overlay_insert="" overlay_scoped=""
+patches="$runtime/licenses/gluon-wine-patches/APPLIED.txt"
+! grep -qx wine-macos-overlay-scope "$patches" 2>/dev/null || overlay_scoped=1
+if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ] || { [ -n "$game_session" ] && [ "$kind" = wine ] \
+    && { [ -n "$STEAM_DYLD_INSERT_LIBRARIES" ] || { [ -n "$overlay_scoped" ] \
+    && [ "${GLUON_APP_BUNDLE:-1}" != 0 ]; }; }; }; then
+    launch_setup="$(PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
+        -m gluon.launch --home "$GLUON_HOME" --appid "$appid" --compat "$compat" \
+        --runtime "$runtime" --kind "$kind" --steamapps "${library:+$library/steamapps}" \
+        --fallback-name "$(basename "${install_dir:-$exe}" .exe)" ${game_session:+--game-session} \
+        2>> "$LOG")" || fail "launch preparation failed (see $LOG)"
+    while IFS= read -r setting; do
+        case "$setting" in
+            cloud=prefix) ;;
+            cloud=*) unset GLUON_NATIVE_CLOUD ;;
+            overlay=*) overlay_insert="${setting#overlay=}" ;;
+            bundle=*) bundle="${setting#bundle=}" ;;
+        esac
+    done <<< "$launch_setup"
 fi
 
 # Path conversion is part of Steam's native compatibility-tool protocol.
@@ -492,22 +510,6 @@ else
         run_wait "$wineserver" -w || fail "Could not wait for the previous session (see $WINE_LOG)"
         log "  previous prefix session is idle"
     fi
-    overlay_insert=""
-    if [ -n "$game_session" ] && [ "${GLUON_OVERLAY:-1}" != 0 ] && [ "${SteamClientLaunch:-}" = 1 ] \
-        && [ -n "${STEAM_DYLD_INSERT_LIBRARIES:-}" ]; then
-        overlay_lib="$GLUON_HOME/lib"
-        [ -f "$overlay_lib/gluon/overlay.py" ] || overlay_lib="$source_root"
-        if [ -f "$overlay_lib/gluon/overlay.py" ]; then
-            if [ -n "${STEAM_CLIENT_CONFIG_FILE:-}" ]; then
-                overlay_client_dir="$(dirname "$STEAM_CLIENT_CONFIG_FILE")"
-            else
-                overlay_client_dir="${STEAM_ROOT:-$HOME/Library/Application Support/Steam}/Steam.AppBundle/Steam/Contents/MacOS"
-            fi
-            overlay_insert="$(PYTHONPATH="$overlay_lib" PYTHONDONTWRITEBYTECODE=1 \
-                /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.overlay \
-                --client-dir "$overlay_client_dir" 2>> "$LOG")" || overlay_insert=""
-        fi
-    fi
     if [ -n "$steam_bridge" ]; then
         # The helper and the bridge DLL have to exist inside the prefix; a prefix made
         # before the runtime carried them does not have them yet.
@@ -537,24 +539,11 @@ else
         game_command=("$exe" "$@")
     fi
     keep_awake
-    patches="$runtime/licenses/gluon-wine-patches/APPLIED.txt"
-    overlay_scoped=""
-    ! grep -qx wine-macos-overlay-scope "$patches" 2>/dev/null || overlay_scoped=1
     # Each game runs from its own app bundle, started through LaunchServices: macOS
     # brings it to the front, names it and lets Game Mode recognize it. The bundle's
     # executable is the runtime's loader, which Gluon's Wine keeps for every process
     # of the game and starts in GLUON_GAME_CWD. GLUON_APP_BUNDLE=0 starts Wine
     # directly instead; so do other runtimes and a bundle LaunchServices refuses.
-    bundle=""
-    loader="$runtime/lib/wine/x86_64-unix/wine"
-    if [ -n "$game_session" ] && [ "${GLUON_APP_BUNDLE:-1}" != 0 ] && [ -n "$overlay_scoped" ] && grep -qx wine-macos-app-bundle "$patches" \
-        && [ -x "$loader" ] && [ -f "$runtime/lib/wine/x86_64-unix/ntdll.so" ] \
-        && [ -f "$helper_lib/gluon/appbundle.py" ]; then
-        bundle="$(PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
-            -m gluon.appbundle --home "$GLUON_HOME" --appid "$appid" --steamapps "${library:+$library/steamapps}" \
-            --fallback-name "$(basename "${install_dir:-$exe}" .exe)" --loader "$loader" \
-            --ntdll "$runtime/lib/wine/x86_64-unix/ntdll.so" 2>> "$LOG")" || bundle=""
-    fi
     [ -z "$overlay_insert" ] || log "  passing Steam's native overlay libraries to the Wine game host"
     launching=1
     if [ -n "$bundle" ]; then

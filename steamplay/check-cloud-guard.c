@@ -60,6 +60,14 @@ int main(void) {
     assert(gluon_cloud_select(791, &cloud_tool, &recovery_tool) == &cloud_tool);
     snprintf(view, sizeof(view), "%s/steamapps/compatdata/791/pfx", root);
     assert(lstat(view, &st) == 0 && S_ISLNK(st.st_mode));
+    // Repeated catalogue replacement exercises ownership of parsed JSON and
+    // negative-cache snapshots, including the long-lived Steam process case.
+    snprintf(manifest, sizeof(manifest), "%s/steamapps/appmanifest_123.acf", root);
+    for (int i = 0; i < 25; i++) {
+        FILE *changed = fopen(manifest, "w"); assert(changed);
+        assert(fprintf(changed, "fixture-%d", i) > 0 && fclose(changed) == 0);
+        assert(gluon_cloud_ready(123));
+    }
     puts("native Cloud preflight: fresh, cached, conflicting, API, GameInstall, legacy and newly installed games passed");
     return 0;
 }

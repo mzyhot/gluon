@@ -185,6 +185,14 @@ jobs:
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
 
+      - name: Compare repeat launch overhead with v0.4.1-fixed
+        timeout-minutes: 10
+        run: |
+          git fetch --depth=1 origin tag v0.4.1-fixed
+          mkdir -p build/launch-baseline
+          git archive v0.4.1-fixed gluon tool/gluon tools/gluon-launcher-host.m tools/gluon-steam-client.h steamplay/run.sh | tar -x -C build/launch-baseline
+          python3 packaging/profile-launch.py build/gluon-wine build/graphics-probes build/launch-baseline
+
       - name: Build logs on failure
         if: failure()
         run: |
@@ -213,6 +221,7 @@ jobs:
           path: |
             build/graphics-probes/*.log
             build/graphics-probes/*.json
+            build/evidence/*.log
             build/graphics-probes/*.exe
             build/original-run.json
             build/probe-sources.sha256

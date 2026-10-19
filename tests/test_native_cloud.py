@@ -422,7 +422,7 @@ class NativeCloudTests(unittest.TestCase):
         self.assertFalse((self.compat / cloud.MARKER).exists())
         self.assertFalse((self.compat / 'pfx').exists())
 
-    def test_cloud_shim_with_dot_path_checks_readiness_before_launcher(self):
+    def test_cloud_shim_with_dot_path_checks_final_prefix_before_wine(self):
         root = Path(__file__).resolve().parents[1]
         shim = self.root / 'compatibilitytools.d/gluon-proton/run'
         shim.parent.mkdir(parents=True)
@@ -433,14 +433,22 @@ class NativeCloudTests(unittest.TestCase):
         (self.home / 'lib/gluon').symlink_to(root / 'gluon')
         trace = self.root / 'launched'
         launcher = self.home / 'bin/gluon'
-        launcher.write_text('#!/bin/sh\nprintf launched > "$CLOUD_FIXTURE_TRACE"\n')
+        launcher.write_text((root / 'tool/gluon').read_text().replace(
+            '/usr/bin/arch -arm64 /usr/bin/python3', shlex.quote(sys.executable)).replace(
+            '/usr/bin/osascript', '/usr/bin/true'))
         launcher.chmod(0o755)
+        binaries = self.home / 'runtime/current/bin'
+        binaries.mkdir(parents=True)
+        (binaries / 'wine').write_text('#!/bin/sh\nprintf launched > "$CLOUD_FIXTURE_TRACE"\n')
+        (binaries / 'wineserver').write_text('#!/bin/sh\nexit 0\n')
+        for binary in binaries.iterdir():
+            binary.chmod(0o755)
         env = dict(os.environ, GLUON_HOME=str(self.home), STEAM_COMPAT_DATA_PATH=str(self.compat),
                    STEAM_ROOT=str(self.library), STEAM_COMPAT_APP_ID='123', CLOUD_FIXTURE_TRACE=str(trace))
         command = ['/bin/sh', str(shim.parent) + '/./run', 'waitforexitandrun', 'fixture.exe']
         failed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
         self.assertNotEqual(failed.returncode, 0)
-        self.assertIn('automatic preparation', failed.stderr)
+        self.assertIn('automatic preparation', (self.home / 'logs/launch-123.log').read_text())
         self.assertFalse(trace.exists())
         self.prepare()
         passed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
