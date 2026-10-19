@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 int main(void) {
+    int cloud_tool, recovery_tool;
     const char *root = getenv("GLUON_STEAM_ROOT");
     const char *home = getenv("GLUON_HOME");
     assert(root && home);
@@ -17,6 +18,7 @@ int main(void) {
     snprintf(index, sizeof(index), "%s/steamplay/cloud-index.json", home);
     assert(gluon_cloud_ready(0));
     assert(gluon_cloud_ready(123));
+    assert(gluon_cloud_select(123, &cloud_tool, &recovery_tool) == &cloud_tool);
     struct stat st, before, after;
     assert(lstat(view, &st) == 0 && S_ISLNK(st.st_mode));
     assert(stat(marker, &st) == 0 && S_ISREG(st.st_mode));
@@ -28,6 +30,21 @@ int main(void) {
     // A foreign Proton prefix must be refused before its paths can be returned.
     assert(unlink(view) == 0 && mkdir(view, 0700) == 0);
     assert(!gluon_cloud_ready(123));
+    assert(gluon_cloud_select(123, &cloud_tool, &recovery_tool) == &recovery_tool);
+    assert(lstat(view, &st) == 0 && S_ISDIR(st.st_mode));
+    // Steam can learn the game's API-only Cloud rules after an initial refusal.
+    // The old negative result must not survive that metadata update.
+    char source[2048], target[2048];
+    snprintf(source, sizeof(source), "%s/api-appinfo.vdf", home);
+    snprintf(target, sizeof(target), "%s/appcache/appinfo.vdf", root);
+    FILE *input = fopen(source, "rb"), *output = fopen(target, "wb");
+    assert(input && output);
+    char buffer[4096];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), input)) != 0)
+        assert(fwrite(buffer, 1, count, output) == count);
+    assert(!ferror(input) && fclose(input) == 0 && fclose(output) == 0);
+    assert(gluon_cloud_select(123, &cloud_tool, &recovery_tool) == &cloud_tool);
     assert(lstat(view, &st) == 0 && S_ISDIR(st.st_mode));
     // An uninstalled app keeps Install available. A newly created manifest
     // invalidates that result and prepares its Cloud view automatically.
@@ -38,6 +55,11 @@ int main(void) {
     assert(gluon_cloud_ready(456));
     snprintf(view, sizeof(view), "%s/steamapps/compatdata/456/pfx", root);
     assert(lstat(view, &st) == 0 && S_ISLNK(st.st_mode));
-    puts("native Cloud preflight: fresh, cached, conflicting and newly installed games passed");
+    assert(gluon_cloud_select(789, &cloud_tool, &recovery_tool) == &cloud_tool);
+    assert(gluon_cloud_select(790, &cloud_tool, &recovery_tool) == &cloud_tool);
+    assert(gluon_cloud_select(791, &cloud_tool, &recovery_tool) == &cloud_tool);
+    snprintf(view, sizeof(view), "%s/steamapps/compatdata/791/pfx", root);
+    assert(lstat(view, &st) == 0 && S_ISLNK(st.st_mode));
+    puts("native Cloud preflight: fresh, cached, conflicting, API, GameInstall, legacy and newly installed games passed");
     return 0;
 }

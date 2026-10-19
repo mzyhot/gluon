@@ -12,15 +12,22 @@ case "$verb" in
 esac
 [ $# -gt 0 ] || { echo 'gluon: no Windows executable supplied' >&2; exit 1; }
 gluon_home="${GLUON_HOME:-$HOME/Library/Application Support/Gluon}"
+export STEAM_ROOT="${GLUON_STEAM_ROOT:-${STEAM_ROOT:-$HOME/Library/Application Support/Steam}}"
 launcher="$gluon_home/bin/gluon"
 [ -x "$launcher" ] || { echo "gluon: reinstall Gluon; launcher missing: $launcher" >&2; exit 1; }
 tool_directory="$(cd "$(dirname "$0")" && pwd -P)" || exit 1
 case "${tool_directory##*/}" in
-  gluon|gluon-proton)
-    [ -n "${STEAM_COMPAT_DATA_PATH:-}" ] || { echo 'gluon: missing Cloud compatibility directory' >&2; exit 1; }
+  gluon)
     PYTHONPATH="$gluon_home/lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
-      -m gluon.cloud --check "$STEAM_COMPAT_DATA_PATH" || exit 1
-    export GLUON_NATIVE_CLOUD=1
+      -m gluon.cloud --explain "${STEAM_COMPAT_APP_ID:-${SteamAppId:-0}}" --compat "${STEAM_COMPAT_DATA_PATH:-}" --show-error
+    exit 1
+    ;;
+  gluon-proton)
+    [ -n "${STEAM_COMPAT_DATA_PATH:-}" ] || { echo 'gluon: missing Cloud compatibility directory' >&2; exit 1; }
+    cloud_layout="$(PYTHONPATH="$gluon_home/lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
+      -m gluon.cloud --check-app "${STEAM_COMPAT_APP_ID:-${SteamAppId:-0}}" --compat "$STEAM_COMPAT_DATA_PATH" --show-error)" || exit 1
+    unset GLUON_NATIVE_CLOUD
+    [ "$cloud_layout" != prefix ] || export GLUON_NATIVE_CLOUD=1
     ;;
 esac
 # Steam references its Windows install-script evaluator under legacycompat. Obtain

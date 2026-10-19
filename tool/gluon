@@ -292,7 +292,7 @@ export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}winemenubuilder.
 if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ]; then
     [ "$kind" = wine ] || fail "Gluon's native Steam Cloud requires its plain-Wine runtime"
     PYTHONPATH="$helper_lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
-        -m gluon.cloud --check "$compat" >> "$LOG" 2>&1 || fail "native Cloud layout is not prepared"
+        -m gluon.cloud --check-app "$appid" --compat "$compat" >> "$LOG" 2>&1 || fail "native Cloud layout is not prepared"
 fi
 
 log "  runtime   = $runtime ($kind)"

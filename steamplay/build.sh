@@ -70,7 +70,7 @@ for path in source.rglob('*'):
         shutil.copy2(path, target)
 LICENSES
 cp "$here/LICENSE" "$payload/licenses/Gluon-LICENSE"
-printf 'gluon-proton\t1\trosetta\tGluon\n' > "$payload/tools"
+printf 'gluon-proton\t1\trosetta\tGluon\ngluon\t1\trosetta\tGluon\n' > "$payload/tools"
 codesign -f -s - "$payload/gluon-steamplay.dylib" "$payload/appinfo"
 python3 "$here/steamplay/manifest.py" "$src" "$payload" "$here"
 lipo "$payload/gluon-steamplay.dylib" -verify_arch arm64 x86_64

@@ -19,7 +19,7 @@ def main():
     sub.add_parser("uninstall", help="restore all Steam apps managed by Gluon; preserve saves and backups")
     sub.add_parser("migrate", help="restore legacy Gluon metadata once; keep originals and backups")
     command = sub.add_parser("cloud", help="inspect or repair automatic native Steam Cloud preparation")
-    command.add_argument("operation", choices=("prepare",))
+    command.add_argument("operation", choices=("prepare", "status"))
     command.add_argument("appid")
     command = sub.add_parser("sync", help="select complete runtime updates only; never edit Steam metadata")
     command.add_argument("--dry-run", action="store_true")
@@ -32,12 +32,13 @@ def main():
         if args.command in ("install", "repair"):
             lines = steamplay.Installation().install(args.steam_app)
             lines += runtime.activate_pending()
+            lines += cloud.prepare_installed()
         elif args.command == "uninstall":
             lines = steamplay.Installation().uninstall() + migration.migrate()
         elif args.command == "migrate":
             lines = migration.migrate()
         elif args.command == "cloud":
-            lines = cloud.prepare(args.appid)
+            lines = cloud.prepare(args.appid) if args.operation == 'prepare' else cloud.status(args.appid)
         elif args.command == "sync":
             lines = runtime.activate_pending(dry_run=args.dry_run)
         elif args.command == "console":
