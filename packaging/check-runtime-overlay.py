@@ -20,7 +20,13 @@ def main():
     runtime, probes = (Path(p).resolve() for p in sys.argv[1:])
     work = probes / 'overlay-scope-runtime'
     work.mkdir()
-    prefix = work / 'prefix'
+    # The preceding complete-runtime step already initializes and validates
+    # this disposable prefix, then confirms that its server has stopped. Keep
+    # overlay routing independent of a second first-boot service installation.
+    # Never silently create a prefix when that prerequisite is missing.
+    prefix = probes / 'cloud-steam/steamapps/compatdata/123/pfx-wine'
+    if not all((prefix / name).is_file() for name in ('system.reg', 'user.reg')):
+        raise SystemExit('Expected the validated complete-runtime probe prefix')
     source = work / 'insertion.c'
     library = work / 'insertion.dylib'
     source.write_text('''#include <fcntl.h>
@@ -48,8 +54,7 @@ __attribute__((constructor)) static void inserted(void)
             subprocess.run(command, env=environment, cwd=work, stdout=log,
                            stderr=subprocess.STDOUT, check=True, timeout=timeout)
         try:
-            run([wine, 'wineboot', '--init'], timeout=60)
-            run([server, '-w'])
+            run([server, '-w'], timeout=10)
             for arch in ('x86_64', 'i386'):
                 directory = work / arch
                 directory.mkdir()
