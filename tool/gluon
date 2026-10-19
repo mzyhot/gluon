@@ -273,7 +273,7 @@ if [ "$kind" = proton ]; then
 else
     export WINEPREFIX="$compat/pfx-wine"
 fi
-export WINEDEBUG="${WINEDEBUG:-fixme-all}"
+export WINEDEBUG="${WINEDEBUG:-fixme-all,+timestamp}"
 # Mach-semaphore synchronization (msync) avoids most wineserver round trips.
 # Client and server must agree: every Wine command below, including prefix
 # setup and shutdown, inherits it, and an earlier server is waited for first.

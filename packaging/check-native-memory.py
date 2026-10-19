@@ -15,7 +15,7 @@ evidence = root / 'build/evidence'
 evidence.mkdir(parents=True, exist_ok=True)
 with (evidence / 'launcher-static-analysis.log').open('w') as output:
     subprocess.run(['clang', '--analyze', '-fobjc-arc', '-mmacosx-version-min=11.0',
-                    '-Wall', '-Wextra', '-Werror', '-framework', 'AppKit',
+                    '-Wall', '-Wextra', '-Werror',
                     '-Xanalyzer', '-analyzer-output=text', 'tools/gluon-launcher-host.m',
                     '-o', '/dev/null'], cwd=root, stdout=output, stderr=subprocess.STDOUT,
                    check=True, timeout=60)

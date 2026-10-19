@@ -17,6 +17,7 @@
 
 extern char **environ;
 static volatile sig_atomic_t received_signal;
+static double host_started;
 
 static void remember_signal(int number)
 {
@@ -405,6 +406,8 @@ static NSRunningApplication *steam_owner(NSString *directory)
         [self finish:126];
         return;
     }
+    fprintf(stderr, "gluon: launcher host started shell after %.1f ms\n",
+            (NSProcessInfo.processInfo.systemUptime - host_started) * 1000.0);
     /* Cocoa callbacks and the timer are serialized on the main thread. A
      * POSIX signal during spawn only sets a flag, checked after PID capture. */
     if (received_signal) [self requestStop:(int)received_signal];
@@ -494,6 +497,7 @@ int main(int argc, char **argv)
 
     @autoreleasepool
     {
+        host_started = NSProcessInfo.processInfo.systemUptime;
         GluonLauncherHost *host = [GluonLauncherHost new];
         /* Reuse the original argv allocation without copying argument bytes. */
         argv[0] = "/bin/bash";
