@@ -1,0 +1,661 @@
+Expose Gluon in Steam Settings and apply its global Mac32 policy.
+
+Architecture is positively identified; unknown and Mac64 builds stay native.
+The preference takes effect on a Steam restart and never writes per-game mappings.
+
+--- a/Makefile
++++ b/Makefile
+@@ -40,6 +40,7 @@
+ 	dylib/hooks/hook_activate.c \
+ 	dylib/feats/compat.c \
+ 	dylib/feats/cloud_guard.c \
++	dylib/feats/gluon_settings.c \
+ 	dylib/feats/webui.c \
+ 	dylib/feats/compatsvc.c \
+ 	dylib/feats/usershortcuts.c \
+--- a/app/Tests/NotProtonAppTests/AppInfoToolTests.swift
++++ b/app/Tests/NotProtonAppTests/AppInfoToolTests.swift
+@@ -214,7 +214,7 @@
+         let result = try read(Self.platforms(stringTable: stringTable), "--platforms")
+ 
+         #expect(result.status == 0)
+-        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\n")
++        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\nmac32=\n")
+     }
+ 
+     @Test("--platforms on a cache that stops early prints nothing and fails", arguments: [false, true])
+--- a/dylib/feats/compat.c
++++ b/dylib/feats/compat.c
+@@ -1,5 +1,6 @@
+ // Compatibility tool support
+ #include "compat.h"
++#include "gluon_settings.h"
+ #include "../util/log.h"
+ #include "../util/file.h"
+ #include "../util/a64.h"
+@@ -737,7 +738,8 @@
+     if (!compat_mgr || !appid)
+         return false;
+     uint32_t platforms = np_compat_valid_platforms(compat_mgr, appid);
+-    return (platforms & COMPAT_PLATFORM_WINDOWS) && !(platforms & COMPAT_PLATFORM_MACOS);
++    return (platforms & COMPAT_PLATFORM_WINDOWS) &&
++        (!(platforms & COMPAT_PLATFORM_MACOS) || gluon_settings_auto_app(appid));
+ }
+ 
+ typedef void *(*fn_FindMapping)(void *compat_mgr, uint32_t appid);
+--- a/dylib/feats/compat.h
++++ b/dylib/feats/compat.h
+@@ -82,11 +82,9 @@
+ void  np_compat_set_chosen_tool_fn(uintptr_t find_tool_for_target_app);
+ void *np_compat_chosen_tool(void *compat_mgr, uint32_t appid);
+ 
+-// Whether an app gets the CrossOver default: windows-only with no macOS.
+-//
+-// Deliberately blind to whether a macOS build can actually run. A 32-bit macOS
+-// build cannot run on a current system, but moving it onto a tool means fetching
+-// the windows build in full -- a choice to be offered, not taken.
++// Whether an unmapped app gets the Gluon default: Windows-only, or a
++// positively identified 32-bit Mac game with a Windows launch and the global
++// Gluon preference enabled. Mac64, unknown architecture and Mac-only stay native.
+ bool np_compat_would_force(void *compat_mgr, uint32_t appid);
+ 
+ // The wildcard (global default) mapping as it applies to one app, or NULL. Asked
+--- a/dylib/feats/compatsvc.c
++++ b/dylib/feats/compatsvc.c
+@@ -4,6 +4,7 @@
+ 
+ #include "compatsvc.h"
+ #include "compat.h"
++#include "gluon_settings.h"
+ #include "webui.h"
+ #include "../resolver/anchor.h"
+ #include "../util/log.h"
+@@ -284,6 +285,11 @@
+                       ? *(const uint32_t *)(request + SPECIFY_APPID_OFF) : 0;
+     const char *tool  = string_field(request + SPECIFY_TOOL_NAME_OFF);
+     (void)response;
++    int preference = gluon_settings_command(appid, tool);
++    if (preference) {
++        if (preference > 0) np_compatsvc_state_changed();
++        return preference > 0 ? RESULT_OK : RESULT_FAIL;
++    }
+ 
+     uint8_t *mgr = (uint8_t *)np_compat_manager();
+     if (!mgr) {
+--- a/dylib/feats/nativeplatform.c
++++ b/dylib/feats/nativeplatform.c
+@@ -8,12 +8,14 @@
+ #include <fcntl.h>
+ #include <limits.h>
+ #include <poll.h>
++#include <pthread.h>
+ #include <signal.h>
+ #include <spawn.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/wait.h>
++#include <sys/stat.h>
+ #include <time.h>
+ #include <unistd.h>
+ 
+@@ -57,16 +59,22 @@
+     return buf;
+ }
+ 
++static void appinfo_path(char *path, size_t cap) {
++    const char *root = getenv("GLUON_STEAM_ROOT");
++    if (root && root[0]) snprintf(path, cap, "%s/appcache/appinfo.vdf", root);
++    else {
++        const char *home = np_home_dir();
++        if (home) snprintf(path, cap, "%s/Library/Application Support/Steam/appcache/appinfo.vdf", home);
++        else if (cap) path[0] = 0;
++    }
++}
++
+ static char *run_helper(void) {
+     const char *home = np_home_dir();
+     if (!home) return NULL;
+     char tool[PATH_MAX], vdf[PATH_MAX];
+     np_support_path(tool, sizeof(tool), home, "appinfo");
+-    const char *root = getenv("GLUON_STEAM_ROOT");
+-    if (root && root[0])
+-        snprintf(vdf, sizeof(vdf), "%s/appcache/appinfo.vdf", root);
+-    else
+-        snprintf(vdf, sizeof(vdf), "%s/Library/Application Support/Steam/appcache/appinfo.vdf", home);
++    appinfo_path(vdf, sizeof vdf);
+ 
+     int fds[2];
+     if (pipe(fds) != 0) return NULL;
+@@ -152,24 +160,104 @@
+     return list;
+ }
+ 
++static pthread_mutex_t g_catalog_lock = PTHREAD_MUTEX_INITIALIZER;
++static char *g_mac32;
++static int g_catalog_loaded, g_refreshing;
++static long long g_refreshed;
++static struct stat g_appinfo_stamp;
++static int same_stamp(const struct stat *a, const struct stat *b) {
++    return a->st_ino == b->st_ino && a->st_dev == b->st_dev && a->st_size == b->st_size &&
++        a->st_mtimespec.tv_sec == b->st_mtimespec.tv_sec && a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec;
++}
++
+ char *np_nativeplatform_javascript(void) {
++    char path[PATH_MAX]; struct stat before = {0}, after = {0};
++    appinfo_path(path, sizeof path);
++    stat(path, &before);
+     char *out = run_helper();
+     if (!out) return NULL;
++    stat(path, &after);
++    if (!same_stamp(&before, &after)) { free(out); return NULL; }
+     const char *at = out;
+-    size_t mac_len = 0, windows_len = 0;
++    size_t mac_len = 0, windows_len = 0, mac32_len = 0;
+     const char *mac = take_list(&at, "mac=", &mac_len);
+     const char *windows = mac ? take_list(&at, "windows=", &windows_len) : NULL;
+-    if (!windows || *at) {
++    const char *mac32 = windows ? take_list(&at, "mac32=", &mac32_len) : NULL;
++    if (!mac32 || *at) {
+         NP_WARN("nativeplatform: appinfo helper printed something unexpected");
+         free(out);
+         return NULL;
+     }
+-    size_t cap = mac_len + windows_len + 128;
++    char *ids = strndup(mac32, mac32_len);
++    if (!ids) { free(out); return NULL; }
++    pthread_mutex_lock(&g_catalog_lock);
++    free(g_mac32);
++    g_mac32 = ids;
++    g_appinfo_stamp = after;
++    g_catalog_loaded = 1;
++    g_refreshed = now_ms();
++    pthread_mutex_unlock(&g_catalog_lock);
++    size_t cap = mac_len + windows_len + mac32_len + 160;
+     char *js = malloc(cap);
+     if (js)
+         snprintf(js, cap,
+-                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s])};\n",
+-                 (int)mac_len, mac, (int)windows_len, windows);
++                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s]),mac32:new Set([%.*s])};\n",
++                 (int)mac_len, mac, (int)windows_len, windows, (int)mac32_len, mac32);
+     free(out);
+     return js;
+ }
++
++void np_nativeplatform_refresh(void) {
++    char *js = np_nativeplatform_javascript();
++    pthread_mutex_lock(&g_catalog_lock);
++    if (!js) { free(g_mac32); g_mac32 = NULL; memset(&g_appinfo_stamp, 0, sizeof g_appinfo_stamp); }
++    free(js);
++    g_catalog_loaded = 1; // A failing helper stays conservative and does not spin.
++    g_refreshed = now_ms();
++    pthread_mutex_unlock(&g_catalog_lock);
++}
++
++static void *refresh_worker(void *unused) {
++    (void)unused;
++    np_nativeplatform_refresh();
++    pthread_mutex_lock(&g_catalog_lock);
++    g_refreshing = 0;
++    pthread_mutex_unlock(&g_catalog_lock);
++    return NULL;
++}
++
++int np_nativeplatform_is_mac32(unsigned int appid) {
++    int found = 0, refresh = 0, first;
++    char path[PATH_MAX]; struct stat current = {0};
++    appinfo_path(path, sizeof path); stat(path, &current);
++    pthread_mutex_lock(&g_catalog_lock);
++    first = !g_catalog_loaded && !g_refreshing;
++    if (first) g_refreshing = 1;
++    int stale = !same_stamp(&current, &g_appinfo_stamp);
++    if (g_catalog_loaded && (stale || now_ms() - g_refreshed > 30000) && !g_refreshing) {
++        refresh = g_refreshing = 1;
++    }
++    pthread_mutex_unlock(&g_catalog_lock);
++    if (first) {
++        np_nativeplatform_refresh();
++        pthread_mutex_lock(&g_catalog_lock); g_refreshing = 0; pthread_mutex_unlock(&g_catalog_lock);
++    }
++    if (refresh) {
++        pthread_t worker;
++        if (!pthread_create(&worker, NULL, refresh_worker, NULL)) pthread_detach(worker);
++        else {
++            pthread_mutex_lock(&g_catalog_lock); g_refreshing = 0; pthread_mutex_unlock(&g_catalog_lock);
++        }
++    }
++    pthread_mutex_lock(&g_catalog_lock);
++    // Never route using architecture evidence from an older app metadata cache.
++    const char *at = same_stamp(&current, &g_appinfo_stamp) ? g_mac32 : NULL;
++    while (at && *at) {
++        char *end;
++        unsigned long id = strtoul(at, &end, 10);
++        if (id == appid) { found = 1; break; }
++        at = *end == ',' ? end + 1 : NULL;
++    }
++    pthread_mutex_unlock(&g_catalog_lock);
++    return found;
++}
+--- a/dylib/feats/nativeplatform.h
++++ b/dylib/feats/nativeplatform.h
+@@ -3,5 +3,7 @@
+ #define NOTPROTON_FEATS_NATIVEPLATFORM_H
+ 
+ char *np_nativeplatform_javascript(void);
++int np_nativeplatform_is_mac32(unsigned int appid);
++void np_nativeplatform_refresh(void);
+ 
+ #endif // NOTPROTON_FEATS_NATIVEPLATFORM_H
+--- a/dylib/feats/webpatch.c
++++ b/dylib/feats/webpatch.c
+@@ -1,5 +1,6 @@
+ // Enables Steam Play in the UI/enables the Compatibility tab in game properties
+ #include "webpatch.h"
++#include "gluon_settings_js.h"
+ #include "nativeplatform.h"
+ #include "../util/log.h"
+ 
+@@ -27,6 +28,11 @@
+ #define NP_FEX_TOOLS "\022"
+ 
+ #define NP_TOOL_NAME_MAX 128
++
++static _Thread_local int g_gluon_mac32, g_gluon_effective_mac32;
++void np_webpatch_set_gluon_mac32(int saved, int effective) {
++    g_gluon_mac32 = saved != 0; g_gluon_effective_mac32 = effective != 0;
++}
+ 
+ static _Thread_local char g_fallback_tool[NP_TOOL_NAME_MAX];
+ static _Thread_local char g_fex_tools[NP_WEBPATCH_FEX_TOOLS_MAX * (NP_TOOL_NAME_MAX + 3) + 3] = "[]";
+@@ -249,9 +255,9 @@
+     "ks.length&&L.s(ks.map(k=>[k,\"\"]))}"
+ 
+ #define NP_CX_TOOL_QUERY \
+-    "(r,id)=>[r[0],v=>{r[1](v);const d=r[0].data;if(!id||!d)return;" \
++    "(r,id)=>{if(!id)globalThis.__GLUON_SETTINGS__.specify=v=>r[1](v);return[r[0],v=>{r[1](v);const d=r[0].data;if(!id||!d)return;" \
+     "const n=v||d.default_tool_identifier||\"" NP_FALLBACK_TOOL "\",a=(d.aliases||[]).find(x=>x.alias===n)," \
+-    "t=globalThis.appDetailsStore?.GetAppDetails(id);t&&MSCXPick(t,a?a.current_tool_name:n)}]"
++    "t=globalThis.appDetailsStore?.GetAppDetails(id);t&&MSCXPick(t,a?a.current_tool_name:n)}]}"
+ 
+ // CrossOver options panel. Not in great shape, but it'll do
+ #define NP_WEB_IS_ZH \
+@@ -268,7 +274,7 @@
+     "(" NP_WEB_IS_ZH "?\"" ZH "\":" NP_WEB_IS_IT "?\"" IT "\":\"" EN "\")"
+ 
+ #define NP_COMPAT_HINT NP_WEB_TEXT( \
+-    "Enable Gluon under Properties > Compatibility to install and run the Windows version.", \
++    "Enable 32-bit Mac games under Steam Settings > Gluon to install and run the Windows version.", \
+     "请在“属性 > 兼容性”中启用 Gluon，以安装并运行 Windows 版本。", \
+     "Abilita Gluon in Propriet\\u00e0 > Compatibilit\\u00e0 per installare e avviare la versione Windows.")
+ 
+@@ -313,14 +319,14 @@
+ 
+ static const np_gate_t g_gates_forcetool[] = {
+     // SteamPlay settings section
+-    { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".CI)()?",
+-      "function " NP_C1 "(" NP_C2 "){return true?", 1, 0 },
++    { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".CI)()?(0," NP_C4 ".jsxs)(" NP_C5 ".XY,{label:(0," NP_C6 ".we)(\"#Settings_SteamPlay_SteamPlay\"),children:[",
++      "function " NP_C1 "(" NP_C2 "){return true?(0," NP_C4 ".jsxs)(" NP_C5 ".XY,{label:\"Gluon\",children:[globalThis.__GLUON_SETTINGS__.render(" NP_C4 ".jsx),", 1, 0 },
+     // AppProperties Compatibility tab (app and non-Steam-shortcut variants)
+     { "(0," NP_C1 ".CI)()&&" NP_C2 ".push({title:(0," NP_C3 ".we)(\"#AppProperties_CompatibilityPage\")",
+       "true&&" NP_C2 ".push({title:(0," NP_C3 ".we)(\"#AppProperties_CompatibilityPage\")", 2, 0 },
+     // Settings page Compatibility entry, keeping the SteamOS exclusion (!rf())
+-    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)()&&!(0," NP_C2 ".rf)()",
+-      "Compatibility:{visible:" NP_C1 "&&true&&!(0," NP_C2 ".rf)()", 1, 0 },
++    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)()&&!(0," NP_C2 ".rf)(),title:(0," NP_C3 ".we)(\"#Settings_Page_Compatibility\")",
++      "Compatibility:{visible:" NP_C1 "&&! (0," NP_C2 ".rf)(),title:\"Gluon\"", 1, 0 },
+     { "return(0," NP_C1 ".jsxs)(" NP_C1 ".Fragment,{children:[0!=" NP_C2 ".length&&(0," NP_C1 ".jsx)(" NP_C3 ",{label:(0," NP_C4 ".we)"
+       "(\"#AppProperties_CompatilibityForceTool\"),checked:" NP_C5 ",onChange:" NP_C6 ",disabled:!" NP_C7 "||0===" NP_C2 ".length}),"
+       NP_C5 "&&" NP_C2 ".length>0&&(0," NP_C1 ".jsx)(" NP_C8 ".m,{strClassName:" NP_C9 "().TopGap,rgOptions:" NP_C10 ","
+@@ -344,7 +350,7 @@
+       "(0," NP_C4 ".jsx)(" NP_C8 ",{..." NP_C3 "}),(0," NP_C4 ".jsx)(" NP_C9
+       ",{..." NP_C3 "}),(0," NP_C4 ".jsx)(MSCXOpts,{..." NP_C3 "})]}));", 1, 0 },
+     { "get is_invalid_os_type(){return this.most_available_per_client_data.is_invalid_os_type}",
+-      "get is_invalid_os_type(){return false}", 1, 0 },
++      GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
+       "!" NP_C1 ".local_per_client_data?.installed&&"
+@@ -362,8 +368,10 @@
+       "true&&" NP_C2 ".push({title:(0," NP_C3 ".we)"
+       "(\"#AppProperties_CompatibilityPage\")", 2, 0 },
+     // Settings page Compatibility entry.
+-    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)(),title:",
+-      "Compatibility:{visible:" NP_C1 "&&true,title:", 1, 0 },
++    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)(),title:(0," NP_C3 ".we)(\"#Settings_Page_Compatibility\")",
++      "Compatibility:{visible:" NP_C1 ",title:\"Gluon\"", 1, 0 },
++    { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".jsxs)(" NP_C4 ".XY,{label:(0," NP_C5 ".we)(\"#Settings_SteamPlay_SteamPlay\"),children:[(0," NP_C3 ".jsx)(" NP_C6 ",{})",
++      "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".jsxs)(" NP_C4 ".XY,{label:\"Gluon\",children:[globalThis.__GLUON_SETTINGS__.render(" NP_C3 ".jsx),(0," NP_C3 ".jsx)(" NP_C6 ",{})", 1, 0 },
+     { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".jsxs)(" NP_C4 ".XY,{label:(0," NP_C5 ".we)"
+       "(\"#Settings_SteamPlay_SteamPlay\"),children:[(0," NP_C3 ".jsx)(" NP_C6 ",{details:" NP_C2 ".details}),"
+       "(0," NP_C3 ".jsx)(" NP_C7 ".G,{setting:\"compat_show_all_tools\",label:(0," NP_C5 ".we)"
+@@ -382,7 +390,7 @@
+       "((0," NP_C3 ".cT)(" NP_C4 ")," NP_C4 ");if(" NP_C1
+       ".isLoading||!" NP_C1 ".data?.tools?.length)return null;", 1, 1 },
+     { "get is_invalid_os_type(){return this.most_available_per_client_data.is_invalid_os_type}",
+-      "get is_invalid_os_type(){return false}", 1, 0 },
++      GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
+       "!" NP_C1 ".local_per_client_data?.installed&&"
+@@ -648,6 +656,15 @@
+         return NULL;
+     }
+     free(native_mac_js);
++    char settings[128];
++    int settings_len = snprintf(settings, sizeof settings,
++        "globalThis.__GLUON_SETTINGS__??={autoMac32:%s,effectiveMac32:%s};\n",
++        g_gluon_mac32 ? "true" : "false", g_gluon_effective_mac32 ? "true" : "false");
++    if (settings_len < 0 || (size_t)settings_len >= sizeof settings ||
++        !out_put(&out, settings, (size_t)settings_len) ||
++        !out_put(&out, GLUON_SETTINGS_SCRIPT, strlen(GLUON_SETTINGS_SCRIPT))) {
++        free(out.buf); return NULL;
++    }
+     unsigned char can_start[256] = {0};
+     for (size_t g = 0; shape && g < shape->count; g++)
+         if (gate_on[g]) mark_start(can_start, shape->gates[g].find);
+--- a/dylib/feats/webpatch.h
++++ b/dylib/feats/webpatch.h
+@@ -10,6 +10,7 @@
+ // Sets the default picker fallback for this thread. Names with characters outside
+ // letters, digits, '_', '$', '.' and '-' are dropped.
+ void np_webpatch_set_fallback_tool(const char *name);
++void np_webpatch_set_gluon_mac32(int saved, int effective);
+ 
+ #define NP_WEBPATCH_FEX_TOOLS_MAX 16
+ 
+--- a/dylib/hooks/hook_compat.c
++++ b/dylib/hooks/hook_compat.c
+@@ -1,6 +1,7 @@
+ // Compat tool hooks
+ #include "hooks.h"
+ #include "../feats/compat.h"
++#include "../feats/gluon_settings.h"
+ #include "../feats/cloud_guard.h"
+ #include "../feats/compatsvc.h"
+ #include "../feats/usershortcuts.h"
+@@ -87,8 +88,8 @@
+ 
+     // The NP_COMPAT_TOOL_NONE sentinel is honored as an explicit refusal.
+     const char *mapping = np_compat_app_mapping(self, appid);
+-    if (mapping && strcmp(mapping, NP_COMPAT_TOOL_NONE) == 0)
+-        return NULL;
++    if (mapping)
++        return NULL; // Explicit choices, including unavailable tools and None, win.
+ 
+     if (!np_compat_would_force(self, appid))
+         return NULL;
+@@ -136,6 +137,11 @@
+ static uint64_t hook_InternalSpecifyCompatTool(void *self, uint64_t appid,
+                                                const char *name, void *config,
+                                                int priority) {
++    int preference = gluon_settings_command((uint32_t)appid, name);
++    if (preference) {
++        if (preference > 0) np_compatsvc_state_changed();
++        return preference > 0;
++    }
+     fn_InternalSpecifyCompatTool orig =
+         (fn_InternalSpecifyCompatTool)orig_InternalSpecifyCompatTool;
+     if (!orig) {
+--- a/dylib/hooks/hook_webpatch.c
++++ b/dylib/hooks/hook_webpatch.c
+@@ -3,6 +3,7 @@
+ // not modified, to keep the Steam bootstrap happy.
+ 
+ #include "../feats/webpatch.h"
++#include "../feats/gluon_settings.h"
+ #include "../feats/compat.h"
+ #include "../feats/compatsvc.h"
+ #include "../util/file.h"
+@@ -121,6 +122,7 @@
+     close(in);
+ 
+     np_webpatch_set_fallback_tool(np_compat_fallback_tool_name());
++    np_webpatch_set_gluon_mac32(gluon_settings_mac32(), gluon_settings_mac32_effective());
+     const char *fex[NP_WEBPATCH_FEX_TOOLS_MAX];
+     np_webpatch_set_fex_tools(fex, np_compat_fex_tools(fex, NP_WEBPATCH_FEX_TOOLS_MAX));
+     size_t patched_len = 0;
+--- a/dylib/tests/compatcheck.c
++++ b/dylib/tests/compatcheck.c
+@@ -21,6 +21,9 @@
+ #include <pthread.h>
+ #include <stdatomic.h>
+ #include <sys/wait.h>
++
++static int stub_auto_mac32;
++bool gluon_settings_auto_app(uint32_t appid) { return appid == 7 && stub_auto_mac32; }
+ 
+ static atomic_int home_calls;
+ static atomic_int home_ready;
+@@ -574,6 +577,10 @@
+ 
+     stub_platforms_value = COMPAT_PLATFORM_WINDOWS | COMPAT_PLATFORM_MACOS;
+     check(!np_compat_would_force(manager, 7), "an app with a macOS build is left alone");
++    stub_auto_mac32 = 1;
++    check(np_compat_would_force(manager, 7), "a positively identified Mac32 Windows game uses the enabled Gluon policy");
++    check(!np_compat_would_force(manager, 8), "unknown and Mac64 games are untouched");
++    stub_auto_mac32 = 0;
+ 
+     stub_platforms_value = COMPAT_PLATFORM_MACOS;
+     check(!np_compat_would_force(manager, 7), "a macOS-only app is left alone");
+--- a/dylib/tests/compatsvc-check.c
++++ b/dylib/tests/compatsvc-check.c
+@@ -144,6 +144,8 @@
+     (void)anchor; (void)tag;
+     return 1;
+ }
++
++int gluon_settings_command(uint32_t appid, const char *name) { (void)appid; (void)name; return 0; }
+ 
+ #include "../feats/compatsvc.c"
+ 
+--- a/dylib/tests/nativeplatformcheck.c
++++ b/dylib/tests/nativeplatformcheck.c
+@@ -54,10 +54,10 @@
+     *strrchr(dir, '/') = '\0';
+     mkdir(dir, 0755);
+ 
+-    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\n'",
+-           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10])};\n");
+-    expect("empty lists", "printf 'mac=\\nwindows=\\n'",
+-           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([])};\n");
++    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\nmac32=30\\n'",
++           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10]),mac32:new Set([30])};\n");
++    expect("empty lists", "printf 'mac=\\nwindows=\\nmac32=\\n'",
++           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([]),mac32:new Set([])};\n");
+     expect("no helper", NULL, NULL);
+     expect("a helper that fails", "printf 'mac=1\\nwindows=2\\n'; exit 1", NULL);
+     expect("script in a list", "printf 'mac=1,2]);alert(1);//\\nwindows=\\n'", NULL);
+--- a/helpers/appinfo.swift
++++ b/helpers/appinfo.swift
+@@ -1,6 +1,6 @@
+ // Reads Steam's appinfo.vdf cache and prints key=value metadata for one app on
+ // stdout. Usage: appinfo <appinfo.vdf> <appid>.
+-// With --platforms instead of an appid it prints mac= and windows= appid lists.
++// With --platforms it prints mac=, windows= and positively identified mac32= lists.
+ //
+ // common/icon is a 32x32 thumbnail. common/clienticon is the real multi-res
+ // icon, and the two hashes differ for most apps, so the icon cannot be
+@@ -203,13 +203,172 @@
+     return found
+ }
+ 
++// Missing macos64 metadata is not evidence of a 32-bit executable. Some old
++// integrations also added macos to Windows-only entries. Require a real Mac
++// launch entry and positive Mac architecture evidence; any 64-bit evidence wins.
++func text(_ value: Value?) -> String {
++    switch value {
++    case .string(let s)?: return s
++    case .number(let n)?: return String(n)
++    default: return ""
++    }
++}
++func section(_ value: Value?) -> [String: Value] {
++    if case .section(let s)? = value { return s }
++    return [:]
++}
++func words(_ value: Value?) -> Set<String> {
++    Set(text(value).lowercased().split { $0 == "," || $0.isWhitespace }.map(String.init))
++}
++
++// Read only the small text manifests needed to locate installed native builds.
++// No Steam metadata, compatibility mappings or game files are ever rewritten.
++func manifest(_ path: URL) -> [String: Value] {
++    guard let data = try? Data(contentsOf: path), data.count < 8 << 20,
++          let source = String(data: data, encoding: .utf8) else { return [:] }
++    let chars = Array(source), end = chars.count
++    var at = 0
++    func token() -> String? {
++        while at < end {
++            if chars[at].isWhitespace { at += 1; continue }
++            if chars[at] == "/", at + 1 < end, chars[at + 1] == "/" {
++                while at < end && chars[at] != "\n" { at += 1 }; continue
++            }
++            break
++        }
++        guard at < end else { return nil }
++        if chars[at] == "{" || chars[at] == "}" { defer { at += 1 }; return String(chars[at]) }
++        guard chars[at] == "\"" else { at = end; return nil }
++        at += 1
++        var out = ""
++        while at < end {
++            let c = chars[at]; at += 1
++            if c == "\"" { return out }
++            if c == "\\", at < end { out.append(chars[at]); at += 1 }
++            else { out.append(c) }
++        }
++        return nil
++    }
++    func read(_ depth: Int = 0) -> [String: Value] {
++        guard depth < 32 else { return [:] }
++        var out: [String: Value] = [:]
++        while let key = token(), key != "}" {
++            guard let value = token() else { return [:] }
++            out[key.lowercased()] = value == "{" ? .section(read(depth + 1)) : .string(value)
++        }
++        return out
++    }
++    return read()
++}
++
++func safeChild(_ base: URL, _ relative: String) -> URL? {
++    guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.contains("\\"),
++          !relative.split(separator: "/").contains("..") else { return nil }
++    let result = base.appendingPathComponent(relative).standardizedFileURL.resolvingSymlinksInPath()
++    let root = base.standardizedFileURL.resolvingSymlinksInPath().path + "/"
++    return result.path.hasPrefix(root) ? result : nil
++}
++
++// Return 32 only for a positively parsed Mach-O with no 64-bit slice. An app
++// bundle is checked through CFBundleExecutable, never a DLL or Windows EXE.
++func machoBits(_ launch: URL) -> Int? {
++    var executable = launch
++    if launch.pathExtension.lowercased() == "app" {
++        guard let data = try? Data(contentsOf: launch.appendingPathComponent("Contents/Info.plist")),
++              let plist = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
++              let name = plist["CFBundleExecutable"] as? String,
++              let binary = safeChild(launch.appendingPathComponent("Contents/MacOS"), name) else { return nil }
++        executable = binary
++    }
++    guard let handle = try? FileHandle(forReadingFrom: executable) else { return nil }
++    defer { try? handle.close() }
++    guard let data = try? handle.read(upToCount: 4096), data.count >= 8 else { return nil }
++    let b = [UInt8](data)
++    func u32(_ p: Int, _ little: Bool) -> UInt32 {
++        let s = little ? [0, 8, 16, 24] : [24, 16, 8, 0]
++        return (0..<4).reduce(0) { $0 | UInt32(b[p + $1]) << s[$1] }
++    }
++    let magic = u32(0, false)
++    if magic == 0xcefaedfe || magic == 0xfeedface {
++        let cpu = u32(4, magic == 0xcefaedfe)
++        guard b.count >= 28, [UInt32(7), 12, 18].contains(cpu), u32(12, magic == 0xcefaedfe) == 2 else { return nil }
++        return 32
++    }
++    if magic == 0xcffaedfe || magic == 0xfeedfacf { return 64 }
++    guard [UInt32(0xcafebabe), 0xbebafeca, 0xcafebabf, 0xbfbafeca].contains(magic) else { return nil }
++    let little = magic == 0xbebafeca || magic == 0xbfbafeca
++    let count = Int(u32(4, little)), stride = magic == 0xcafebabf || magic == 0xbfbafeca ? 32 : 20
++    guard count > 0, count <= 64, 8 + count * stride <= b.count else { return nil }
++    for n in 0..<count {
++        let cpu = u32(8 + n * stride, little)
++        if cpu & 0x01000000 != 0 { return 64 }
++        if ![UInt32(7), 12, 18].contains(cpu) { return nil }
++    }
++    return 32
++}
++
++func steamLibraries(_ root: URL) -> [URL] {
++    var result = [root]
++    let folders = section(manifest(root.appendingPathComponent("steamapps/libraryfolders.vdf"))["libraryfolders"])
++    for (key, value) in folders where UInt32(key) != nil {
++        let path = text(section(value)["path"])
++        if path.hasPrefix("/") { result.append(URL(fileURLWithPath: path)) }
++    }
++    return result
++}
++
++func isMac32(_ app: [String: Value], _ id: UInt32, _ libraries: [URL]) -> Bool {
++    let common = section(app["common"]), systems = words(common["oslist"])
++    guard text(common["type"]).lowercased() == "game", systems.contains("macos"),
++          systems.contains("windows") else { return false }
++    let extended = words(common["osextended"])
++    let arch64: Set<String> = ["64", "arm64", "x86_64", "amd64"]
++    if extended.contains("macos64") || extended.contains("macosapplesilicon") || !words(common["osarch"]).isDisjoint(with: arch64) { return false }
++    let launches = section(section(app["config"])["launch"]).values.compactMap { value -> [String: Value]? in
++        let entry = section(value), config = section(entry["config"])
++        // A combined windows,macos entry naming an EXE is a legacy platform
++        // rewrite, not positive evidence of a native Mac build.
++        let executable = text(entry["executable"])
++        return words(config["oslist"]).contains("macos") && !executable.lowercased().hasSuffix(".exe") && !executable.isEmpty ? entry : nil
++    }
++    let hasWindowsLaunch = section(section(app["config"])["launch"]).values.contains { value in
++        let entry = section(value), config = section(entry["config"])
++        let os = words(config["oslist"]), executable = text(entry["executable"]).lowercased()
++        return !executable.isEmpty && (os.contains("windows") || os.isEmpty && executable.hasSuffix(".exe"))
++    }
++    guard !launches.isEmpty, hasWindowsLaunch else { return false }
++    var installations: [URL] = []
++    for library in libraries {
++        let state = section(manifest(library.appendingPathComponent("steamapps/appmanifest_\(id).acf"))["appstate"])
++        if let installed = safeChild(library.appendingPathComponent("steamapps/common"), text(state["installdir"])) { installations.append(installed) }
++    }
++    var all32 = true
++    for launch in launches {
++        let arch = words(section(launch["config"])["osarch"])
++        if !arch.isDisjoint(with: arch64) { return false }
++        var evidence32 = arch == ["32"] || words(common["osarch"]) == ["32"]
++        for installed in installations {
++            if let target = safeChild(installed, text(launch["executable"])), let bits = machoBits(target) {
++                if bits == 64 { return false }
++                evidence32 = true
++            }
++        }
++        if !evidence32 { all32 = false }
++    }
++    return all32
++}
++
+ // Steam treats an app without an oslist as Windows only.
+ // oslist can still say macos for a 32-bit build that no longer runs.
+ func printPlatforms(_ b: [UInt8]) throws {
+     var mac: [UInt32] = []
+     var windows: [UInt32] = []
++    var mac32: [UInt32] = []
++    let libraries = steamLibraries(URL(fileURLWithPath: args[1]).deletingLastPathComponent().deletingLastPathComponent())
+     let complete = try forEachApp(b) { id, keys in
+-        guard case .section(let common)? = try keys()["common"] else { return true }
++        let app = try keys()
++        guard case .section(let common)? = app["common"] else { return true }
++        if isMac32(app, id, libraries) { mac32.append(id) }
+         guard case .string(let oslist)? = common["oslist"] else {
+             windows.append(id)
+             return true
+@@ -222,6 +381,7 @@
+     guard complete else { throw VDFError.truncated }
+     print("mac=" + mac.map(String.init).joined(separator: ","))
+     print("windows=" + windows.map(String.init).joined(separator: ","))
++    print("mac32=" + mac32.map(String.init).joined(separator: ","))
+ }
+ 
+ do {

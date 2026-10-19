@@ -27,6 +27,9 @@ cp "$here/steamplay/run.sh" "$src/dylib/feats/compat_run.sh"
 cp "$here/steamplay/build_gate.h" "$src/dylib/gluon_build.h"
 cp "$here/steamplay/cloud_guard.c" "$src/dylib/feats/cloud_guard.c"
 cp "$here/steamplay/cloud_guard.h" "$src/dylib/feats/cloud_guard.h"
+for file in gluon_settings.c gluon_settings.h gluon_settings_js.h; do
+    cp "$here/steamplay/$file" "$src/dylib/feats/$file"
+done
 [ "${1:-}" != --source ] || exit 0
 rmdir "$src/vendor/dobby" 2>/dev/null || true
 fetch "$DOBBY_REPO" "$DOBBY_COMMIT" "$src/vendor/dobby"
@@ -39,12 +42,13 @@ clang -arch arm64 -mmacosx-version-min=15.0 -Wall -Wextra -Werror \
     "$here/steamplay/check-build-gate.c" -o "$here/build/evidence/check-build-gate"
 "$here/build/evidence/check-build-gate"
 python3 "$here/steamplay/check-cloud-guard.py"
+python3 "$here/steamplay/check-settings.py"
 # These tests use synthetic fixtures, not an installed Steam client.
 # A missing test is an error; upstream Make's optional checks otherwise skip it.
 for file in sigcheck.py callscheck.c spawn-env.c activatecheck.c compatsvc-check.c; do
     [ -s "$src/dylib/tests/$file" ]
 done
-for check in sigcheck callscheck webpatch-fixtures spawn-env activatecheck compatsvc-check launch-shell; do
+for check in sigcheck callscheck webpatch-fixtures spawn-env activatecheck compatcheck compatsvc-check launch-shell; do
     make -C "$src" -s "$check"
 done
 mkdir -p "$payload/signatures/macos.arm64" "$payload/licenses" "$here/dist"
