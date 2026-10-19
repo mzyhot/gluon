@@ -383,15 +383,15 @@ def prepare_installed():
     for section in ('InstallConfigStore', 'Software', 'Valve', 'Steam', 'CompatToolMapping'):
         if not isinstance(mappings, dict):
             raise CloudError('Invalid compatibility tool selections')
-        mappings = vdf.iget(mappings, section, {})
+        mappings = vdf.iget(mappings, section, default={})
     if not isinstance(mappings, dict):
         raise CloudError('Invalid compatibility tool selections')
-    global_choice = vdf.iget(mappings, '0', {})
-    global_name = vdf.iget(global_choice, 'name', '') if isinstance(global_choice, dict) else ''
+    global_choice = vdf.iget(mappings, '0', default={})
+    global_name = vdf.iget(global_choice, 'name', default='') if isinstance(global_choice, dict) else ''
     for appid in index()['apps']:
         try:
-            choice = vdf.iget(mappings, appid, {})
-            chosen = vdf.iget(choice, 'name', '') if isinstance(choice, dict) else ''
+            choice = vdf.iget(mappings, appid, default={})
+            chosen = vdf.iget(choice, 'name', default='') if isinstance(choice, dict) else ''
             if chosen and chosen not in ('gluon', 'gluon-proton'):
                 continue
             if not chosen:
