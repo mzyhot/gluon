@@ -16,7 +16,8 @@ Steam's locally cached client icon. Conversion happens only when the cached icon
 changes. No artwork is fetched during Play. A failed conversion is remembered
 until its source changes so it cannot slow every subsequent launch.
 
-CI compares `v0.4.1-fixed` and candidate startup with the same compiled Wine,
+CI compares `v0.4.1-fixed` and candidate startup with the same compiled Wine and
+the capability manifest used by the installer,
 prefix and Windows command fixture. It restarts the Wine server between attempts,
 excludes the first launch from each median, and records four samples per version.
 The fixture excludes the game, Steam IPC, overlay and GPU. Its result must not be
@@ -28,8 +29,8 @@ repeatedly replaces its catalogue. ASan/UBSan run separately from Apple's malloc
 instrumentation. The host uses a weak timer capture and closes its console-log
 descriptor during cleanup. Callback fixtures check private-pipe/user cleanup.
 
-The full-runtime job also records a Wine native-allocation scan while running a
-Windows command. Third-party findings or scan errors are reported separately;
+The full-runtime job also records a live Wine native-allocation scan while running
+disposable Notepad. Third-party findings or scan errors are reported separately;
 they are never called clean. These scans do not cover a real game's heaps or
 prove that all Wine, graphics-driver or Steam-client allocations are leak-free.
 Evidence is retained in the native and complete-runtime workflow artifacts.

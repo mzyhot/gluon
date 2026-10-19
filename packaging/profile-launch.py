@@ -17,6 +17,16 @@ if os.environ.get('GITHUB_ACTIONS') != 'true' or sys.platform != 'darwin':
     raise SystemExit('Launch profiling requires a GitHub Actions Mac')
 root = Path(__file__).resolve().parents[1]
 runtime, probes, baseline = (Path(p).resolve() for p in sys.argv[1:])
+# Packaging adds this manifest after checking the compiled Wine patch hash.
+# Reproduce that exact capability declaration so both versions use the installed
+# app-bundle route instead of silently benchmarking the direct-Wine fallback.
+expected = subprocess.check_output([str(root / 'packaging/apply-wine-patches.sh'), '--hash'], text=True).strip()
+if (runtime / '.gluon-wine-patches').read_text().strip() != expected:
+    raise SystemExit('Profile runtime does not match the compiled Wine patches')
+notices = runtime / 'licenses/gluon-wine-patches'
+notices.mkdir(parents=True, exist_ok=True)
+(notices / 'APPLIED.txt').write_bytes(subprocess.check_output(
+    [str(root / 'packaging/apply-wine-patches.sh'), '--list']))
 steam = probes / 'cloud-steam'
 compat = steam / 'steamapps/compatdata/123'
 prefix = compat / 'pfx-wine'
@@ -87,19 +97,32 @@ medians = {label: round(statistics.median(r['ready_seconds'] for r in rows
            for label in ('released', 'candidate')}
 (probes / 'launch-profile.json').write_text(json.dumps({'samples': rows, 'warm_medians': medians}, indent=2))
 print('Windows command fixture startup (no game/Steam/GPU):', medians)
-with (probes / 'wine-native-leaks.log').open('w') as output:
-    scan = subprocess.run(['/usr/bin/leaks', '--atExit', '--', str(runtime / 'bin/wine'),
-                           'cmd', '/c', 'exit', '0'], env=dict(base_env, GLUON_HOME=str(home)),
-                          stdout=output, stderr=subprocess.STDOUT, timeout=60)
-subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=base_env, timeout=10)
-subprocess.run([str(runtime / 'bin/wineserver'), '-w'], env=base_env, check=True, timeout=10)
+scan_code = None
+with (probes / 'wine-memory-target.log').open('w') as log:
+    target = subprocess.Popen([str(runtime / 'bin/wine'), 'notepad.exe'],
+                              env=dict(base_env, MallocStackLogging='1'),
+                              stdout=log, stderr=subprocess.STDOUT)
+    try:
+        time.sleep(3)
+        if target.poll() is None:
+            with (probes / 'wine-native-leaks.log').open('w') as output:
+                scan_code = subprocess.run(['/usr/bin/leaks', '-quiet', str(target.pid)],
+                                           stdout=output, stderr=subprocess.STDOUT, timeout=30).returncode
+        else:
+            (probes / 'wine-native-leaks.log').write_text('Wine launcher exited before a live scan; no clean result asserted.\n')
+    finally:
+        subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=base_env, timeout=10)
+        subprocess.run([str(runtime / 'bin/wineserver'), '-w'], env=base_env, check=True, timeout=10)
+        if target.poll() is None:
+            target.terminate()
+        target.wait(timeout=10)
 # Keep a third-party Wine finding visible as evidence, distinct from the
 # first-party host/guard checks that gate the build. Never label an error clean.
 report = (probes / 'wine-native-leaks.log').read_text(errors='replace')
-native_scan = {'exit_code': scan.returncode,
-               'result': ('clean' if scan.returncode == 0 and '0 leaks for 0 total leaked bytes' in report
+native_scan = {'exit_code': scan_code,
+               'result': ('clean' if scan_code == 0 and '0 leaks for 0 total leaked bytes' in report
                           else 'findings-or-incomplete-scan'),
-               'scope': 'Wine native allocations while running a Windows command, not game heaps'}
+               'scope': 'Live Wine native allocations with disposable Notepad, not game heaps'}
 (probes / 'wine-native-leaks.json').write_text(json.dumps(native_scan, indent=2))
 print('Wine native memory scan:', native_scan)
 summary = os.environ.get('GITHUB_STEP_SUMMARY')
