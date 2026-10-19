@@ -263,6 +263,39 @@ while :; do /bin/sleep 0.05; done
             assert output.count("Steam refused its exit request; session continues") == 2, output
             print("launcher-host: Steam exit request stopped every running game passed", flush=True)
 
+            # A verified owner and readable exit log need no extra SDK client.
+            # If Steam rotates that log, the callback fallback must take over.
+            steam, environment = make_steam("fast-monitors")
+            console = steam.parents[3] / 'logs/console_log.txt'
+            console.parent.mkdir()
+            console.touch()
+            steam_app = start_steam(steam)
+            evidence = root / 'fast-monitors'
+            game = spawn('wait', str(evidence), environment=environment)
+            ready(game, evidence)
+            time.sleep(min(.3, left()))
+            assert steam_events(steam, game) == [], 'Normal launch loaded an unnecessary Steam SDK client'
+            with console.open('a') as output:
+                output.write(exit_line.format(3))
+            wait(game, 143)
+            assert evidence.read_text() == 'TERM\n'
+            assert steam_events(steam, game) == [], 'Exit-log handling needed an SDK client'
+
+            evidence = root / 'rotated-monitors'
+            game = spawn('wait', str(evidence), environment=environment)
+            ready(game, evidence)
+            assert steam_events(steam, game) == []
+            console.rename(console.with_suffix('.previous'))
+            console.touch()
+            steam_event(steam, game, CONNECTED[-1])
+            (steam / 'shutdown').touch()
+            wait(game, 143)
+            assert evidence.read_text() == 'TERM\n'
+            assert steam_events(steam, game) == CONNECTED + ['get:704', 'free:704'] + RELEASED
+            steam_app.terminate()
+            steam_app.wait(timeout=min(5, left()))
+            print('launcher-host: SDK-free normal launch and rotated-log fallback passed', flush=True)
+
             # A Steam IPC call that never returns must not delay Stop or host exit.
             steam, environment = make_steam("blocked", mode="block-get")
             evidence = root / "steam-blocked"

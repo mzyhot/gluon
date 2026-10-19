@@ -28,6 +28,10 @@ an isolated Cocoa host, and a separate Cloud-guard `leaks --atExit` run that
 repeatedly replaces its catalogue. ASan/UBSan run separately from Apple's malloc
 instrumentation. The host uses a weak timer capture and closes its console-log
 descriptor during cleanup. Callback fixtures check private-pipe/user cleanup.
+Normal launches with a verified Steam owner and readable exit log do not load
+another Steam client SDK into the native host. The existing Cocoa Stop, owner
+monitor and exit-log monitor handle shutdown. An unavailable or rotated log
+enables the SDK callback fallback, and CI checks that transition explicitly.
 
 The full-runtime job also records a live Wine native-allocation scan while running
 disposable Notepad. Third-party findings or scan errors are reported separately;

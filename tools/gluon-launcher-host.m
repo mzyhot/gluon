@@ -105,6 +105,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
 @property(nonatomic, strong) NSRunningApplication *steamOwner;
 @property(nonatomic, strong) dispatch_semaphore_t steamWatcherDone;
 @property(nonatomic) int steamLog;
+@property(nonatomic, strong) NSString *steamLogPath;
 @property(nonatomic) off_t steamLogOffset;
 @property(nonatomic, strong) NSMutableData *steamLogLine;
 @property(nonatomic) double steamExitDeadline;
@@ -188,6 +189,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
         return;
     }
     self.steamLog = log;
+    self.steamLogPath = path;
     self.steamLogOffset = info.st_size;
     self.steamLogLine = [NSMutableData data];
     fprintf(stderr, "gluon: Steam's exit request will stop this session\n");
@@ -208,8 +210,18 @@ static NSRunningApplication *steam_owner(NSString *directory)
 
 - (void)readSteamConsole
 {
-    struct stat info;
-    if (self.steamLog < 0 || fstat(self.steamLog, &info)) return;
+    struct stat info, named;
+    if (self.steamLog < 0) return;
+    if (fstat(self.steamLog, &info) || stat(self.steamLogPath.fileSystemRepresentation, &named) ||
+        named.st_dev != info.st_dev || named.st_ino != info.st_ino)
+    {
+        /* A rotated/missing log must not silently remove Steam quit handling. */
+        close(self.steamLog);
+        self.steamLog = -1;
+        fprintf(stderr, "gluon: Steam exit log changed; enabling SDK callback fallback\n");
+        [self watchSteamShutdown];
+        return;
+    }
     if (info.st_size < self.steamLogOffset)
     {
         self.steamLogOffset = 0;
@@ -358,7 +370,15 @@ static NSRunningApplication *steam_owner(NSString *directory)
 - (void)watchSteamShutdown
 {
     NSString *directory = self.steamDirectory;
-    if (!directory) return;
+    if (!directory || self.steamWatcherDone) return;
+    if (self.steamOwner && self.steamLog >= 0)
+    {
+        /* Both validated monitors are already active. Loading a complete second
+         * Steam SDK client per game adds threads, IPC and memory during startup.
+         * Keep it as a fallback if the log disappears or cannot be opened. */
+        fprintf(stderr, "gluon: Steam process and exit-log watches active; SDK callback fallback idle\n");
+        return;
+    }
     /* Steam IPC or library initialization must never block Cocoa Stop, shell
      * reaping or the cleanup deadline. Only the main thread signals the child. */
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
