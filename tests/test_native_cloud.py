@@ -42,7 +42,7 @@ class NativeCloudTests(unittest.TestCase):
         from test_migration import cache_bytes
         cache = Path(steam.APPINFO)
         cache.parent.mkdir(exist_ok=True)
-        cache.write_bytes(cache_bytes({'ufs': content}))
+        cache.write_bytes(cache_bytes({'common': {'oslist': 'windows'}, 'ufs': content}))
 
     def legacy(self):
         old = self.compat / 'pfx'
@@ -187,6 +187,13 @@ class NativeCloudTests(unittest.TestCase):
         self.assertEqual(len(list((self.home / 'backups/cloud').iterdir())), len(before) + 1)
 
     def test_install_preflight_prepares_good_games_and_reports_conflicts(self):
+        from copy import copy
+        self.rules({'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}})
+        metadata = cloud.appinfo.AppInfoFile(steam.APPINFO)
+        entry = copy(metadata.entries[0])
+        entry.appid = 456
+        metadata.entries.append(entry)
+        metadata.save()
         other = self.library / 'steamapps/compatdata/456/pfx'
         other.mkdir(parents=True)
         (other / 'save').write_bytes(b'foreign save')
@@ -196,6 +203,33 @@ class NativeCloudTests(unittest.TestCase):
         self.assertTrue(any('Cloud needs attention for 456' in line for line in notes))
         self.assertEqual((other / 'save').read_bytes(), b'foreign save')
         self.assertIn('separate pfx', cloud.status('456')[0])
+
+    def test_installer_does_not_prepare_native_mac_games(self):
+        from test_migration import cache_bytes
+        cache = Path(steam.APPINFO)
+        cache.parent.mkdir()
+        cache.write_bytes(cache_bytes({'common': {'oslist': 'windows,macos,linux'},
+            'ufs': {'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}}}))
+        self.assertEqual(cloud.prepare_installed(), [])
+        self.assertFalse(self.compat.exists())
+
+    def test_installer_respects_an_explicit_non_gluon_choice(self):
+        self.rules({'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}})
+        config = self.library / 'config/config.vdf'
+        config.parent.mkdir()
+        config.write_text('"InstallConfigStore" { "Software" { "Valve" { "Steam" { '
+                          '"CompatToolMapping" { "123" { "name" "another-tool" } } } } } }')
+        self.assertEqual(cloud.prepare_installed(), [])
+        self.assertFalse(self.compat.exists())
+
+    def test_installer_respects_another_global_compatibility_tool(self):
+        self.rules({'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}})
+        config = self.library / 'config/config.vdf'
+        config.parent.mkdir()
+        config.write_text('"InstallConfigStore" { "Software" { "Valve" { "Steam" { '
+                          '"CompatToolMapping" { "0" { "name" "another-tool" } } } } } }')
+        self.assertEqual(cloud.prepare_installed(), [])
+        self.assertFalse(self.compat.exists())
 
     def test_native_root_change_to_windows_is_not_treated_as_ready(self):
         self.rules({'quota': 10})

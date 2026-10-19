@@ -63,7 +63,8 @@ API Cloud and AutoCloud rooted in the game installation use Steam's native paths
 They do not require prefix aliases, and an old separate `pfx` does not block them.
 Only games whose rules need Windows profile roots receive prefix preparation.
 
-Installation and repair prepare installed games while Steam is closed, after
+Installation and repair prepare Gluon-selected and default Windows-only games
+while Steam is closed, after
 selecting the Wine runtime. Preparation is also checked at `FindToolForTargetApp`, before the native Cloud root resolver
 can return a Windows save path. It keeps the real `pfx-wine` and its existing
 profile, adding `pfx` and `steamuser` views onto those same files. Fresh prefixes

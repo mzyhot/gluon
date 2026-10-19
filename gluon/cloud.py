@@ -18,7 +18,7 @@ import subprocess
 import sys
 import uuid
 
-from . import appinfo, steam, steamplay
+from . import appinfo, steam, steamplay, vdf
 
 MARKER = '.gluon-native-cloud.json'
 FOLDERS = ('Documents', 'Desktop', 'Downloads', 'Music', 'Pictures', 'Videos',
@@ -43,7 +43,7 @@ class WineBusy(CloudError):
     pass
 
 
-def _rules(appid):
+def _app_data(appid):
     """Read appinfo once per helper, without ever writing Steam metadata."""
     global _metadata_cache, _metadata_stamp
     path = Path(steam.APPINFO)
@@ -57,7 +57,15 @@ def _rules(appid):
             raise CloudError('Steam Cloud metadata is incomplete; let Steam finish updating and retry') from error
         _metadata_stamp = stamp
     entry = _metadata_cache.get(int(appid)) if _metadata_cache else None
-    rules = entry.kv['appinfo'].get('ufs', {}) if entry else None
+    data = entry.kv.get('appinfo') if entry else None
+    if data is not None and not isinstance(data, dict):
+        raise CloudError('Invalid Steam application metadata')
+    return data
+
+
+def _rules(appid):
+    data = _app_data(appid)
+    rules = data.get('ufs', {}) if data is not None else None
     if rules is not None and not isinstance(rules, dict):
         raise CloudError('Invalid Steam Cloud metadata')
     return rules
@@ -370,8 +378,32 @@ def status(appid):
 def prepare_installed():
     """Prepare upgrades while Steam is closed, before its first Cloud scan."""
     notes = []
+    config = Path(steam.STEAM_ROOT) / 'config/config.vdf'
+    mappings = vdf.load(str(config)) if config.is_file() else {}
+    for section in ('InstallConfigStore', 'Software', 'Valve', 'Steam', 'CompatToolMapping'):
+        if not isinstance(mappings, dict):
+            raise CloudError('Invalid compatibility tool selections')
+        mappings = vdf.iget(mappings, section, {})
+    if not isinstance(mappings, dict):
+        raise CloudError('Invalid compatibility tool selections')
+    global_choice = vdf.iget(mappings, '0', {})
+    global_name = vdf.iget(global_choice, 'name', '') if isinstance(global_choice, dict) else ''
     for appid in index()['apps']:
         try:
+            choice = vdf.iget(mappings, appid, {})
+            chosen = vdf.iget(choice, 'name', '') if isinstance(choice, dict) else ''
+            if chosen and chosen not in ('gluon', 'gluon-proton'):
+                continue
+            if not chosen:
+                if global_name and global_name not in ('gluon', 'gluon-proton'):
+                    continue
+                data = _app_data(appid) or {}
+                common = data.get('common', {})
+                if not isinstance(common, dict):
+                    raise CloudError('Invalid game platform metadata')
+                systems = str(common.get('oslist', '')).lower().split(',')
+                if 'windows' not in systems or 'macos' in systems:
+                    continue  # Native Mac games are not automatically routed through Gluon.
             notes += prepare(appid)
             _error_path(appid).unlink(missing_ok=True)
         except (CloudError, steamplay.SteamPlayError, OSError, ValueError) as error:
