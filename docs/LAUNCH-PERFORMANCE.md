@@ -11,6 +11,18 @@ records time to shell startup, and default Wine diagnostic lines include elapsed
 timestamps. These separate launcher setup from later Wine, Steam IPC, graphics,
 and game loading; they do not time the first game window automatically.
 
+The native host starts its owned shell before AppKit registration and Steam
+owner lookup. Wine preparation can therefore overlap that native startup work.
+The exit-log offset is captured first, and signal handling is installed before
+spawning, so an early Steam quit or Stop still ends the same owned session.
+
+For detected Chromium games using in-process GPU presentation, the native overlay
+stays in the browser and GPU processes. Renderer, utility and crashpad roles skip
+it only when their actual PE image matches the detected game's executable by
+file identity. Other executables, unknown roles and ambiguous arguments retain
+the overlay. This removes redundant native overlay initialization in background
+processes without changing the graphics backend or game files.
+
 The per-game bundle includes a real ICNS resource and `CFBundleIconFile` using
 Steam's locally cached client icon. Conversion happens only when the cached icon
 changes. No artwork is fetched during Play. A failed conversion is remembered

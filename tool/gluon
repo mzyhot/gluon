@@ -314,9 +314,14 @@ fi
 # layers here cannot present into another process's window, which leaves a blank
 # window. Keeping the GPU work inside the window's own process avoids that.
 exe_dir="$(dirname "$exe")"
+# This internal marker must come from this launch's resource detection, never an
+# inherited environment, settings file or Steam Launch Option. Wine uses it only
+# with exact Chromium child-role tokens; the browser and GPU retain the overlay.
+unset GLUON_CHROMIUM_OVERLAY_SCOPE GLUON_CHROMIUM_OVERLAY_IMAGE
 if [ -n "$game_session" ] && [ -z "$GLUON_NO_AUTO_ARGS" ] && { [ -f "$exe_dir/chrome_100_percent.pak" ] || [ -f "$exe_dir/resources/app.asar" ] || [ -f "$exe_dir/LICENSES.chromium.html" ]; }; then
     log "  Chromium-based app detected: adding --in-process-gpu"
     set -- "$@" --in-process-gpu
+    [ "$kind" != wine ] || export GLUON_CHROMIUM_OVERLAY_SCOPE=in-process-gpu-v1
 fi
 if [ -n "$game_session" ] && [ -n "$GLUON_EXTRA_ARGS" ]; then
     log "  extra arguments: $GLUON_EXTRA_ARGS"
@@ -391,6 +396,15 @@ case "$exe" in
         cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")"
         ;;
 esac
+# Bind child overlay scoping to the resource-identified executable after the
+# launcher's existing path normalization. Wine checks actual PE file identity;
+# unresolved/Windows-only launch paths conservatively keep ordinary injection.
+if [ -n "${GLUON_CHROMIUM_OVERLAY_SCOPE:-}" ]; then
+    case "$exe" in
+        /*) export GLUON_CHROMIUM_OVERLAY_IMAGE="$exe" ;;
+        *) unset GLUON_CHROMIUM_OVERLAY_SCOPE ;;
+    esac
+fi
 
 # Steam treats this process as the game: playtime, the Stop button and the cloud sync
 # on exit all follow it. Stay around until the session is over, and take the prefix

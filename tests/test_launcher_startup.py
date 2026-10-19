@@ -34,7 +34,9 @@ event = {'role': pathlib.Path(sys.argv[0]).name,
          'focus': os.environ.get('GLUON_FOCUS'), 'gl': os.environ.get('GLUON_GL_COMPAT_AS_CORE'),
          'dyld': os.environ.get('DYLD_INSERT_LIBRARIES'), 'game_cwd': os.environ.get('GLUON_GAME_CWD'),
          'prefix': os.environ.get('WINEPREFIX'), 'app': os.environ.get('SteamAppId'),
-         'host': os.environ.get('GLUON_HOST_PID')}
+         'host': os.environ.get('GLUON_HOST_PID'),
+         'chromium_overlay_scope': os.environ.get('GLUON_CHROMIUM_OVERLAY_SCOPE'),
+         'chromium_overlay_image': os.environ.get('GLUON_CHROMIUM_OVERLAY_IMAGE')}
 print('fixture output from', event['role'])
 if event['role'] == 'notify':
     event['script'] = sys.stdin.read()
@@ -206,6 +208,68 @@ with open(output, 'w') as out, open(errors, 'w') as err:
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(event["role"] == "open" for event in events), events)
         self.assert_launch(events, str(runtime / "lib/wine"))
+
+    def test_chromium_resource_detection_scopes_overlay_in_both_launch_paths(self):
+        runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
+        for resource in ("chrome_100_percent.pak", "resources/app.asar", "LICENSES.chromium.html"):
+            item = self.game.parent / resource
+            item.parent.mkdir(parents=True, exist_ok=True)
+            item.write_bytes(b"fixture")
+            for bundled in ("0", "1"):
+                with self.subTest(resource=resource, bundled=bundled):
+                    if self.trace.exists():
+                        self.trace.unlink()
+                    result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), GLUON_APP_BUNDLE=bundled,
+                                                      GLUON_CHROMIUM_OVERLAY_IMAGE="/forged/game.exe")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    game = [event for event in events if event["role"] == "wine"][-1]
+                    self.assertEqual(game["chromium_overlay_scope"], "in-process-gpu-v1")
+                    self.assertEqual(game["chromium_overlay_image"], str(self.game))
+                    self.assertIn("--in-process-gpu", game["args"])
+            item.unlink()
+
+    def test_chromium_overlay_marker_cannot_be_supplied_by_user_settings(self):
+        runtime = self.runtime()
+        self.install_bundle_helpers(runtime)
+        (self.home / "settings.env").write_text(
+            "GLUON_CHROMIUM_OVERLAY_SCOPE=in-process-gpu-v1\nGLUON_CHROMIUM_OVERLAY_IMAGE=/forged/game.exe\n")
+        for bundled in ("0", "1"):
+            with self.subTest(bundled=bundled):
+                if self.trace.exists():
+                    self.trace.unlink()
+                result, events = self.run_launcher("GLUON_CHROMIUM_OVERLAY_SCOPE=in-process-gpu-v1",
+                    "GLUON_CHROMIUM_OVERLAY_IMAGE=/forged/game.exe",
+                    GLUON_RUNTIME=str(runtime), GLUON_APP_BUNDLE=bundled,
+                    GLUON_CHROMIUM_OVERLAY_SCOPE="in-process-gpu-v1",
+                    GLUON_CHROMIUM_OVERLAY_IMAGE="/forged/game.exe")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                game = [event for event in events if event["role"] == "wine"][-1]
+                self.assertIsNone(game["chromium_overlay_scope"])
+                self.assertIsNone(game["chromium_overlay_image"])
+                self.assertNotIn("--in-process-gpu", game["args"])
+
+    def test_disabling_chromium_auto_arguments_also_disables_overlay_scoping(self):
+        runtime = self.runtime()
+        (self.game.parent / "chrome_100_percent.pak").write_bytes(b"fixture")
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime), GLUON_NO_AUTO_ARGS="1",
+                                          GLUON_CHROMIUM_OVERLAY_SCOPE="in-process-gpu-v1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        game = [event for event in events if event["role"] == "wine"][-1]
+        self.assertIsNone(game["chromium_overlay_scope"])
+        self.assertIsNone(game["chromium_overlay_image"])
+        self.assertNotIn("--in-process-gpu", game["args"])
+
+    def test_proton_does_not_receive_plain_wine_chromium_overlay_marker(self):
+        runtime = self.runtime(proton=True)
+        (self.game.parent / "chrome_100_percent.pak").write_bytes(b"fixture")
+        result, events = self.run_launcher(GLUON_RUNTIME=str(runtime),
+                                          GLUON_CHROMIUM_OVERLAY_SCOPE="in-process-gpu-v1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        game = [event for event in events if event["role"] == "proton"][-1]
+        self.assertIsNone(game["chromium_overlay_scope"])
+        self.assertIsNone(game["chromium_overlay_image"])
+        self.assertIn("--in-process-gpu", game["args"])
 
     def test_bundle_that_never_starts_falls_back_to_wine(self):
         runtime = self.runtime()

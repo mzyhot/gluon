@@ -20,12 +20,12 @@ RELEASED = ["release-user", "release-pipe", "release-thread-memory"]
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or sys.platform != "darwin":
         raise SystemExit("Launcher host fixtures require a GitHub Actions macOS runner.")
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 7:
         raise SystemExit("Usage: test-launcher-host.py HOST CONTROLLER STEAM_OWNER "
-                         "STEAM_CLIENT STEAM_CLIENT_MISSING_CALLBACK")
+                         "STEAM_CLIENT STEAM_CLIENT_MISSING_CALLBACK APPKIT_STARTUP_PROBE")
     if os.getpgrp() != os.getpid():
         raise SystemExit("Run through check-launcher-host.sh in its owned fixture process group.")
-    host, controller, steam_owner, steam_client, steam_client_missing = (
+    host, controller, steam_owner, steam_client, steam_client_missing, appkit_probe = (
         str(Path(arg).resolve()) for arg in sys.argv[1:])
     active = []
     deadline = time.monotonic() + 60
@@ -59,6 +59,7 @@ fi
 trap 'printf "TERM\\n" >> "$result"; exit 143' TERM
 trap 'printf "INT\\n" >> "$result"; exit 130' INT
 trap 'printf "HUP\\n" >> "$result"; exit 129' HUP
+printf 'spawned\\n' >> "$result.spawned"
 printf 'ready\\n' > "$result.ready"
 while :; do /bin/sleep 0.05; done
 ''')
@@ -77,7 +78,8 @@ while :; do /bin/sleep 0.05; done
 
         def ready(process, name):
             path = Path(str(name) + ".ready")
-            while not path.exists():
+            while (not path.exists() or
+                   f"launcher host {process.pid} Cocoa ready" not in host_output()):
                 if process.poll() is not None:
                     raise AssertionError(f"Fixture exited before ready: {process.returncode}")
                 time.sleep(min(0.025, left()))
@@ -151,6 +153,25 @@ while :; do /bin/sleep 0.05; done
                 assert invalid.returncode == 64
             wait(spawn("status", "7", "one argument", "*.exe"), 7)
             print("launcher-host: arguments, marker and exit status passed", flush=True)
+
+            # Delay AppKit until it sees the real shell's marker. This catches
+            # startup serialization without changing production timing or
+            # relying on a runner's scheduling speed. Cocoa Stop must still work.
+            evidence = root / "parallel-startup"
+            order = root / "parallel-startup.order"
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(("Steam", "STEAM_", "DYLD_"))}
+            environment.update(DYLD_INSERT_LIBRARIES=appkit_probe,
+                               GLUON_FIXTURE_CHILD_READY=str(evidence) + ".ready",
+                               GLUON_FIXTURE_COCOA_RESULT=str(order))
+            process = spawn("wait", str(evidence), environment=environment)
+            ready(process, evidence)
+            assert order.read_text() == "child-first\n", "AppKit startup blocked the shell"
+            assert Path(str(evidence) + ".spawned").read_text() == "spawned\n", "Shell started twice"
+            cocoa_quit(process)
+            wait(process, 143)
+            assert evidence.read_text() == "TERM\n"
+            print("launcher-host: shell overlaps AppKit startup and retains Cocoa Stop passed", flush=True)
 
             # SIG_IGN and a blocked TERM inherited from Steam must not reach Bash.
             for number, label in ((signal.SIGTERM, "TERM"), (signal.SIGINT, "INT"),

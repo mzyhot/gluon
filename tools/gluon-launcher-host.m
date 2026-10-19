@@ -111,6 +111,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
 @property(nonatomic) double steamExitDeadline;
 @property(nonatomic) double raiseDeadline;
 - (void)poll;
+- (void)startChild;
 @end
 
 @implementation GluonLauncherHost
@@ -392,10 +393,9 @@ static NSRunningApplication *steam_owner(NSString *directory)
     }];
 }
 
-- (void)applicationDidFinishLaunching:(NSNotification *)notification
+- (void)startChild
 {
-    (void)notification;
-    if (self.finished || self.stopping) return;
+    if (self.finished || self.stopping || self.child) return;
     if (received_signal)
     {
         [self requestStop:(int)received_signal];
@@ -431,6 +431,19 @@ static NSRunningApplication *steam_owner(NSString *directory)
     /* Cocoa callbacks and the timer are serialized on the main thread. A
      * POSIX signal during spawn only sets a flag, checked after PID capture. */
     if (received_signal) [self requestStop:(int)received_signal];
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification
+{
+    (void)notification;
+    if (self.finished || self.stopping) return;
+    fprintf(stderr, "gluon: launcher host %d Cocoa ready after %.1f ms\n", getpid(),
+            (NSProcessInfo.processInfo.systemUptime - host_started) * 1000.0);
+    if (received_signal)
+    {
+        [self requestStop:(int)received_signal];
+        return;
+    }
     [self watchSteamShutdown];
 }
 
@@ -522,24 +535,32 @@ int main(int argc, char **argv)
         /* Reuse the original argv allocation without copying argument bytes. */
         argv[0] = "/bin/bash";
         host.arguments = argv;
-        [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        /* Capture the exit-log offset before starting the session, so even an
+         * immediate Steam quit is retained while Cocoa starts. The shell can
+         * prepare Wine in parallel with AppKit registration and owner lookup.
+         * Signal handling and child ownership are already established. */
         host.steamDirectory = steam_client_directory();
-        host.steamOwner = steam_owner(host.steamDirectory);
         [host watchSteamConsole:steam_console_log(host.steamDirectory)];
-        if (host.steamOwner)
-            fprintf(stderr, "gluon: Steam application %d exit will stop this session\n",
-                host.steamOwner.processIdentifier);
-        else if (host.steamDirectory)
-            fprintf(stderr, "gluon: owning Steam application not identified; exit fallback inactive\n");
-        NSApp.delegate = host;
-        __weak GluonLauncherHost *weakHost = host;
-        host.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
-            (void)timer;
-            [weakHost poll];
-        }];
-        [NSRunLoop.mainRunLoop addTimer:host.timer forMode:NSRunLoopCommonModes];
-        [NSApp run];
+        [host startChild];
+        if (!host.finished)
+        {
+            [NSApplication sharedApplication];
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+            host.steamOwner = steam_owner(host.steamDirectory);
+            if (host.steamOwner)
+                fprintf(stderr, "gluon: Steam application %d exit will stop this session\n",
+                    host.steamOwner.processIdentifier);
+            else if (host.steamDirectory)
+                fprintf(stderr, "gluon: owning Steam application not identified; exit fallback inactive\n");
+            NSApp.delegate = host;
+            __weak GluonLauncherHost *weakHost = host;
+            host.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
+                (void)timer;
+                [weakHost poll];
+            }];
+            [NSRunLoop.mainRunLoop addTimer:host.timer forMode:NSRunLoopCommonModes];
+            [NSApp run];
+        }
         /* Let the watcher release its Steam pipe, but never wait on blocked IPC. */
         if (host.steamWatcherDone)
             dispatch_semaphore_wait(host.steamWatcherDone,
