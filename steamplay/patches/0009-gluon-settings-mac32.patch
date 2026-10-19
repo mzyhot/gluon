@@ -675,7 +675,16 @@ The preference takes effect on a Steam restart and never writes per-game mapping
  //
  // common/icon is a 32x32 thumbnail. common/clienticon is the real multi-res
  // icon, and the two hashes differ for most apps, so the icon cannot be
-@@ -203,13 +203,172 @@
+@@ -8,6 +8,8 @@
+ // failure.
+ 
+ import Foundation
++import CryptoKit
++import Darwin
+ 
+ let args = CommandLine.arguments
+ let platforms = args.count == 3 && args[2] == "--platforms"
+@@ -203,13 +205,384 @@
      return found
  }
  
@@ -747,7 +756,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +
 +// Return 32 only for a positively parsed Mach-O with no 64-bit slice. An app
 +// bundle is checked through CFBundleExecutable, never a DLL or Windows EXE.
-+func machoBits(_ launch: URL) -> Int? {
++func nativeExecutable(_ launch: URL) -> URL? {
 +    var executable = launch
 +    if launch.pathExtension.lowercased() == "app" {
 +        guard let data = try? Data(contentsOf: launch.appendingPathComponent("Contents/Info.plist")),
@@ -756,6 +765,11 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +              let binary = safeChild(launch.appendingPathComponent("Contents/MacOS"), name) else { return nil }
 +        executable = binary
 +    }
++    return executable
++}
++
++func machoBits(_ launch: URL) -> Int? {
++    guard let executable = nativeExecutable(launch) else { return nil }
 +    guard let handle = try? FileHandle(forReadingFrom: executable) else { return nil }
 +    defer { try? handle.close() }
 +    guard let data = try? handle.read(upToCount: 4096), data.count >= 8 else { return nil }
@@ -793,45 +807,251 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +    return result
 +}
 +
-+func isMac32(_ app: [String: Value], _ id: UInt32, _ libraries: [URL]) -> Bool {
++// Preserve positive architecture evidence after Steam replaces the native Mac
++// depots with Windows depots. Evidence belongs to an exact Mac branch/version;
++// a Windows update or removal of the old Mac executable does not change it.
++struct Mac32Record: Codable {
++    let signature: String
++    var checked: Int64
++}
++struct Mac32State: Codable {
++    let version: Int
++    var apps: [String: Mac32Record]
++}
++final class Mac32Evidence {
++    private let limit = 4096
++    private let path: URL?
++    private var lockFD: Int32 = -1
++    private var changed = false
++    private var apps: [String: Mac32Record] = [:]
++    private var durable: [String: Mac32Record] = [:]
++    private var required: Set<String> = []
++    init() {
++        let environment = ProcessInfo.processInfo.environment
++        let base = environment["GLUON_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
++            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Gluon")
++        let directory = base.appendingPathComponent("state")
++        path = directory.appendingPathComponent("mac32-evidence.json")
++        do {
++            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++            let fd = open(directory.appendingPathComponent("mac32-evidence.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
++            if fd >= 0 {
++                if flock(fd, LOCK_EX | LOCK_NB) == 0 { lockFD = fd }
++                else { close(fd) } // Read-only under contention; never overwrite another helper's work.
++            }
++        } catch {}
++        guard let path = path,
++              let attributes = try? FileManager.default.attributesOfItem(atPath: path.path),
++              attributes[.type] as? FileAttributeType == .typeRegular,
++              let size = attributes[.size] as? NSNumber, size.intValue <= 1 << 20,
++              let data = try? Data(contentsOf: path),
++              let state = try? JSONDecoder().decode(Mac32State.self, from: data),
++              state.version == 1, state.apps.count <= limit else { return }
++        apps = state.apps.filter { key, value in
++            UInt32(key) != nil && value.signature.count == 64 && value.signature.utf8.allSatisfy {
++                (48...57).contains($0) || (97...102).contains($0)
++            }
++        }
++        durable = apps
++    }
++    deinit { if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD) } }
++    func forget(_ appid: UInt32) {
++        if apps.removeValue(forKey: String(appid)) != nil { changed = true }
++    }
++    func matches(_ appid: UInt32, _ signature: String?) -> Bool {
++        guard let signature = signature, let record = apps[String(appid)], record.signature == signature else {
++            forget(appid); return false
++        }
++        return true
++    }
++    func remember(_ appid: UInt32, _ signature: String?) {
++        required.insert(String(appid))
++        guard let signature = signature else { forget(appid); return }
++        if apps[String(appid)]?.signature == signature { return }
++        apps[String(appid)] = Mac32Record(signature: signature, checked: Int64(Date().timeIntervalSince1970))
++        changed = true
++    }
++    func usable(_ appid: UInt32) -> Bool {
++        let id = String(appid)
++        return !required.contains(id) || (apps[id] != nil && apps[id]?.signature == durable[id]?.signature)
++    }
++    func save() {
++        guard changed, lockFD >= 0, let path = path else { return }
++        if apps.count > limit {
++            let retained = apps.sorted { a, b in a.value.checked > b.value.checked }.prefix(limit)
++            apps = Dictionary(uniqueKeysWithValues: retained.map { ($0.key, $0.value) })
++        }
++        guard let data = try? JSONEncoder().encode(Mac32State(version: 1, apps: apps)), data.count <= 1 << 20 else { return }
++        do {
++            try data.write(to: path, options: .atomic)
++            durable = apps
++            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
++        } catch {} // Never expose a new proof that could not be persisted before depot replacement.
++    }
++}
++
++func branchApplies(_ entry: [String: Value], _ branch: String) -> Bool {
++    let config = section(entry["config"])
++    let beta = words(config["BetaKey"] ?? config["betakey"])
++    return beta.isEmpty || beta.contains(branch) || branch == "public" && beta.contains("default")
++}
++func branchValue(_ entries: [String: Value], _ branch: String) -> Value? {
++    entries.first { $0.key.lowercased() == branch }?.value
++}
++func jsonValue(_ value: Value) -> Any {
++    switch value {
++    case .string(let string): return string
++    case .number(let number): return NSNumber(value: number)
++    case .section(let values): return values.mapValues(jsonValue)
++    }
++}
++
++struct MacBranchFingerprint {
++    var signature: String? = nil
++    var mac64 = false
++    var required: [String: String] = [:]
++    var language: [String: String] = [:]
++    var macDepots: Set<String> = []
++    func attested(_ state: [String: Value]) -> Bool {
++        var installed: [String: String] = [:]
++        for key in ["installeddepots", "mounteddepots"] {
++            for (id, value) in section(state[key]) {
++                let nested = text(section(value)["manifest"])
++                let gid = nested.isEmpty ? text(value) : nested
++                if let previous = installed[id], previous != gid { return false }
++                if (UInt64(gid) ?? 0) != 0 { installed[id] = gid }
++            }
++        }
++        guard signature != nil, !required.isEmpty || !language.isEmpty else { return false }
++        for (id, gid) in required where gid.isEmpty || installed[id] != gid { return false }
++        for (id, gid) in language where installed[id] != nil && (gid.isEmpty || installed[id] != gid) { return false }
++        if !macDepots.isEmpty && !macDepots.contains(where: { installed[$0] != nil }) { return false }
++        return required.keys.contains { installed[$0] != nil } || language.keys.contains { installed[$0] != nil }
++    }
++}
++
++final class MacDepotVersions {
++    private var references: [UInt32: [String: Value]] = [:]
++    // Shared depots can inherit their manifests and platform config from another
++    // cached app. Refuse unresolvable references rather than inventing a version.
++    func resolved(_ depot: [String: Value], _ id: String, _ seen: Set<String> = []) -> [String: Value]? {
++        guard let appid = UInt32(text(depot["depotfromapp"])), appid != 0 else { return depot }
++        let identity = "\(appid):\(id)"
++        guard !seen.contains(identity), seen.count < 16 else { return nil }
++        if references[appid] == nil { references[appid] = (try? findApp(bytes, appid)) ?? [:] }
++        guard let inheritedValue = section(references[appid]?["depots"])[id] else { return nil }
++        guard let inherited = resolved(section(inheritedValue), id, seen.union([identity])) else { return nil }
++        var result = inherited
++        for (key, value) in depot where key != "config" && key != "depotfromapp" { result[key] = value }
++        var config = section(inherited["config"])
++        for (key, value) in section(depot["config"]) { config[key] = value }
++        result["config"] = .section(config)
++        result["gluon_source_app"] = .string(String(appid))
++        return result
++    }
++    func fingerprint(_ app: [String: Value], _ branch: String, _ launches: [String: Value]) -> MacBranchFingerprint {
++        let common = section(app["common"])
++        let arch64: Set<String> = ["64", "arm64", "x86_64", "amd64"]
++        var result = MacBranchFingerprint()
++        var versions: [String: Any] = [:]
++        var complete = true
++        for (id, value) in section(app["depots"]) where UInt32(id) != nil {
++            let declared = section(value)
++            if declared.isEmpty { continue } // An empty, retired depot has no content.
++            let declaredOS = words(section(declared["config"])["oslist"])
++            if !declaredOS.isEmpty && !declaredOS.contains("macos") && !declaredOS.contains("all") { continue }
++            guard let depot = resolved(declared, id) else { complete = false; continue }
++            let config = section(depot["config"]), os = words(config["oslist"])
++            if !os.isEmpty && !os.contains("macos") && !os.contains("all") { continue }
++            if !words(config["osarch"]).isDisjoint(with: arch64) { result.mac64 = true; return result }
++            let manifest = branchValue(section(depot["manifests"]), branch)
++            let encrypted = branchValue(section(depot["encryptedmanifests"]), branch)
++            let normal = section(manifest), secret = section(encrypted)
++            let gid = text(normal["gid"]).isEmpty ? text(manifest) : text(normal["gid"])
++            let encryptedGID = text(secret["encrypted_gid"] ?? secret["encryptedgid"]).isEmpty ? text(encrypted) : text(secret["encrypted_gid"] ?? secret["encryptedgid"])
++            // Do not substitute public for a missing beta manifest: its inherited
++            // version cannot be proved from this cache.
++            guard (UInt64(gid) ?? 0) != 0 || !encryptedGID.isEmpty else { complete = false; continue }
++            if text(config["language"]).isEmpty { result.required[id] = gid }
++            else { result.language[id] = gid }
++            if os.contains("macos") { result.macDepots.insert(id) }
++            versions[id] = ["config": config.mapValues(jsonValue), "gid": gid,
++                            "encrypted_gid": encryptedGID, "source_app": text(depot["gluon_source_app"])]
++        }
++        guard complete, !versions.isEmpty else { return result }
++        let macFlags = words(common["osextended"]).filter { $0.hasPrefix("macos") }.sorted()
++        let signature: [String: Any] = ["version": 1, "branch": branch, "osarch": text(common["osarch"]),
++            "mac_flags": macFlags, "launches": launches.mapValues(jsonValue), "depots": versions]
++        guard let data = try? JSONSerialization.data(withJSONObject: signature, options: [.sortedKeys]) else { return result }
++        result.signature = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++        return result
++    }
++}
++
++func isMac32(_ app: [String: Value], _ id: UInt32, _ libraries: [URL], _ evidence: Mac32Evidence, _ depots: MacDepotVersions) -> Bool {
 +    let common = section(app["common"]), systems = words(common["oslist"])
 +    guard text(common["type"]).lowercased() == "game", systems.contains("macos"),
-+          systems.contains("windows") else { return false }
++          systems.contains("windows") else { evidence.forget(id); return false }
 +    let extended = words(common["osextended"])
 +    let arch64: Set<String> = ["64", "arm64", "x86_64", "amd64"]
-+    if extended.contains("macos64") || extended.contains("macosapplesilicon") || !words(common["osarch"]).isDisjoint(with: arch64) { return false }
-+    let launches = section(section(app["config"])["launch"]).values.compactMap { value -> [String: Value]? in
++    if extended.contains("macos64") || extended.contains("macosapplesilicon") || !words(common["osarch"]).isDisjoint(with: arch64) {
++        evidence.forget(id); return false
++    }
++    var installations: [(URL, [String: Value])] = []
++    var branches: Set<String> = []
++    for library in libraries {
++        let state = section(manifest(library.appendingPathComponent("steamapps/appmanifest_\(id).acf"))["appstate"])
++        if let installed = safeChild(library.appendingPathComponent("steamapps/common"), text(state["installdir"])) {
++            installations.append((installed, state))
++            let selected = text(section(state["userconfig"])["betakey"]).lowercased()
++            branches.insert(selected.isEmpty || selected == "default" ? "public" : selected)
++        }
++    }
++    guard branches.count <= 1 else { evidence.forget(id); return false }
++    let branch = branches.first ?? "public"
++    let active = section(section(app["config"])["launch"]).filter { branchApplies(section($0.value), branch) }
++    let launches = active.filter { _, value in
 +        let entry = section(value), config = section(entry["config"])
 +        // A combined windows,macos entry naming an EXE is a legacy platform
 +        // rewrite, not positive evidence of a native Mac build.
 +        let executable = text(entry["executable"])
-+        return words(config["oslist"]).contains("macos") && !executable.lowercased().hasSuffix(".exe") && !executable.isEmpty ? entry : nil
++        return words(config["oslist"]).contains("macos") && !executable.lowercased().hasSuffix(".exe") && !executable.isEmpty
 +    }
-+    let hasWindowsLaunch = section(section(app["config"])["launch"]).values.contains { value in
++    let hasWindowsLaunch = active.values.contains { value in
 +        let entry = section(value), config = section(entry["config"])
 +        let os = words(config["oslist"]), executable = text(entry["executable"]).lowercased()
 +        return !executable.isEmpty && (os.contains("windows") || os.isEmpty && executable.hasSuffix(".exe"))
 +    }
-+    guard !launches.isEmpty, hasWindowsLaunch else { return false }
-+    var installations: [URL] = []
-+    for library in libraries {
-+        let state = section(manifest(library.appendingPathComponent("steamapps/appmanifest_\(id).acf"))["appstate"])
-+        if let installed = safeChild(library.appendingPathComponent("steamapps/common"), text(state["installdir"])) { installations.append(installed) }
-+    }
-+    var all32 = true
-+    for launch in launches {
-+        let arch = words(section(launch["config"])["osarch"])
-+        if !arch.isDisjoint(with: arch64) { return false }
-+        var evidence32 = arch == ["32"] || words(common["osarch"]) == ["32"]
-+        for installed in installations {
-+            if let target = safeChild(installed, text(launch["executable"])), let bits = machoBits(target) {
-+                if bits == 64 { return false }
-+                evidence32 = true
++    guard !launches.isEmpty, hasWindowsLaunch else { evidence.forget(id); return false }
++    let version = depots.fingerprint(app, branch, launches)
++    if version.mac64 { evidence.forget(id); return false }
++    let remembered = evidence.matches(id, version.signature)
++    var all32 = true, allDeclared32 = true, installed32 = false, unknownExecutable = false
++    for value in launches.values {
++        let launch = section(value), arch = words(section(launch["config"])["osarch"])
++        if !arch.isDisjoint(with: arch64) { evidence.forget(id); return false }
++        var proof32 = arch == ["32"] // Common osarch may describe the Windows build.
++        if !proof32 { allDeclared32 = false }
++        for (installed, state) in installations {
++            if let target = safeChild(installed, text(launch["executable"])) {
++                if let native = nativeExecutable(target) {
++                    if let bits = machoBits(native) {
++                        if bits == 64 { evidence.forget(id); return false }
++                        // Bind observed bytes to the installed Mac/shared manifest
++                        // versions before assigning the current catalogue signature.
++                        if version.attested(state) { proof32 = true; installed32 = true }
++                    } else if FileManager.default.fileExists(atPath: native.path) && !proof32 { unknownExecutable = true }
++                } else if FileManager.default.fileExists(atPath: target.path) && !proof32 { unknownExecutable = true }
 +            }
 +        }
-+        if !evidence32 { all32 = false }
++        if !proof32 { all32 = false }
 +    }
-+    return all32
++    if all32 {
++        if installed32 && !allDeclared32 { evidence.remember(id, version.signature) }
++        return true
++    }
++    if unknownExecutable { evidence.forget(id); return false }
++    return remembered
 +}
 +
  // Steam treats an app without an oslist as Windows only.
@@ -840,17 +1060,22 @@ The preference takes effect on a Steam restart and never writes per-game mapping
      var mac: [UInt32] = []
      var windows: [UInt32] = []
 +    var mac32: [UInt32] = []
++    let evidence = Mac32Evidence(), depots = MacDepotVersions()
 +    let libraries = steamLibraries(URL(fileURLWithPath: args[1]).deletingLastPathComponent().deletingLastPathComponent())
      let complete = try forEachApp(b) { id, keys in
 -        guard case .section(let common)? = try keys()["common"] else { return true }
 +        let app = try keys()
 +        guard case .section(let common)? = app["common"] else { return true }
-+        if isMac32(app, id, libraries) { mac32.append(id) }
++        if isMac32(app, id, libraries, evidence, depots) { mac32.append(id) }
          guard case .string(let oslist)? = common["oslist"] else {
              windows.append(id)
              return true
-@@ -222,6 +381,7 @@
+@@ -220,8 +593,11 @@
+         return true
+     }
      guard complete else { throw VDFError.truncated }
++    evidence.save()
++    mac32 = mac32.filter { evidence.usable($0) }
      print("mac=" + mac.map(String.init).joined(separator: ","))
      print("windows=" + windows.map(String.init).joined(separator: ","))
 +    print("mac32=" + mac32.map(String.init).joined(separator: ","))
