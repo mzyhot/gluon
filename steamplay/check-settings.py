@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Run production global-policy/settings fixtures on disposable CI Steam data."""
-import json
 import os
 from pathlib import Path
 import plistlib
-import re
 import struct
 import subprocess
 import sys
@@ -117,15 +115,12 @@ static void *gluon_cloud_select(uint32_t appid, void *tool, void *fallback) { (v
     subprocess.run(['clang','-std=c17','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',
                     '-fno-sanitize-recover=all',str(routing_source),'-o',str(routing_executable)],check=True)
     subprocess.run([str(routing_executable)],check=True)
-    # Execute the exact generated product UI, not a hand-reimplemented switch.
-    script = root/'steamplay/gluon_settings_js.h'
-    lines = script.read_text().split('#define GLUON_SETTINGS_SCRIPT',1)[1].split('#endif',1)[0]
-    javascript = ''.join(json.loads(s) for s in re.findall(r'"(?:\\.|[^"\\])*"',lines))
-    emitted = base/'settings.js'
-    emitted.write_text('globalThis.__GLUON_SETTINGS__??={autoMac32:false,effectiveMac32:false};\n' + javascript)
-    getter = script.read_text().split('#define GLUON_INVALID_OS_GETTER',1)[1].split('#define GLUON_SETTINGS_SCRIPT',1)[0]
-    getter_js = ''.join(json.loads(s) for s in re.findall(r'"(?:\\.|[^"\\])*"',getter))
-    emitted_getter = base/'invalid-os-getter.js'
-    emitted_getter.write_text('({' + getter_js + '})')
+    # Execute the actual compiled C-emitted bootstrap and getter. Decoding C
+    # string literals in Python would miss preprocessing transformations.
+    emitter = base/'emit-settings'
+    subprocess.run(['clang','-std=c17','-Wall','-Wextra','-Werror','-Werror=trigraphs',
+                    str(root/'steamplay/emit-settings.c'),'-o',str(emitter)],check=True)
+    emitted, emitted_getter = base/'settings.js', base/'invalid-os-getter.js'
+    subprocess.run([str(emitter),str(emitted),str(emitted_getter)],check=True)
     subprocess.run(['node',str(root/'steamplay/check-settings.js'),str(emitted),str(emitted_getter)],check=True)
 print('Steam Settings architecture, persistence and product UI fixtures passed')

@@ -129,6 +129,19 @@ def main():
         if 'Wine-written-save' not in (cloud_documents / 'cloud-fixture.txt').read_text():
             raise ProbeFailed('Native Cloud view did not see Wine\'s saved file')
         cloud_command('--check', str(compat))
+        # Exercise both rebuilt steam.exe binaries without a Steam account or
+        # client. The helper must convert the Unix executable path, start cmd,
+        # wait for it and return its successful result. A file verifies the
+        # child really ran even when its console uses a separate output stream.
+        for helper_arch in ('x86_64', 'i386'):
+            ready = probes / ('steam-helper-' + helper_arch + '.ready')
+            batch = probes / ('steam-helper-' + helper_arch + '.cmd')
+            batch.write_text('@echo off\r\necho GLUON_HELPER_READY > "' + ready.name + '"\r\n')
+            module = runtime / ('lib/wine/' + helper_arch + '-windows')
+            run('steam-helper-' + helper_arch,
+                [wine, str(module / 'steam.exe'), str(module / 'cmd.exe'), '/c', batch.name])
+            if not ready.is_file() or ready.read_text().strip() != 'GLUON_HELPER_READY':
+                raise ProbeFailed('Rebuilt Steam helper did not launch its child: ' + helper_arch)
         for arch in ("x86_64", "i686"):
             run(f"runtime-dependencies-{arch}", [wine, str(probes / f"dependencies-{arch}.exe")])
             run(f"opengl-module-{arch}", [wine, str(probes / f"wgl-{arch}.exe"), "--load-only"])
