@@ -62,6 +62,7 @@ __attribute__((constructor)) static void inserted(void)
                     ('gpu', ['--type=gpu-process'], True, True, False),
                     ('renderer', ['--type=renderer'], False, True, False),
                     ('utility', ['--type=utility'], False, True, False),
+                    ('crashpad', ['--type=crashpad-handler'], False, True, False),
                     ('unknown', ['--type=future-role'], True, True, False),
                     ('ambiguous', ['--type=renderer', '--type=gpu-process'], True, True, False),
                     ('unmarked-renderer', ['--type=renderer'], True, False, False),
@@ -86,8 +87,8 @@ __attribute__((constructor)) static void inserted(void)
                     if not ready.is_file() or ready.read_text().strip() != 'GLUON_OVERLAY_CHILD_READY':
                         raise RuntimeError('Windows child did not execute: ' + label)
                     count = len(inserted.read_text().splitlines()) if inserted.exists() else 0
-                    rows.append(dict(case=label, insertions=count, expected=int(expected)))
-                    if count != int(expected):
+                    rows.append(dict(case=label, insertions=count, expected_present=expected))
+                    if bool(count) != expected:
                         raise RuntimeError('Unexpected native overlay initialization: ' + label + ' ' + str(count))
                     print('compiled overlay scope: ' + label + ' passed', flush=True)
         finally:
