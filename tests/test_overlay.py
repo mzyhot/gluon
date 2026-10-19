@@ -176,7 +176,8 @@ class LauncherOverlayTests(unittest.TestCase):
             package = home / "lib/gluon"
             package.mkdir(parents=True)
             (package / "__init__.py").write_text("")
-            shutil.copy2(Path(overlay.__file__), package / "overlay.py")
+            for source in Path(overlay.__file__).parent.glob('*.py'):
+                shutil.copy2(source, package / source.name)
             launcher = root / "launcher"
             source = (Path(__file__).resolve().parents[1] / "tool/gluon").read_text()
             launcher.write_text(source.replace("/usr/bin/arch -arm64 /usr/bin/python3", shlex.quote(sys.executable)))

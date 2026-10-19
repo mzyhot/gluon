@@ -82,20 +82,18 @@
  
  #pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
  
-@@ -2169,14 +2171,87 @@
+@@ -2169,14 +2171,105 @@
          [NSApp yieldActivationToApplication:otherApp];
          [otherApp activateFromApplication:[NSRunningApplication currentApplication]
                                    options:0];
 +    }
 +
-+    /* Gluon: Steam, not another Wine app, is usually active when a game window
-+       first appears, and it does not yield. In Big Picture a game can also be
-+       active while its window sits on another Space behind Steam's full-screen
-+       window. A game started from its own app bundle asks LaunchServices to
-+       activate that bundle, as a Dock click does, until one of its windows is
-+       active on the current Space: up to three checks within four seconds of its
-+       first activation request, each followed by the yield request below for
-+       the bundle's other Wine processes. GLUON_FOCUS=0 turns this off. */
++    /* Gluon: the first activation request can arrive before a window is ordered
++       in. Check readiness promptly without spending activation attempts on an
++       empty instance. Once visible, request at most three bundle activations,
++       stopping when a window is active on the current Space. The monotonic
++       deadline bounds hidden-window polling; a user switching to an unrelated
++       app cancels the handoff. GLUON_FOCUS=0 turns this fallback off. */
 +    - (BOOL) gluonWindowShown:(BOOL*)onActiveSpace
 +    {
 +        BOOL shown = FALSE;
@@ -111,26 +109,42 @@
 +        return shown;
 +    }
 +
-+    - (void) bringBundleForward:(NSURL*)bundleURL attempt:(unsigned int)attempt
++    - (BOOL) gluonFocusStillOwnedBy:(NSRunningApplication*)owner
 +    {
-+        static const double delays[] = { 0.3, 1.2, 2.5 };
++        NSRunningApplication *front = [[NSWorkspace sharedWorkspace] frontmostApplication];
++        NSRunningApplication *current = [NSRunningApplication currentApplication];
++        NSString *identifier = [front bundleIdentifier];
 +
-+        if (attempt >= sizeof(delays) / sizeof(delays[0])) return;
-+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[attempt] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++        if (!front || [front processIdentifier] == [current processIdentifier]) return YES;
++        if (owner && [front processIdentifier] == [owner processIdentifier]) return YES;
++        /* Steam and a game's Wine children can change processes during launch. */
++        return identifier && ([identifier isEqualToString:[owner bundleIdentifier]] ||
++                              [identifier isEqualToString:[[NSBundle mainBundle] bundleIdentifier]]);
++    }
++
++    - (void) bringBundleForward:(NSURL*)bundleURL attempt:(unsigned int)attempt
++                      deadline:(NSTimeInterval)deadline focusOwner:(NSRunningApplication*)owner
++                         delay:(NSTimeInterval)delay
++    {
++        NSTimeInterval now = [NSProcessInfo processInfo].systemUptime;
++        if (attempt >= 3 || now >= deadline) return;
++        if (delay > deadline - now) delay = deadline - now;
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
 +            NSWorkspaceOpenConfiguration *configuration;
 +            BOOL onActiveSpace;
-+            BOOL shown = [self gluonWindowShown:&onActiveSpace];
++            BOOL shown;
 +
-+            /* Written to the game's session log. */
-+            fprintf(stderr, "gluon: focus check %u: active %d, window shown %d, on the current Space %d\n",
-+                    attempt + 1, [NSApp isActive] ? 1 : 0, shown ? 1 : 0, onActiveSpace ? 1 : 0);
-+            /* A window may not be shown yet; never activate an empty instance. */
++            if ([NSProcessInfo processInfo].systemUptime >= deadline || ![self gluonFocusStillOwnedBy:owner]) return;
++            shown = [self gluonWindowShown:&onActiveSpace];
++            /* Never activate an empty instance, or consume a visible retry. */
 +            if (!shown)
 +            {
-+                [self bringBundleForward:bundleURL attempt:attempt + 1];
++                [self bringBundleForward:bundleURL attempt:attempt deadline:deadline focusOwner:owner delay:0.05];
 +                return;
 +            }
 +            if ([NSApp isActive] && onActiveSpace) return;
++            fprintf(stderr, "gluon: visible focus check %u: active %d, on the current Space %d\n",
++                    attempt + 1, [NSApp isActive] ? 1 : 0, onActiveSpace ? 1 : 0);
 +            configuration = [NSWorkspaceOpenConfiguration configuration];
 +            configuration.activates = YES;
 +            configuration.createsNewApplicationInstance = NO;
@@ -141,8 +155,11 @@
 +                (void)app;
 +                (void)error;
 +                dispatch_async(dispatch_get_main_queue(), ^{
-+                    if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES];
-+                    [self bringBundleForward:bundleURL attempt:attempt + 1];
++                    BOOL nowOnActiveSpace;
++                    if ([NSProcessInfo processInfo].systemUptime >= deadline || ![self gluonFocusStillOwnedBy:owner]) return;
++                    if ([self gluonWindowShown:&nowOnActiveSpace] && ![NSApp isActive])
++                        [self tryToActivateIgnoringOtherApps:YES];
++                    [self bringBundleForward:bundleURL attempt:attempt + 1 deadline:deadline focusOwner:owner delay:0.3];
 +                });
 +            }];
 +        });
@@ -157,7 +174,8 @@
 +        if (attempted || (focus && !strcmp(focus, "0"))) return;
 +        if (![[bundleURL pathExtension] isEqualToString:@"app"]) return;
 +        attempted = YES;
-+        [self bringBundleForward:bundleURL attempt:0];
++        [self bringBundleForward:bundleURL attempt:0 deadline:[NSProcessInfo processInfo].systemUptime + 10.0
++                      focusOwner:[[NSWorkspace sharedWorkspace] frontmostApplication] delay:0.05];
 +    }
 +
      - (void) tryToActivateIgnoringOtherApps:(BOOL)ignore

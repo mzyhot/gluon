@@ -41,12 +41,15 @@ MACDRV_REQUIRED = (
     "if (![[bundleURL pathExtension] isEqualToString:@\"app\"]) return; attempted = YES;",
     # Never activate an instance without a shown window; stop once a window is
     # active on the current Space, so a Big Picture Space is covered too.
-    "BOOL shown = [self gluonWindowShown:&onActiveSpace];",
-    "if (!shown) { [self bringBundleForward:bundleURL attempt:attempt + 1]; return; }",
+    "shown = [self gluonWindowShown:&onActiveSpace];",
+    "if (!shown) { [self bringBundleForward:bundleURL attempt:attempt deadline:deadline focusOwner:owner delay:0.05]; return; }",
     "if ([NSApp isActive] && onActiveSpace) return;",
-    "if (attempt >= sizeof(delays) / sizeof(delays[0])) return;",
+    "if (attempt >= 3 || now >= deadline) return;",
+    "if ([NSProcessInfo processInfo].systemUptime >= deadline || ![self gluonFocusStillOwnedBy:owner]) return;",
+    "[self bringBundleForward:bundleURL attempt:0 deadline:[NSProcessInfo processInfo].systemUptime + 10.0",
     "configuration.activates = YES; configuration.createsNewApplicationInstance = NO;",
-    "if (![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES]; [self bringBundleForward:bundleURL attempt:attempt + 1];",
+    "if ([self gluonWindowShown:&nowOnActiveSpace] && ![NSApp isActive]) [self tryToActivateIgnoringOtherApps:YES]; "
+    "[self bringBundleForward:bundleURL attempt:attempt + 1 deadline:deadline focusOwner:owner delay:0.3];",
     "[self bringBundleForwardOnce]; if ([NSApp isActive]) return;",
     # Quitting the game's app ends the whole session through Gluon's host, which
     # must be verified by path so a reused PID is never signalled.
@@ -205,7 +208,9 @@ def main():
             macdrv.replace("        [self bringBundleForwardOnce];\n", ""),
             macdrv.replace("            if ([NSApp isActive] && onActiveSpace) return;\n",
                            "            if ([NSApp isActive]) return;\n"),
-            macdrv.replace("        if (attempt >= sizeof(delays) / sizeof(delays[0])) return;\n", ""),
+            macdrv.replace("        if (attempt >= 3 || now >= deadline) return;\n", ""),
+            macdrv.replace("attempt:attempt deadline:deadline focusOwner:owner delay:0.05", "attempt:attempt + 1 deadline:deadline focusOwner:owner delay:0.05"),
+            macdrv.replace(" || ![self gluonFocusStillOwnedBy:owner]", ""),
             macdrv.replace("        if (!name || strcmp(name + 1, \"gluon-launcher-host\")) return FALSE;\n", ""),
             macdrv.replace("quitReason != kAEShowShutdownDialog &&", ""),
         ):

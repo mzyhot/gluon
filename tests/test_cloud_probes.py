@@ -16,7 +16,7 @@ SPEC.loader.exec_module(cloud_probes)
 
 
 class CloudProbeTests(unittest.TestCase):
-    def exercise(self, idle_code=0, timeout_vulkan=False):
+    def exercise(self, idle_code=0, timeout_vulkan=False, missing_helper=None):
         with tempfile.TemporaryDirectory(prefix="gluon-cloud-probe-fixture-") as directory:
             root = Path(directory)
             runtime, probes = root / "runtime", root / "probes"
@@ -39,6 +39,8 @@ class CloudProbeTests(unittest.TestCase):
                     output.flush()
                 if name == 'native-cloud-write':
                     (documents / 'cloud-fixture.txt').write_text('Wine-written-save\n')
+                if name in ('steam-helper-x86_64', 'steam-helper-i386') and name != 'steam-helper-' + str(missing_helper):
+                    (probes / (name + '.ready')).write_text('GLUON_HELPER_READY\n')
                 if name == "wine-prefix-idle":
                     code = idle_code
                 process = mock.Mock(pid=123456)
@@ -79,6 +81,25 @@ class CloudProbeTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in results], [
             "native-opengl", "native-vulkan-device", "wine-prefix", "wine-prefix-idle",
             "wine-stop", "wine-wait"])
+
+    def test_both_rebuilt_helpers_run_before_dll_probes(self):
+        code, commands, results, _, _ = self.exercise()
+        self.assertEqual(code, 0)
+        names = [item['name'] for item in results]
+        for arch in ('x86_64', 'i386'):
+            index = names.index('steam-helper-' + arch)
+            self.assertLess(names.index('wine-prefix-idle'), index)
+            self.assertLess(index, names.index('runtime-dependencies-x86_64'))
+            self.assertEqual(Path(commands[index][1]).parts[-2:], (arch + '-windows', 'steam.exe'))
+            self.assertEqual(Path(commands[index][2]).parts[-2:], (arch + '-windows', 'cmd.exe'))
+
+    def test_helper_exit_success_without_child_execution_fails_and_cleans_up(self):
+        code, _, results, _, _ = self.exercise(missing_helper='i386')
+        self.assertEqual(code, 1)
+        names = [item['name'] for item in results]
+        self.assertIn('steam-helper-i386', names)
+        self.assertNotIn('runtime-dependencies-x86_64', names)
+        self.assertEqual(names[-2:], ['wine-stop', 'wine-wait'])
 
     def test_timeout_captures_diagnostics_and_remains_a_failure(self):
         code, _, results, sample, kill = self.exercise(timeout_vulkan=True)

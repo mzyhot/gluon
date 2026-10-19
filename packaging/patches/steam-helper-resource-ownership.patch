@@ -1,0 +1,176 @@
+--- a/steam.c
++++ b/steam.c
+@@ -422,6 +422,12 @@
+     DWORD flags = CREATE_UNICODE_ENVIRONMENT;
+     BOOL use_shell_execute = TRUE, link2ea = FALSE;
+     BOOL hide_window;
++    WCHAR *owned_cmdline = NULL;
++    HANDLE process = INVALID_HANDLE_VALUE;
++    HRESULT com_result = E_FAIL;
++    DWORD error;
++
++    *should_await = FALSE;
+ 
+     /* skip argv[0] */
+     if (*cmdline == '"')
+@@ -444,9 +450,9 @@
+     if (cmdline[0] == '/' ||
+             (cmdline[0] == '"' && cmdline[1] == '/'))
+     {
+-        WCHAR *scratchW;
+-        char *scratchA;
+-        WCHAR *start, *end, *dos, *remainder, *new_cmdline;
++        WCHAR *scratchW = NULL;
++        char *scratchA = NULL;
++        WCHAR *start, *end, *dos = NULL, *remainder, *new_cmdline;
+         size_t argv0_len;
+         int r;
+         DWORD_PTR console;
+@@ -478,7 +484,7 @@
+ 
+         argv0_len = end - start;
+ 
+-        scratchW = malloc((argv0_len + 1) * sizeof(WCHAR));
++        if (!(scratchW = malloc((argv0_len + 1) * sizeof(WCHAR)))) goto conversion_done;
+         memcpy(scratchW, start, argv0_len * sizeof(WCHAR));
+         scratchW[argv0_len] = '\0';
+ 
+@@ -487,22 +493,22 @@
+         if (!r)
+         {
+             WINE_ERR("Char conversion size failed?\n");
+-            goto run;
+-        }
+-
+-        scratchA = malloc(r);
++            goto conversion_done;
++        }
++
++        if (!(scratchA = malloc(r))) goto conversion_done;
+ 
+         r = WideCharToMultiByte(CP_UNIXCP, 0, scratchW, -1,
+                 scratchA, r, NULL, NULL);
+         if (!r)
+         {
+             WINE_ERR("Char conversion failed?\n");
+-            goto run;
+-        }
+-
+-        dos = wine_get_dos_file_name(scratchA);
+-
+-        CoInitialize(NULL);
++            goto conversion_done;
++        }
++
++        if (!(dos = wine_get_dos_file_name(scratchA))) goto conversion_done;
++
++        com_result = CoInitialize(NULL);
+ 
+         console = SHGetFileInfoW(dos, 0, &sfi, sizeof(sfi), SHGFI_EXETYPE);
+         if (console)
+@@ -511,13 +517,19 @@
+                 flags |= CREATE_NEW_CONSOLE;
+         }
+ 
+-        new_cmdline = malloc((wcslen(dos) + 3 + wcslen(remainder) + 1) * sizeof(WCHAR));
++        if (!(new_cmdline = malloc((wcslen(dos) + 3 + wcslen(remainder) + 1) * sizeof(WCHAR))))
++            goto conversion_done;
+         wcscpy(new_cmdline, dquoteW);
+         wcscat(new_cmdline, dos);
+         wcscat(new_cmdline, dquoteW);
+         wcscat(new_cmdline, remainder);
+ 
+-        cmdline = new_cmdline;
++        cmdline = owned_cmdline = new_cmdline;
++
++conversion_done:
++        HeapFree(GetProcessHeap(), 0, dos);
++        free(scratchA);
++        free(scratchW);
+     }
+ 
+ run:
+@@ -622,11 +634,12 @@
+             }
+             break;
+         }
+-        return INVALID_HANDLE_VALUE;
++        goto done;
+     }
+     else
+     {
+         WCHAR *new_cmdline = fixup_cmdline_paths(cmdline);
++        BOOL created;
+ 
+         if (hide_window)
+         {
+@@ -634,16 +647,25 @@
+             si.wShowWindow = SW_HIDE;
+         }
+ 
+-        if (!CreateProcessW(NULL, new_cmdline, NULL, NULL, FALSE, flags, NULL, NULL, &si, &pi))
++        created = CreateProcessW(NULL, new_cmdline, NULL, NULL, FALSE, flags, NULL, NULL, &si, &pi);
++        error = GetLastError();
++        if (new_cmdline != cmdline) free(new_cmdline);
++        SetLastError(error);
++        if (!created)
+         {
+             WINE_ERR("Failed to create process %s: %lu\n", wine_dbgstr_w(cmdline), GetLastError());
+-            return INVALID_HANDLE_VALUE;
+-        }
+-        if (new_cmdline != cmdline) free(new_cmdline);
++            goto done;
++        }
+         CloseHandle(pi.hThread);
+-
+-        return pi.hProcess;
+-    }
++        process = pi.hProcess;
++    }
++
++done:
++    error = GetLastError();
++    free(owned_cmdline);
++    if (SUCCEEDED(com_result)) CoUninitialize();
++    SetLastError(error);
++    return process;
+ }
+ 
+ /* Forward stub steam.exe commands to the native steam client */
+@@ -811,6 +833,7 @@
+ 
+     pos += strappend( &buf, &buf_size, pos, "}\n" );
+     write_file( L"C:\\Program Files (x86)\\Steam\\steamapps\\libraryfolders.vdf", buf, pos );
++    free( buf );
+ }
+ 
+ #ifndef DIRECTORY_QUERY
+@@ -917,6 +940,7 @@
+     HANDLE event2 = INVALID_HANDLE_VALUE;
+     HANDLE event = INVALID_HANDLE_VALUE;
+     HANDLE child = INVALID_HANDLE_VALUE;
++    HANDLE thread;
+     BOOL game_process = FALSE;
+     const char *sgi;
+     DWORD rc = 0;
+@@ -939,7 +963,8 @@
+         /* Create desktop window in main thread to prevent race with background thread. */
+         GetDesktopWindow();
+ 
+-        CreateThread(NULL, 0, create_steam_windows, NULL, 0, NULL);
++        if ((thread = CreateThread(NULL, 0, create_steam_windows, NULL, 0, NULL)))
++            CloseHandle(thread);
+ 
+         set_active_process_pid();
+         set_gamingrepair_succeeded(sgi);
+@@ -994,8 +1019,8 @@
+             wait_handle = child;
+         }
+ 
+-        if (game_process)
+-            CreateThread(NULL, 0, steam_drm_thread, child, 0, NULL);
++        if (game_process && (thread = CreateThread(NULL, 0, steam_drm_thread, child, 0, NULL)))
++            CloseHandle(thread);
+     }
+ 
+     if (game_process)

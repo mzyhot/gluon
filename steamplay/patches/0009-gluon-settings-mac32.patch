@@ -1,0 +1,1084 @@
+Expose Gluon in Steam Settings and apply its global Mac32 policy.
+
+Architecture is positively identified; unknown and Mac64 builds stay native.
+The preference takes effect on a Steam restart and never writes per-game mappings.
+
+--- a/Makefile
++++ b/Makefile
+@@ -40,6 +40,7 @@
+ 	dylib/hooks/hook_activate.c \
+ 	dylib/feats/compat.c \
+ 	dylib/feats/cloud_guard.c \
++	dylib/feats/gluon_settings.c \
+ 	dylib/feats/webui.c \
+ 	dylib/feats/compatsvc.c \
+ 	dylib/feats/usershortcuts.c \
+--- a/app/Tests/NotProtonAppTests/AppInfoToolTests.swift
++++ b/app/Tests/NotProtonAppTests/AppInfoToolTests.swift
+@@ -214,7 +214,7 @@
+         let result = try read(Self.platforms(stringTable: stringTable), "--platforms")
+ 
+         #expect(result.status == 0)
+-        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\n")
++        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\nmac32=\n")
+     }
+ 
+     @Test("--platforms on a cache that stops early prints nothing and fails", arguments: [false, true])
+--- a/dylib/feats/compat.c
++++ b/dylib/feats/compat.c
+@@ -1,5 +1,6 @@
+ // Compatibility tool support
+ #include "compat.h"
++#include "gluon_settings.h"
+ #include "../util/log.h"
+ #include "../util/file.h"
+ #include "../util/a64.h"
+@@ -737,7 +738,8 @@
+     if (!compat_mgr || !appid)
+         return false;
+     uint32_t platforms = np_compat_valid_platforms(compat_mgr, appid);
+-    return (platforms & COMPAT_PLATFORM_WINDOWS) && !(platforms & COMPAT_PLATFORM_MACOS);
++    return (platforms & COMPAT_PLATFORM_WINDOWS) &&
++        (!(platforms & COMPAT_PLATFORM_MACOS) || gluon_settings_auto_app(appid));
+ }
+ 
+ typedef void *(*fn_FindMapping)(void *compat_mgr, uint32_t appid);
+--- a/dylib/feats/compat.h
++++ b/dylib/feats/compat.h
+@@ -82,11 +82,9 @@
+ void  np_compat_set_chosen_tool_fn(uintptr_t find_tool_for_target_app);
+ void *np_compat_chosen_tool(void *compat_mgr, uint32_t appid);
+ 
+-// Whether an app gets the CrossOver default: windows-only with no macOS.
+-//
+-// Deliberately blind to whether a macOS build can actually run. A 32-bit macOS
+-// build cannot run on a current system, but moving it onto a tool means fetching
+-// the windows build in full -- a choice to be offered, not taken.
++// Whether an unmapped app gets the Gluon default: Windows-only, or a
++// positively identified 32-bit Mac game with a Windows launch and the global
++// Gluon preference enabled. Mac64, unknown architecture and Mac-only stay native.
+ bool np_compat_would_force(void *compat_mgr, uint32_t appid);
+ 
+ // The wildcard (global default) mapping as it applies to one app, or NULL. Asked
+--- a/dylib/feats/compatsvc.c
++++ b/dylib/feats/compatsvc.c
+@@ -4,6 +4,7 @@
+ 
+ #include "compatsvc.h"
+ #include "compat.h"
++#include "gluon_settings.h"
+ #include "webui.h"
+ #include "../resolver/anchor.h"
+ #include "../util/log.h"
+@@ -284,6 +285,11 @@
+                       ? *(const uint32_t *)(request + SPECIFY_APPID_OFF) : 0;
+     const char *tool  = string_field(request + SPECIFY_TOOL_NAME_OFF);
+     (void)response;
++    int preference = gluon_settings_command(appid, tool);
++    if (preference) {
++        if (preference > 0) np_compatsvc_state_changed();
++        return preference > 0 ? RESULT_OK : RESULT_FAIL;
++    }
+ 
+     uint8_t *mgr = (uint8_t *)np_compat_manager();
+     if (!mgr) {
+--- a/dylib/feats/nativeplatform.c
++++ b/dylib/feats/nativeplatform.c
+@@ -8,12 +8,14 @@
+ #include <fcntl.h>
+ #include <limits.h>
+ #include <poll.h>
++#include <pthread.h>
+ #include <signal.h>
+ #include <spawn.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/wait.h>
++#include <sys/stat.h>
+ #include <time.h>
+ #include <unistd.h>
+ 
+@@ -57,16 +59,22 @@
+     return buf;
+ }
+ 
++static void appinfo_path(char *path, size_t cap) {
++    const char *root = getenv("GLUON_STEAM_ROOT");
++    if (root && root[0]) snprintf(path, cap, "%s/appcache/appinfo.vdf", root);
++    else {
++        const char *home = np_home_dir();
++        if (home) snprintf(path, cap, "%s/Library/Application Support/Steam/appcache/appinfo.vdf", home);
++        else if (cap) path[0] = 0;
++    }
++}
++
+ static char *run_helper(void) {
+     const char *home = np_home_dir();
+     if (!home) return NULL;
+     char tool[PATH_MAX], vdf[PATH_MAX];
+     np_support_path(tool, sizeof(tool), home, "appinfo");
+-    const char *root = getenv("GLUON_STEAM_ROOT");
+-    if (root && root[0])
+-        snprintf(vdf, sizeof(vdf), "%s/appcache/appinfo.vdf", root);
+-    else
+-        snprintf(vdf, sizeof(vdf), "%s/Library/Application Support/Steam/appcache/appinfo.vdf", home);
++    appinfo_path(vdf, sizeof vdf);
+ 
+     int fds[2];
+     if (pipe(fds) != 0) return NULL;
+@@ -152,24 +160,104 @@
+     return list;
+ }
+ 
++static pthread_mutex_t g_catalog_lock = PTHREAD_MUTEX_INITIALIZER;
++static char *g_mac32;
++static int g_catalog_loaded, g_refreshing;
++static long long g_refreshed;
++static struct stat g_appinfo_stamp;
++static int same_stamp(const struct stat *a, const struct stat *b) {
++    return a->st_ino == b->st_ino && a->st_dev == b->st_dev && a->st_size == b->st_size &&
++        a->st_mtimespec.tv_sec == b->st_mtimespec.tv_sec && a->st_mtimespec.tv_nsec == b->st_mtimespec.tv_nsec;
++}
++
+ char *np_nativeplatform_javascript(void) {
++    char path[PATH_MAX]; struct stat before = {0}, after = {0};
++    appinfo_path(path, sizeof path);
++    stat(path, &before);
+     char *out = run_helper();
+     if (!out) return NULL;
++    stat(path, &after);
++    if (!same_stamp(&before, &after)) { free(out); return NULL; }
+     const char *at = out;
+-    size_t mac_len = 0, windows_len = 0;
++    size_t mac_len = 0, windows_len = 0, mac32_len = 0;
+     const char *mac = take_list(&at, "mac=", &mac_len);
+     const char *windows = mac ? take_list(&at, "windows=", &windows_len) : NULL;
+-    if (!windows || *at) {
++    const char *mac32 = windows ? take_list(&at, "mac32=", &mac32_len) : NULL;
++    if (!mac32 || *at) {
+         NP_WARN("nativeplatform: appinfo helper printed something unexpected");
+         free(out);
+         return NULL;
+     }
+-    size_t cap = mac_len + windows_len + 128;
++    char *ids = strndup(mac32, mac32_len);
++    if (!ids) { free(out); return NULL; }
++    pthread_mutex_lock(&g_catalog_lock);
++    free(g_mac32);
++    g_mac32 = ids;
++    g_appinfo_stamp = after;
++    g_catalog_loaded = 1;
++    g_refreshed = now_ms();
++    pthread_mutex_unlock(&g_catalog_lock);
++    size_t cap = mac_len + windows_len + mac32_len + 160;
+     char *js = malloc(cap);
+     if (js)
+         snprintf(js, cap,
+-                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s])};\n",
+-                 (int)mac_len, mac, (int)windows_len, windows);
++                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s]),mac32:new Set([%.*s])};\n",
++                 (int)mac_len, mac, (int)windows_len, windows, (int)mac32_len, mac32);
+     free(out);
+     return js;
+ }
++
++void np_nativeplatform_refresh(void) {
++    char *js = np_nativeplatform_javascript();
++    pthread_mutex_lock(&g_catalog_lock);
++    if (!js) { free(g_mac32); g_mac32 = NULL; memset(&g_appinfo_stamp, 0, sizeof g_appinfo_stamp); }
++    free(js);
++    g_catalog_loaded = 1; // A failing helper stays conservative and does not spin.
++    g_refreshed = now_ms();
++    pthread_mutex_unlock(&g_catalog_lock);
++}
++
++static void *refresh_worker(void *unused) {
++    (void)unused;
++    np_nativeplatform_refresh();
++    pthread_mutex_lock(&g_catalog_lock);
++    g_refreshing = 0;
++    pthread_mutex_unlock(&g_catalog_lock);
++    return NULL;
++}
++
++int np_nativeplatform_is_mac32(unsigned int appid) {
++    int found = 0, refresh = 0, first;
++    char path[PATH_MAX]; struct stat current = {0};
++    appinfo_path(path, sizeof path); stat(path, &current);
++    pthread_mutex_lock(&g_catalog_lock);
++    first = !g_catalog_loaded && !g_refreshing;
++    if (first) g_refreshing = 1;
++    int stale = !same_stamp(&current, &g_appinfo_stamp);
++    if (g_catalog_loaded && (stale || now_ms() - g_refreshed > 30000) && !g_refreshing) {
++        refresh = g_refreshing = 1;
++    }
++    pthread_mutex_unlock(&g_catalog_lock);
++    if (first) {
++        np_nativeplatform_refresh();
++        pthread_mutex_lock(&g_catalog_lock); g_refreshing = 0; pthread_mutex_unlock(&g_catalog_lock);
++    }
++    if (refresh) {
++        pthread_t worker;
++        if (!pthread_create(&worker, NULL, refresh_worker, NULL)) pthread_detach(worker);
++        else {
++            pthread_mutex_lock(&g_catalog_lock); g_refreshing = 0; pthread_mutex_unlock(&g_catalog_lock);
++        }
++    }
++    pthread_mutex_lock(&g_catalog_lock);
++    // Never route using architecture evidence from an older app metadata cache.
++    const char *at = same_stamp(&current, &g_appinfo_stamp) ? g_mac32 : NULL;
++    while (at && *at) {
++        char *end;
++        unsigned long id = strtoul(at, &end, 10);
++        if (id == appid) { found = 1; break; }
++        at = *end == ',' ? end + 1 : NULL;
++    }
++    pthread_mutex_unlock(&g_catalog_lock);
++    return found;
++}
+--- a/dylib/feats/nativeplatform.h
++++ b/dylib/feats/nativeplatform.h
+@@ -3,5 +3,7 @@
+ #define NOTPROTON_FEATS_NATIVEPLATFORM_H
+ 
+ char *np_nativeplatform_javascript(void);
++int np_nativeplatform_is_mac32(unsigned int appid);
++void np_nativeplatform_refresh(void);
+ 
+ #endif // NOTPROTON_FEATS_NATIVEPLATFORM_H
+--- a/dylib/feats/webpatch.c
++++ b/dylib/feats/webpatch.c
+@@ -1,5 +1,6 @@
+ // Enables Steam Play in the UI/enables the Compatibility tab in game properties
+ #include "webpatch.h"
++#include "gluon_settings_js.h"
+ #include "nativeplatform.h"
+ #include "../util/log.h"
+ 
+@@ -27,6 +28,11 @@
+ #define NP_FEX_TOOLS "\022"
+ 
+ #define NP_TOOL_NAME_MAX 128
++
++static _Thread_local int g_gluon_mac32, g_gluon_effective_mac32;
++void np_webpatch_set_gluon_mac32(int saved, int effective) {
++    g_gluon_mac32 = saved != 0; g_gluon_effective_mac32 = effective != 0;
++}
+ 
+ static _Thread_local char g_fallback_tool[NP_TOOL_NAME_MAX];
+ static _Thread_local char g_fex_tools[NP_WEBPATCH_FEX_TOOLS_MAX * (NP_TOOL_NAME_MAX + 3) + 3] = "[]";
+@@ -249,9 +255,9 @@
+     "ks.length&&L.s(ks.map(k=>[k,\"\"]))}"
+ 
+ #define NP_CX_TOOL_QUERY \
+-    "(r,id)=>[r[0],v=>{r[1](v);const d=r[0].data;if(!id||!d)return;" \
++    "(r,id)=>{if(!id)globalThis.__GLUON_SETTINGS__.specify=v=>r[1](v);return[r[0],v=>{r[1](v);const d=r[0].data;if(!id||!d)return;" \
+     "const n=v||d.default_tool_identifier||\"" NP_FALLBACK_TOOL "\",a=(d.aliases||[]).find(x=>x.alias===n)," \
+-    "t=globalThis.appDetailsStore?.GetAppDetails(id);t&&MSCXPick(t,a?a.current_tool_name:n)}]"
++    "t=globalThis.appDetailsStore?.GetAppDetails(id);t&&MSCXPick(t,a?a.current_tool_name:n)}]}"
+ 
+ // CrossOver options panel. Not in great shape, but it'll do
+ #define NP_WEB_IS_ZH \
+@@ -268,7 +274,7 @@
+     "(" NP_WEB_IS_ZH "?\"" ZH "\":" NP_WEB_IS_IT "?\"" IT "\":\"" EN "\")"
+ 
+ #define NP_COMPAT_HINT NP_WEB_TEXT( \
+-    "Enable Gluon under Properties > Compatibility to install and run the Windows version.", \
++    "Enable 32-bit Mac games under Steam Settings > Gluon to install and run the Windows version.", \
+     "请在“属性 > 兼容性”中启用 Gluon，以安装并运行 Windows 版本。", \
+     "Abilita Gluon in Propriet\\u00e0 > Compatibilit\\u00e0 per installare e avviare la versione Windows.")
+ 
+@@ -313,14 +319,14 @@
+ 
+ static const np_gate_t g_gates_forcetool[] = {
+     // SteamPlay settings section
+-    { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".CI)()?",
+-      "function " NP_C1 "(" NP_C2 "){return true?", 1, 0 },
++    { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".CI)()?(0," NP_C4 ".jsxs)(" NP_C5 ".XY,{label:(0," NP_C6 ".we)(\"#Settings_SteamPlay_SteamPlay\"),children:[",
++      "function " NP_C1 "(" NP_C2 "){return true?(0," NP_C4 ".jsxs)(" NP_C5 ".XY,{label:\"Gluon\",children:[globalThis.__GLUON_SETTINGS__.render(" NP_C4 ".jsx),", 1, 0 },
+     // AppProperties Compatibility tab (app and non-Steam-shortcut variants)
+     { "(0," NP_C1 ".CI)()&&" NP_C2 ".push({title:(0," NP_C3 ".we)(\"#AppProperties_CompatibilityPage\")",
+       "true&&" NP_C2 ".push({title:(0," NP_C3 ".we)(\"#AppProperties_CompatibilityPage\")", 2, 0 },
+     // Settings page Compatibility entry, keeping the SteamOS exclusion (!rf())
+-    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)()&&!(0," NP_C2 ".rf)()",
+-      "Compatibility:{visible:" NP_C1 "&&true&&!(0," NP_C2 ".rf)()", 1, 0 },
++    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)()&&!(0," NP_C2 ".rf)(),title:(0," NP_C3 ".we)(\"#Settings_Page_Compatibility\")",
++      "Compatibility:{visible:" NP_C1 "&&! (0," NP_C2 ".rf)(),title:\"Gluon\"", 1, 0 },
+     { "return(0," NP_C1 ".jsxs)(" NP_C1 ".Fragment,{children:[0!=" NP_C2 ".length&&(0," NP_C1 ".jsx)(" NP_C3 ",{label:(0," NP_C4 ".we)"
+       "(\"#AppProperties_CompatilibityForceTool\"),checked:" NP_C5 ",onChange:" NP_C6 ",disabled:!" NP_C7 "||0===" NP_C2 ".length}),"
+       NP_C5 "&&" NP_C2 ".length>0&&(0," NP_C1 ".jsx)(" NP_C8 ".m,{strClassName:" NP_C9 "().TopGap,rgOptions:" NP_C10 ","
+@@ -344,7 +350,7 @@
+       "(0," NP_C4 ".jsx)(" NP_C8 ",{..." NP_C3 "}),(0," NP_C4 ".jsx)(" NP_C9
+       ",{..." NP_C3 "}),(0," NP_C4 ".jsx)(MSCXOpts,{..." NP_C3 "})]}));", 1, 0 },
+     { "get is_invalid_os_type(){return this.most_available_per_client_data.is_invalid_os_type}",
+-      "get is_invalid_os_type(){return false}", 1, 0 },
++      GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
+       "!" NP_C1 ".local_per_client_data?.installed&&"
+@@ -362,8 +368,10 @@
+       "true&&" NP_C2 ".push({title:(0," NP_C3 ".we)"
+       "(\"#AppProperties_CompatibilityPage\")", 2, 0 },
+     // Settings page Compatibility entry.
+-    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)(),title:",
+-      "Compatibility:{visible:" NP_C1 "&&true,title:", 1, 0 },
++    { "Compatibility:{visible:" NP_C1 "&&(0," NP_C2 ".CI)(),title:(0," NP_C3 ".we)(\"#Settings_Page_Compatibility\")",
++      "Compatibility:{visible:" NP_C1 ",title:\"Gluon\"", 1, 0 },
++    { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".jsxs)(" NP_C4 ".XY,{label:(0," NP_C5 ".we)(\"#Settings_SteamPlay_SteamPlay\"),children:[(0," NP_C3 ".jsx)(" NP_C6 ",{})",
++      "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".jsxs)(" NP_C4 ".XY,{label:\"Gluon\",children:[globalThis.__GLUON_SETTINGS__.render(" NP_C3 ".jsx),(0," NP_C3 ".jsx)(" NP_C6 ",{})", 1, 0 },
+     { "function " NP_C1 "(" NP_C2 "){return(0," NP_C3 ".jsxs)(" NP_C4 ".XY,{label:(0," NP_C5 ".we)"
+       "(\"#Settings_SteamPlay_SteamPlay\"),children:[(0," NP_C3 ".jsx)(" NP_C6 ",{details:" NP_C2 ".details}),"
+       "(0," NP_C3 ".jsx)(" NP_C7 ".G,{setting:\"compat_show_all_tools\",label:(0," NP_C5 ".we)"
+@@ -382,7 +390,7 @@
+       "((0," NP_C3 ".cT)(" NP_C4 ")," NP_C4 ");if(" NP_C1
+       ".isLoading||!" NP_C1 ".data?.tools?.length)return null;", 1, 1 },
+     { "get is_invalid_os_type(){return this.most_available_per_client_data.is_invalid_os_type}",
+-      "get is_invalid_os_type(){return false}", 1, 0 },
++      GLUON_INVALID_OS_GETTER, 1, 0 },
+     // Reminder banner for 32 bit Mac games
+     { NP_C1 ".is_invalid_os_type&&(0," NP_C2 ".jsx)(" NP_C3 ",{})",
+       "!" NP_C1 ".local_per_client_data?.installed&&"
+@@ -648,6 +656,15 @@
+         return NULL;
+     }
+     free(native_mac_js);
++    char settings[160];
++    int settings_len = snprintf(settings, sizeof settings,
++        "if(!globalThis.__GLUON_SETTINGS__)globalThis.__GLUON_SETTINGS__={autoMac32:%s,effectiveMac32:%s};\n",
++        g_gluon_mac32 ? "true" : "false", g_gluon_effective_mac32 ? "true" : "false");
++    if (settings_len < 0 || (size_t)settings_len >= sizeof settings ||
++        !out_put(&out, settings, (size_t)settings_len) ||
++        !out_put(&out, GLUON_SETTINGS_SCRIPT, strlen(GLUON_SETTINGS_SCRIPT))) {
++        free(out.buf); return NULL;
++    }
+     unsigned char can_start[256] = {0};
+     for (size_t g = 0; shape && g < shape->count; g++)
+         if (gate_on[g]) mark_start(can_start, shape->gates[g].find);
+--- a/dylib/feats/webpatch.h
++++ b/dylib/feats/webpatch.h
+@@ -10,6 +10,7 @@
+ // Sets the default picker fallback for this thread. Names with characters outside
+ // letters, digits, '_', '$', '.' and '-' are dropped.
+ void np_webpatch_set_fallback_tool(const char *name);
++void np_webpatch_set_gluon_mac32(int saved, int effective);
+ 
+ #define NP_WEBPATCH_FEX_TOOLS_MAX 16
+ 
+--- a/dylib/hooks/hook_compat.c
++++ b/dylib/hooks/hook_compat.c
+@@ -1,6 +1,7 @@
+ // Compat tool hooks
+ #include "hooks.h"
+ #include "../feats/compat.h"
++#include "../feats/gluon_settings.h"
+ #include "../feats/cloud_guard.h"
+ #include "../feats/compatsvc.h"
+ #include "../feats/usershortcuts.h"
+@@ -87,8 +88,8 @@
+ 
+     // The NP_COMPAT_TOOL_NONE sentinel is honored as an explicit refusal.
+     const char *mapping = np_compat_app_mapping(self, appid);
+-    if (mapping && strcmp(mapping, NP_COMPAT_TOOL_NONE) == 0)
+-        return NULL;
++    if (mapping)
++        return NULL; // Explicit choices, including unavailable tools and None, win.
+ 
+     if (!np_compat_would_force(self, appid))
+         return NULL;
+@@ -136,6 +137,11 @@
+ static uint64_t hook_InternalSpecifyCompatTool(void *self, uint64_t appid,
+                                                const char *name, void *config,
+                                                int priority) {
++    int preference = gluon_settings_command((uint32_t)appid, name);
++    if (preference) {
++        if (preference > 0) np_compatsvc_state_changed();
++        return preference > 0;
++    }
+     fn_InternalSpecifyCompatTool orig =
+         (fn_InternalSpecifyCompatTool)orig_InternalSpecifyCompatTool;
+     if (!orig) {
+--- a/dylib/hooks/hook_webpatch.c
++++ b/dylib/hooks/hook_webpatch.c
+@@ -3,6 +3,7 @@
+ // not modified, to keep the Steam bootstrap happy.
+ 
+ #include "../feats/webpatch.h"
++#include "../feats/gluon_settings.h"
+ #include "../feats/compat.h"
+ #include "../feats/compatsvc.h"
+ #include "../util/file.h"
+@@ -121,6 +122,7 @@
+     close(in);
+ 
+     np_webpatch_set_fallback_tool(np_compat_fallback_tool_name());
++    np_webpatch_set_gluon_mac32(gluon_settings_mac32(), gluon_settings_mac32_effective());
+     const char *fex[NP_WEBPATCH_FEX_TOOLS_MAX];
+     np_webpatch_set_fex_tools(fex, np_compat_fex_tools(fex, NP_WEBPATCH_FEX_TOOLS_MAX));
+     size_t patched_len = 0;
+--- a/dylib/tests/compatcheck.c
++++ b/dylib/tests/compatcheck.c
+@@ -22,6 +22,9 @@
+ #include <stdatomic.h>
+ #include <sys/wait.h>
+ 
++static int stub_auto_mac32;
++bool gluon_settings_auto_app(uint32_t appid) { return appid == 7 && stub_auto_mac32; }
++
+ static atomic_int home_calls;
+ static atomic_int home_ready;
+ 
+@@ -40,6 +43,10 @@
+         atomic_store(&home_ready, 1);
+     }
+     return "/nonexistent";
++}
++
++void np_support_path(char *path, size_t cap, const char *home, const char *relative) {
++    snprintf(path, cap, "%s/Library/Application Support/Gluon/steamplay/%s", home, relative ? relative : "");
+ }
+ 
+ int np_get_section_containing(const struct mach_header_64 *mh, intptr_t slide,
+@@ -109,7 +116,7 @@
+ static void *first_fallback(void *arg) {
+     int *ok = arg;
+     const char *name = np_compat_fallback_tool_name();
+-    *ok = atomic_load(&home_ready) && strcmp(name, "notproton") == 0;
++    *ok = atomic_load(&home_ready) && strcmp(name, "gluon") == 0;
+     return NULL;
+ }
+ 
+@@ -336,7 +343,7 @@
+     partial_paths = mode == 6;
+     build_manager(existing, -1);
+     for (int i = 0; i < g_tool_count; i++) {
+-        snprintf(tools[i].name, sizeof(tools[i].name), "notproton-%d", i);
++        snprintf(tools[i].name, sizeof(tools[i].name), "gluon-%d", i);
+         snprintf(tools[i].display, sizeof(tools[i].display), "Tool %d", i);
+         snprintf(tools[i].dir, sizeof(tools[i].dir), "/tools/tool%d", i);
+         if (i < existing)
+@@ -401,42 +408,42 @@
+         check(0, "the tool list fixture can be written");
+         return;
+     }
+-    fputs("notproton\t27.0.0.40921-fex\tfex\tCrossOver Preview (FEX)\n"
+-          "notproton-fex-41069\t27.0.0.41069-fex\tfex\tCrossOver Preview 41069 (FEX)\n"
+-          "notproton-fex-rosetta\t27.0.0.40921-fex\trosetta\tCrossOver Preview (Rosetta)\n"
+-          "notproton-26.3\t26.3.0.39832\trosetta\tCrossOver 26.3\n"
+-          "notproton\t26.3.0.39832\trosetta\tDuplicate\n"
++    fputs("gluon\t27.0.0.40921-fex\tfex\tCrossOver Preview (FEX)\n"
++          "gluon-fex-41069\t27.0.0.41069-fex\tfex\tCrossOver Preview 41069 (FEX)\n"
++          "gluon-fex-rosetta\t27.0.0.40921-fex\trosetta\tCrossOver Preview (Rosetta)\n"
++          "gluon-26.3\t26.3.0.39832\trosetta\tCrossOver 26.3\n"
++          "gluon\t26.3.0.39832\trosetta\tDuplicate\n"
+           "proton-other\t1\trosetta\tForeign\n"
+-          "notproton-x\t1\tarm\tBad flavor\n"
+-          "notproton-q\t1\trosetta\tQuote\"d\n"
+-          "notproton-short\t1\trosetta\n"
++          "gluon-x\t1\tarm\tBad flavor\n"
++          "gluon-q\t1\trosetta\tQuote\"d\n"
++          "gluon-short\t1\trosetta\n"
+           "\n", f);
+     fclose(f);
+ 
+     int kept = np_compat_load_tool_list(path, "/tools");
+     unlink(path);
+ 
+-    check(kept == 4, "only well-formed, unique, notproton-named lines are kept");
+-    check(strcmp(g_tools[0].name, "notproton") == 0
++    check(kept == 4, "only well-formed, unique, gluon-named lines are kept");
++    check(strcmp(g_tools[0].name, "gluon") == 0
+           && strcmp(g_tools[0].flavor, "fex") == 0, "the first line stays first");
+     check(strcmp(g_tools[3].build, "26.3.0.39832") == 0
+-          && strcmp(g_tools[3].dir, "/tools/notproton-26.3") == 0,
++          && strcmp(g_tools[3].dir, "/tools/gluon-26.3") == 0,
+           "each tool carries its build and directory");
+ 
+     uint8_t *mgr = build_manager(3, -1);
+-    *(const char **)(entries + np_compat_tool_stride() + COMPAT_TOOL_NAME_OFF) = "notproton-26.3";
++    *(const char **)(entries + np_compat_tool_stride() + COMPAT_TOOL_NAME_OFF) = "gluon-26.3";
+     check(np_compat_registered_tool(mgr) == entries + np_compat_tool_stride(),
+           "the most preferred tool the manager holds is the default");
+-    *(const char **)(entries + COMPAT_TOOL_NAME_OFF) = "notproton";
++    *(const char **)(entries + COMPAT_TOOL_NAME_OFF) = "gluon";
+     check(np_compat_registered_tool(mgr) == entries,
+           "the first listed tool wins when the manager holds it");
+ 
+     const char *fex[3] = { NULL, NULL, NULL };
+-    check(np_compat_fex_tools(fex, 3) == 2 && strcmp(fex[0], "notproton") == 0
+-          && strcmp(fex[1], "notproton-fex-41069") == 0 && !fex[2],
++    check(np_compat_fex_tools(fex, 3) == 2 && strcmp(fex[0], "gluon") == 0
++          && strcmp(fex[1], "gluon-fex-41069") == 0 && !fex[2],
+           "only the fex flavor counts as FEX, not a FEX build's Rosetta tool");
+     fex[0] = fex[1] = NULL;
+-    check(np_compat_fex_tools(fex, 1) == 1 && strcmp(fex[0], "notproton") == 0 && !fex[1],
++    check(np_compat_fex_tools(fex, 1) == 1 && strcmp(fex[0], "gluon") == 0 && !fex[1],
+           "the FEX list stops at its limit, keeping the first listed");
+ 
+     f = fopen(path, "w");
+@@ -445,13 +452,13 @@
+         return;
+     }
+     for (int i = 0; i < 40; i++)
+-        fprintf(f, "notproton-%d\t1\trosetta\tTool %d\n", i, i);
++        fprintf(f, "gluon-%d\t1\trosetta\tTool %d\n", i, i);
+     fclose(f);
+     kept = np_compat_load_tool_list(path, "/tools");
+     unlink(path);
+-    check(kept == 40 && strcmp(g_tools[39].name, "notproton-39") == 0
+-          && strcmp(g_tools[0].dir, "/tools/notproton-0") == 0, "a long list keeps every tool");
+-    check(strcmp(np_compat_fallback_tool_name(), "notproton-0") == 0,
++    check(kept == 40 && strcmp(g_tools[39].name, "gluon-39") == 0
++          && strcmp(g_tools[0].dir, "/tools/gluon-0") == 0, "a long list keeps every tool");
++    check(strcmp(np_compat_fallback_tool_name(), "gluon-0") == 0,
+           "the fallback is the first configured tool");
+     check(np_compat_fex_tools(fex, 3) == 0, "a list with no FEX tool has no FEX names");
+ 
+@@ -461,19 +468,19 @@
+ 
+ static void tool_launch_cases(void) {
+     static const char *tool[] = {
+-        "'/tools/compatibilitytools.d/notproton/.'/run waitforexitandrun  '/g/game.exe'",
+-        "A=1 '/tools/compatibilitytools.d/notproton-26.3/.'/run waitforexitandrun  '/g/game.exe' -x",
+-        "'/tools/compatibilitytools.d/notproton-fex-rosetta/.'/run run ",
+-        "'/tools/compatibilitytools.d/notproton'/run waitforexitandrun  '/g/game.exe'",
+-        "'/Volumes/Ext/Steam/compatibilitytools.d/notproton/.'/run waitforexitandrun '/g/game.exe'",
++        "'/tools/compatibilitytools.d/gluon/.'/run waitforexitandrun  '/g/game.exe'",
++        "A=1 '/tools/compatibilitytools.d/gluon-26.3/.'/run waitforexitandrun  '/g/game.exe' -x",
++        "'/tools/compatibilitytools.d/gluon-fex-rosetta/.'/run run ",
++        "'/tools/compatibilitytools.d/gluon'/run waitforexitandrun  '/g/game.exe'",
++        "'/Volumes/Ext/Steam/compatibilitytools.d/gluon/.'/run waitforexitandrun '/g/game.exe'",
+     };
+     static const char *native[] = {
+         "'/g/Game.app' -windowed",
+         "'/g/Game.app/Contents/MacOS/Game'",
+         "'/tools/compatibilitytools.d/proton-other/.'/run waitforexitandrun '/g/game.exe'",
+-        "'/tools/compatibilitytools.d/notproton/Game' -x",
+-        "'/tools/compatibilitytools.d/notproton/sub/.'/run waitforexitandrun '/g/game.exe'",
+-        "'/tools/compatibilitytools.d/notproton'/other '/g/game.exe'",
++        "'/tools/compatibilitytools.d/gluon/Game' -x",
++        "'/tools/compatibilitytools.d/gluon/sub/.'/run waitforexitandrun '/g/game.exe'",
++        "'/tools/compatibilitytools.d/gluon'/other '/g/game.exe'",
+         "",
+     };
+     for (size_t i = 0; i < sizeof(tool) / sizeof(tool[0]); i++)
+@@ -503,20 +510,20 @@
+         return;
+     }
+     char current[700], legacy[700], user[700], lookalike[700];
+-    snprintf(current, sizeof(current), "%s/notproton-26.3", root);
+-    snprintf(legacy, sizeof(legacy), "%s/notproton", root);
+-    snprintf(user, sizeof(user), "%s/notproton-mine", root);
+-    snprintf(lookalike, sizeof(lookalike), "%s/notproton-copy", root);
++    snprintf(current, sizeof(current), "%s/gluon-26.3", root);
++    snprintf(legacy, sizeof(legacy), "%s/gluon", root);
++    snprintf(user, sizeof(user), "%s/gluon-mine", root);
++    snprintf(lookalike, sizeof(lookalike), "%s/gluon-copy", root);
+     const char *dirs[] = { current, legacy, user, lookalike };
+     for (size_t i = 0; i < 4; i++) mkdir(dirs[i], 0755);
+ 
+     put(current, "flavor", "rosetta\n");
+-    put(current, "run", "#!/bin/sh\n# notproton CrossOver compatibility tool shim\n");
+-    put(legacy, "run", "#!/bin/sh\n# notproton CrossOver compatibility tool shim\nset -e\n");
++    put(current, "run", "#!/bin/sh\n# gluon Steam Play compatibility tool shim\n");
++    put(legacy, "run", "#!/bin/sh\n# gluon Steam Play compatibility tool shim\nset -e\n");
+     put(legacy, "toolmanifest.vdf", "\"manifest\" {}\n");
+     put(legacy, "compatibilitytool.vdf", "\"compatibilitytools\" {}\n");
+     put(user, "run", "#!/bin/sh\nexec my-wine \"$@\"\n");
+-    put(lookalike, "run", "#!/bin/sh\n# notproton CrossOver compatibility tool shim\n");
++    put(lookalike, "run", "#!/bin/sh\n# gluon Steam Play compatibility tool shim\n");
+     put(lookalike, "notes.txt", "mine\n");
+ 
+     g_tool_count = 0;
+@@ -524,7 +531,7 @@
+ 
+     check(!exists(current), "an unlisted tool with a flavor file is removed");
+     check(!exists(legacy), "the single-tool dylib's directory is removed");
+-    check(exists(user), "a notproton directory the user wrote stays");
++    check(exists(user), "a gluon directory the user wrote stays");
+     char notes[768];
+     snprintf(notes, sizeof(notes), "%s/notes.txt", lookalike);
+     check(exists(notes), "files this project did not write stay with their directory");
+@@ -574,6 +581,10 @@
+ 
+     stub_platforms_value = COMPAT_PLATFORM_WINDOWS | COMPAT_PLATFORM_MACOS;
+     check(!np_compat_would_force(manager, 7), "an app with a macOS build is left alone");
++    stub_auto_mac32 = 1;
++    check(np_compat_would_force(manager, 7), "a positively identified Mac32 Windows game uses the enabled Gluon policy");
++    check(!np_compat_would_force(manager, 8), "unknown and Mac64 games are untouched");
++    stub_auto_mac32 = 0;
+ 
+     stub_platforms_value = COMPAT_PLATFORM_MACOS;
+     check(!np_compat_would_force(manager, 7), "a macOS-only app is left alone");
+@@ -583,9 +594,9 @@
+     check(np_compat_valid_platforms(NULL, 7) == 0, "no manager reports no platform");
+ 
+     np_compat_set_app_mapping_fn((uintptr_t)stub_find_mapping);
+-    stub_mapping_entry[0] = "notproton";
++    stub_mapping_entry[0] = "gluon";
+     check(np_compat_app_mapping(manager, 7) != NULL, "a mapped app reports its entry");
+-    check(strcmp(np_compat_app_mapping(manager, 7), "notproton") == 0,
++    check(strcmp(np_compat_app_mapping(manager, 7), "gluon") == 0,
+           "the name in the entry is what comes back");
+     check(np_compat_app_mapping(manager, 0) == NULL,
+           "appid zero is refused rather than reaching the global entry");
+@@ -598,12 +609,12 @@
+ 
+     np_compat_set_mapping_fn((uintptr_t)stub_set_mapping);
+     last_priority = 0;
+-    np_compat_map_tool(manager, 7, "notproton");
++    np_compat_map_tool(manager, 7, "gluon");
+     check(last_appid == 7 && last_priority == COMPAT_MAPPING_PRIORITY_APP,
+           "an app mapping outranks the global one");
+ 
+     last_priority = 0;
+-    np_compat_map_tool(manager, 0, "notproton");
++    np_compat_map_tool(manager, 0, "gluon");
+     check(last_appid == 0 && last_priority == COMPAT_MAPPING_PRIORITY_GLOBAL,
+           "the global mapping stays under the threshold that skips the platform check");
+ 
+--- a/dylib/tests/compatsvc-check.c
++++ b/dylib/tests/compatsvc-check.c
+@@ -144,6 +144,8 @@
+     (void)anchor; (void)tag;
+     return 1;
+ }
++
++int gluon_settings_command(uint32_t appid, const char *name) { (void)appid; (void)name; return 0; }
+ 
+ #include "../feats/compatsvc.c"
+ 
+--- a/dylib/tests/nativeplatformcheck.c
++++ b/dylib/tests/nativeplatformcheck.c
+@@ -54,10 +54,10 @@
+     *strrchr(dir, '/') = '\0';
+     mkdir(dir, 0755);
+ 
+-    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\n'",
+-           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10])};\n");
+-    expect("empty lists", "printf 'mac=\\nwindows=\\n'",
+-           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([])};\n");
++    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\nmac32=30\\n'",
++           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10]),mac32:new Set([30])};\n");
++    expect("empty lists", "printf 'mac=\\nwindows=\\nmac32=\\n'",
++           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([]),mac32:new Set([])};\n");
+     expect("no helper", NULL, NULL);
+     expect("a helper that fails", "printf 'mac=1\\nwindows=2\\n'; exit 1", NULL);
+     expect("script in a list", "printf 'mac=1,2]);alert(1);//\\nwindows=\\n'", NULL);
+--- a/helpers/appinfo.swift
++++ b/helpers/appinfo.swift
+@@ -1,6 +1,6 @@
+ // Reads Steam's appinfo.vdf cache and prints key=value metadata for one app on
+ // stdout. Usage: appinfo <appinfo.vdf> <appid>.
+-// With --platforms instead of an appid it prints mac= and windows= appid lists.
++// With --platforms it prints mac=, windows= and positively identified mac32= lists.
+ //
+ // common/icon is a 32x32 thumbnail. common/clienticon is the real multi-res
+ // icon, and the two hashes differ for most apps, so the icon cannot be
+@@ -8,6 +8,8 @@
+ // failure.
+ 
+ import Foundation
++import CryptoKit
++import Darwin
+ 
+ let args = CommandLine.arguments
+ let platforms = args.count == 3 && args[2] == "--platforms"
+@@ -203,13 +205,384 @@
+     return found
+ }
+ 
++// Missing macos64 metadata is not evidence of a 32-bit executable. Some old
++// integrations also added macos to Windows-only entries. Require a real Mac
++// launch entry and positive Mac architecture evidence; any 64-bit evidence wins.
++func text(_ value: Value?) -> String {
++    switch value {
++    case .string(let s)?: return s
++    case .number(let n)?: return String(n)
++    default: return ""
++    }
++}
++func section(_ value: Value?) -> [String: Value] {
++    if case .section(let s)? = value { return s }
++    return [:]
++}
++func words(_ value: Value?) -> Set<String> {
++    Set(text(value).lowercased().split { $0 == "," || $0.isWhitespace }.map(String.init))
++}
++
++// Read only the small text manifests needed to locate installed native builds.
++// No Steam metadata, compatibility mappings or game files are ever rewritten.
++func manifest(_ path: URL) -> [String: Value] {
++    guard let data = try? Data(contentsOf: path), data.count < 8 << 20,
++          let source = String(data: data, encoding: .utf8) else { return [:] }
++    let chars = Array(source), end = chars.count
++    var at = 0
++    func token() -> String? {
++        while at < end {
++            if chars[at].isWhitespace { at += 1; continue }
++            if chars[at] == "/", at + 1 < end, chars[at + 1] == "/" {
++                while at < end && chars[at] != "\n" { at += 1 }; continue
++            }
++            break
++        }
++        guard at < end else { return nil }
++        if chars[at] == "{" || chars[at] == "}" { defer { at += 1 }; return String(chars[at]) }
++        guard chars[at] == "\"" else { at = end; return nil }
++        at += 1
++        var out = ""
++        while at < end {
++            let c = chars[at]; at += 1
++            if c == "\"" { return out }
++            if c == "\\", at < end { out.append(chars[at]); at += 1 }
++            else { out.append(c) }
++        }
++        return nil
++    }
++    func read(_ depth: Int = 0) -> [String: Value] {
++        guard depth < 32 else { return [:] }
++        var out: [String: Value] = [:]
++        while let key = token(), key != "}" {
++            guard let value = token() else { return [:] }
++            out[key.lowercased()] = value == "{" ? .section(read(depth + 1)) : .string(value)
++        }
++        return out
++    }
++    return read()
++}
++
++func safeChild(_ base: URL, _ relative: String) -> URL? {
++    guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.contains("\\"),
++          !relative.split(separator: "/").contains("..") else { return nil }
++    let result = base.appendingPathComponent(relative).standardizedFileURL.resolvingSymlinksInPath()
++    let root = base.standardizedFileURL.resolvingSymlinksInPath().path + "/"
++    return result.path.hasPrefix(root) ? result : nil
++}
++
++// Return 32 only for a positively parsed Mach-O with no 64-bit slice. An app
++// bundle is checked through CFBundleExecutable, never a DLL or Windows EXE.
++func nativeExecutable(_ launch: URL) -> URL? {
++    var executable = launch
++    if launch.pathExtension.lowercased() == "app" {
++        guard let data = try? Data(contentsOf: launch.appendingPathComponent("Contents/Info.plist")),
++              let plist = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
++              let name = plist["CFBundleExecutable"] as? String,
++              let binary = safeChild(launch.appendingPathComponent("Contents/MacOS"), name) else { return nil }
++        executable = binary
++    }
++    return executable
++}
++
++func machoBits(_ launch: URL) -> Int? {
++    guard let executable = nativeExecutable(launch) else { return nil }
++    guard let handle = try? FileHandle(forReadingFrom: executable) else { return nil }
++    defer { try? handle.close() }
++    guard let data = try? handle.read(upToCount: 4096), data.count >= 8 else { return nil }
++    let b = [UInt8](data)
++    func u32(_ p: Int, _ little: Bool) -> UInt32 {
++        let s = little ? [0, 8, 16, 24] : [24, 16, 8, 0]
++        return (0..<4).reduce(0) { $0 | UInt32(b[p + $1]) << s[$1] }
++    }
++    let magic = u32(0, false)
++    if magic == 0xcefaedfe || magic == 0xfeedface {
++        let cpu = u32(4, magic == 0xcefaedfe)
++        guard b.count >= 28, [UInt32(7), 12, 18].contains(cpu), u32(12, magic == 0xcefaedfe) == 2 else { return nil }
++        return 32
++    }
++    if magic == 0xcffaedfe || magic == 0xfeedfacf { return 64 }
++    guard [UInt32(0xcafebabe), 0xbebafeca, 0xcafebabf, 0xbfbafeca].contains(magic) else { return nil }
++    let little = magic == 0xbebafeca || magic == 0xbfbafeca
++    let count = Int(u32(4, little)), stride = magic == 0xcafebabf || magic == 0xbfbafeca ? 32 : 20
++    guard count > 0, count <= 64, 8 + count * stride <= b.count else { return nil }
++    for n in 0..<count {
++        let cpu = u32(8 + n * stride, little)
++        if cpu & 0x01000000 != 0 { return 64 }
++        if ![UInt32(7), 12, 18].contains(cpu) { return nil }
++    }
++    return 32
++}
++
++func steamLibraries(_ root: URL) -> [URL] {
++    var result = [root]
++    let folders = section(manifest(root.appendingPathComponent("steamapps/libraryfolders.vdf"))["libraryfolders"])
++    for (key, value) in folders where UInt32(key) != nil {
++        let path = text(section(value)["path"])
++        if path.hasPrefix("/") { result.append(URL(fileURLWithPath: path)) }
++    }
++    return result
++}
++
++// Preserve positive architecture evidence after Steam replaces the native Mac
++// depots with Windows depots. Evidence belongs to an exact Mac branch/version;
++// a Windows update or removal of the old Mac executable does not change it.
++struct Mac32Record: Codable {
++    let signature: String
++    var checked: Int64
++}
++struct Mac32State: Codable {
++    let version: Int
++    var apps: [String: Mac32Record]
++}
++final class Mac32Evidence {
++    private let limit = 4096
++    private let path: URL?
++    private var lockFD: Int32 = -1
++    private var changed = false
++    private var apps: [String: Mac32Record] = [:]
++    private var durable: [String: Mac32Record] = [:]
++    private var required: Set<String> = []
++    init() {
++        let environment = ProcessInfo.processInfo.environment
++        let base = environment["GLUON_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
++            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Gluon")
++        let directory = base.appendingPathComponent("state")
++        path = directory.appendingPathComponent("mac32-evidence.json")
++        do {
++            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++            let fd = open(directory.appendingPathComponent("mac32-evidence.lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
++            if fd >= 0 {
++                if flock(fd, LOCK_EX | LOCK_NB) == 0 { lockFD = fd }
++                else { close(fd) } // Read-only under contention; never overwrite another helper's work.
++            }
++        } catch {}
++        guard let path = path,
++              let attributes = try? FileManager.default.attributesOfItem(atPath: path.path),
++              attributes[.type] as? FileAttributeType == .typeRegular,
++              let size = attributes[.size] as? NSNumber, size.intValue <= 1 << 20,
++              let data = try? Data(contentsOf: path),
++              let state = try? JSONDecoder().decode(Mac32State.self, from: data),
++              state.version == 1, state.apps.count <= limit else { return }
++        apps = state.apps.filter { key, value in
++            UInt32(key) != nil && value.signature.count == 64 && value.signature.utf8.allSatisfy {
++                (48...57).contains($0) || (97...102).contains($0)
++            }
++        }
++        durable = apps
++    }
++    deinit { if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD) } }
++    func forget(_ appid: UInt32) {
++        if apps.removeValue(forKey: String(appid)) != nil { changed = true }
++    }
++    func matches(_ appid: UInt32, _ signature: String?) -> Bool {
++        guard let signature = signature, let record = apps[String(appid)], record.signature == signature else {
++            forget(appid); return false
++        }
++        return true
++    }
++    func remember(_ appid: UInt32, _ signature: String?) {
++        required.insert(String(appid))
++        guard let signature = signature else { forget(appid); return }
++        if apps[String(appid)]?.signature == signature { return }
++        apps[String(appid)] = Mac32Record(signature: signature, checked: Int64(Date().timeIntervalSince1970))
++        changed = true
++    }
++    func usable(_ appid: UInt32) -> Bool {
++        let id = String(appid)
++        return !required.contains(id) || (apps[id] != nil && apps[id]?.signature == durable[id]?.signature)
++    }
++    func save() {
++        guard changed, lockFD >= 0, let path = path else { return }
++        if apps.count > limit {
++            let retained = apps.sorted { a, b in a.value.checked > b.value.checked }.prefix(limit)
++            apps = Dictionary(uniqueKeysWithValues: retained.map { ($0.key, $0.value) })
++        }
++        guard let data = try? JSONEncoder().encode(Mac32State(version: 1, apps: apps)), data.count <= 1 << 20 else { return }
++        do {
++            try data.write(to: path, options: .atomic)
++            durable = apps
++            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
++        } catch {} // Never expose a new proof that could not be persisted before depot replacement.
++    }
++}
++
++func branchApplies(_ entry: [String: Value], _ branch: String) -> Bool {
++    let config = section(entry["config"])
++    let beta = words(config["BetaKey"] ?? config["betakey"])
++    return beta.isEmpty || beta.contains(branch) || branch == "public" && beta.contains("default")
++}
++func branchValue(_ entries: [String: Value], _ branch: String) -> Value? {
++    entries.first { $0.key.lowercased() == branch }?.value
++}
++func jsonValue(_ value: Value) -> Any {
++    switch value {
++    case .string(let string): return string
++    case .number(let number): return NSNumber(value: number)
++    case .section(let values): return values.mapValues(jsonValue)
++    }
++}
++
++struct MacBranchFingerprint {
++    var signature: String? = nil
++    var mac64 = false
++    var required: [String: String] = [:]
++    var language: [String: String] = [:]
++    var macDepots: Set<String> = []
++    func attested(_ state: [String: Value]) -> Bool {
++        var installed: [String: String] = [:]
++        for key in ["installeddepots", "mounteddepots"] {
++            for (id, value) in section(state[key]) {
++                let nested = text(section(value)["manifest"])
++                let gid = nested.isEmpty ? text(value) : nested
++                if let previous = installed[id], previous != gid { return false }
++                if (UInt64(gid) ?? 0) != 0 { installed[id] = gid }
++            }
++        }
++        guard signature != nil, !required.isEmpty || !language.isEmpty else { return false }
++        for (id, gid) in required where gid.isEmpty || installed[id] != gid { return false }
++        for (id, gid) in language where installed[id] != nil && (gid.isEmpty || installed[id] != gid) { return false }
++        if !macDepots.isEmpty && !macDepots.contains(where: { installed[$0] != nil }) { return false }
++        return required.keys.contains { installed[$0] != nil } || language.keys.contains { installed[$0] != nil }
++    }
++}
++
++final class MacDepotVersions {
++    private var references: [UInt32: [String: Value]] = [:]
++    // Shared depots can inherit their manifests and platform config from another
++    // cached app. Refuse unresolvable references rather than inventing a version.
++    func resolved(_ depot: [String: Value], _ id: String, _ seen: Set<String> = []) -> [String: Value]? {
++        guard let appid = UInt32(text(depot["depotfromapp"])), appid != 0 else { return depot }
++        let identity = "\(appid):\(id)"
++        guard !seen.contains(identity), seen.count < 16 else { return nil }
++        if references[appid] == nil { references[appid] = (try? findApp(bytes, appid)) ?? [:] }
++        guard let inheritedValue = section(references[appid]?["depots"])[id] else { return nil }
++        guard let inherited = resolved(section(inheritedValue), id, seen.union([identity])) else { return nil }
++        var result = inherited
++        for (key, value) in depot where key != "config" && key != "depotfromapp" { result[key] = value }
++        var config = section(inherited["config"])
++        for (key, value) in section(depot["config"]) { config[key] = value }
++        result["config"] = .section(config)
++        result["gluon_source_app"] = .string(String(appid))
++        return result
++    }
++    func fingerprint(_ app: [String: Value], _ branch: String, _ launches: [String: Value]) -> MacBranchFingerprint {
++        let common = section(app["common"])
++        let arch64: Set<String> = ["64", "arm64", "x86_64", "amd64"]
++        var result = MacBranchFingerprint()
++        var versions: [String: Any] = [:]
++        var complete = true
++        for (id, value) in section(app["depots"]) where UInt32(id) != nil {
++            let declared = section(value)
++            if declared.isEmpty { continue } // An empty, retired depot has no content.
++            let declaredOS = words(section(declared["config"])["oslist"])
++            if !declaredOS.isEmpty && !declaredOS.contains("macos") && !declaredOS.contains("all") { continue }
++            guard let depot = resolved(declared, id) else { complete = false; continue }
++            let config = section(depot["config"]), os = words(config["oslist"])
++            if !os.isEmpty && !os.contains("macos") && !os.contains("all") { continue }
++            if !words(config["osarch"]).isDisjoint(with: arch64) { result.mac64 = true; return result }
++            let manifest = branchValue(section(depot["manifests"]), branch)
++            let encrypted = branchValue(section(depot["encryptedmanifests"]), branch)
++            let normal = section(manifest), secret = section(encrypted)
++            let gid = text(normal["gid"]).isEmpty ? text(manifest) : text(normal["gid"])
++            let encryptedGID = text(secret["encrypted_gid"] ?? secret["encryptedgid"]).isEmpty ? text(encrypted) : text(secret["encrypted_gid"] ?? secret["encryptedgid"])
++            // Do not substitute public for a missing beta manifest: its inherited
++            // version cannot be proved from this cache.
++            guard (UInt64(gid) ?? 0) != 0 || !encryptedGID.isEmpty else { complete = false; continue }
++            if text(config["language"]).isEmpty { result.required[id] = gid }
++            else { result.language[id] = gid }
++            if os.contains("macos") { result.macDepots.insert(id) }
++            versions[id] = ["config": config.mapValues(jsonValue), "gid": gid,
++                            "encrypted_gid": encryptedGID, "source_app": text(depot["gluon_source_app"])]
++        }
++        guard complete, !versions.isEmpty else { return result }
++        let macFlags = words(common["osextended"]).filter { $0.hasPrefix("macos") }.sorted()
++        let signature: [String: Any] = ["version": 1, "branch": branch, "osarch": text(common["osarch"]),
++            "mac_flags": macFlags, "launches": launches.mapValues(jsonValue), "depots": versions]
++        guard let data = try? JSONSerialization.data(withJSONObject: signature, options: [.sortedKeys]) else { return result }
++        result.signature = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++        return result
++    }
++}
++
++func isMac32(_ app: [String: Value], _ id: UInt32, _ libraries: [URL], _ evidence: Mac32Evidence, _ depots: MacDepotVersions) -> Bool {
++    let common = section(app["common"]), systems = words(common["oslist"])
++    guard text(common["type"]).lowercased() == "game", systems.contains("macos"),
++          systems.contains("windows") else { evidence.forget(id); return false }
++    let extended = words(common["osextended"])
++    let arch64: Set<String> = ["64", "arm64", "x86_64", "amd64"]
++    if extended.contains("macos64") || extended.contains("macosapplesilicon") || !words(common["osarch"]).isDisjoint(with: arch64) {
++        evidence.forget(id); return false
++    }
++    var installations: [(URL, [String: Value])] = []
++    var branches: Set<String> = []
++    for library in libraries {
++        let state = section(manifest(library.appendingPathComponent("steamapps/appmanifest_\(id).acf"))["appstate"])
++        if let installed = safeChild(library.appendingPathComponent("steamapps/common"), text(state["installdir"])) {
++            installations.append((installed, state))
++            let selected = text(section(state["userconfig"])["betakey"]).lowercased()
++            branches.insert(selected.isEmpty || selected == "default" ? "public" : selected)
++        }
++    }
++    guard branches.count <= 1 else { evidence.forget(id); return false }
++    let branch = branches.first ?? "public"
++    let active = section(section(app["config"])["launch"]).filter { branchApplies(section($0.value), branch) }
++    let launches = active.filter { _, value in
++        let entry = section(value), config = section(entry["config"])
++        // A combined windows,macos entry naming an EXE is a legacy platform
++        // rewrite, not positive evidence of a native Mac build.
++        let executable = text(entry["executable"])
++        return words(config["oslist"]).contains("macos") && !executable.lowercased().hasSuffix(".exe") && !executable.isEmpty
++    }
++    let hasWindowsLaunch = active.values.contains { value in
++        let entry = section(value), config = section(entry["config"])
++        let os = words(config["oslist"]), executable = text(entry["executable"]).lowercased()
++        return !executable.isEmpty && (os.contains("windows") || os.isEmpty && executable.hasSuffix(".exe"))
++    }
++    guard !launches.isEmpty, hasWindowsLaunch else { evidence.forget(id); return false }
++    let version = depots.fingerprint(app, branch, launches)
++    if version.mac64 { evidence.forget(id); return false }
++    let remembered = evidence.matches(id, version.signature)
++    var all32 = true, allDeclared32 = true, installed32 = false, unknownExecutable = false
++    for value in launches.values {
++        let launch = section(value), arch = words(section(launch["config"])["osarch"])
++        if !arch.isDisjoint(with: arch64) { evidence.forget(id); return false }
++        var proof32 = arch == ["32"] // Common osarch may describe the Windows build.
++        if !proof32 { allDeclared32 = false }
++        for (installed, state) in installations {
++            if let target = safeChild(installed, text(launch["executable"])) {
++                if let native = nativeExecutable(target) {
++                    if let bits = machoBits(native) {
++                        if bits == 64 { evidence.forget(id); return false }
++                        // Bind observed bytes to the installed Mac/shared manifest
++                        // versions before assigning the current catalogue signature.
++                        if version.attested(state) { proof32 = true; installed32 = true }
++                    } else if FileManager.default.fileExists(atPath: native.path) && !proof32 { unknownExecutable = true }
++                } else if FileManager.default.fileExists(atPath: target.path) && !proof32 { unknownExecutable = true }
++            }
++        }
++        if !proof32 { all32 = false }
++    }
++    if all32 {
++        if installed32 && !allDeclared32 { evidence.remember(id, version.signature) }
++        return true
++    }
++    if unknownExecutable { evidence.forget(id); return false }
++    return remembered
++}
++
+ // Steam treats an app without an oslist as Windows only.
+ // oslist can still say macos for a 32-bit build that no longer runs.
+ func printPlatforms(_ b: [UInt8]) throws {
+     var mac: [UInt32] = []
+     var windows: [UInt32] = []
++    var mac32: [UInt32] = []
++    let evidence = Mac32Evidence(), depots = MacDepotVersions()
++    let libraries = steamLibraries(URL(fileURLWithPath: args[1]).deletingLastPathComponent().deletingLastPathComponent())
+     let complete = try forEachApp(b) { id, keys in
+-        guard case .section(let common)? = try keys()["common"] else { return true }
++        let app = try keys()
++        guard case .section(let common)? = app["common"] else { return true }
++        if isMac32(app, id, libraries, evidence, depots) { mac32.append(id) }
+         guard case .string(let oslist)? = common["oslist"] else {
+             windows.append(id)
+             return true
+@@ -220,8 +593,11 @@
+         return true
+     }
+     guard complete else { throw VDFError.truncated }
++    evidence.save()
++    mac32 = mac32.filter { evidence.usable($0) }
+     print("mac=" + mac.map(String.init).joined(separator: ","))
+     print("windows=" + windows.map(String.init).joined(separator: ","))
++    print("mac32=" + mac32.map(String.init).joined(separator: ","))
+ }
+ 
+ do {

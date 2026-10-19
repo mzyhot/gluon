@@ -49,6 +49,8 @@ jobs:
 
       - name: Native launcher lifecycle fixtures
         run: packaging/check-launcher-host.sh
+      - name: Native first-window focus fixtures
+        run: python3 packaging/check-wine-focus.py --self-test
 
       - name: Cache downloads
         uses: actions/cache@v4
@@ -127,7 +129,7 @@ jobs:
           cmp build/probe-sources.sha256 build/expected-probe-sources.sha256
           expected_patch="$(packaging/apply-wine-patches.sh --hash)"
           test "$(cat build/gluon-wine/.gluon-wine-patches)" = "$expected_patch"
-          expected_key="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py; do
+          expected_key="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh patches/steam-helper-resource-ownership.patch; do
             printf '%s %s\n' "$helper" "$(shasum -a 256 "packaging/$helper" | cut -d' ' -f1)"
           done | shasum -a 256 | cut -d' ' -f1)"
           test "$(cat build/gluon-wine/.gluon-runtime-build-key)" = "$expected_key"
@@ -185,6 +187,18 @@ jobs:
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
 
+      - name: Check compiled Chromium child overlay routing
+        timeout-minutes: 4
+        run: python3 packaging/check-runtime-overlay.py build/gluon-wine build/graphics-probes
+
+      - name: Compare repeat launch overhead with v0.4.1-fixed
+        timeout-minutes: 10
+        run: |
+          git fetch --depth=1 origin tag v0.4.1-fixed
+          mkdir -p build/launch-baseline
+          git archive v0.4.1-fixed gluon tool/gluon tools/gluon-launcher-host.m tools/gluon-steam-client.h steamplay/run.sh | tar -x -C build/launch-baseline
+          python3 packaging/profile-launch.py build/gluon-wine build/graphics-probes build/launch-baseline
+
       - name: Build logs on failure
         if: failure()
         run: |
@@ -213,6 +227,8 @@ jobs:
           path: |
             build/graphics-probes/*.log
             build/graphics-probes/*.json
+            build/graphics-probes/profile-*/logs/*.log
+            build/evidence/*.log
             build/graphics-probes/*.exe
             build/original-run.json
             build/probe-sources.sha256

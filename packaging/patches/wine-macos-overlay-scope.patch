@@ -29,7 +29,7 @@
      return ret;
  }
  
-@@ -669,10 +683,42 @@
+@@ -669,10 +683,98 @@
      }
  }
  #endif
@@ -42,32 +42,88 @@
 + * such as "wineboot" is not one. */
 +static BOOL is_game_image( const char *program, const char *image_path )
 +{
-+    const char *path = program;
++    const char *path = program, *image = image_path;
 +    char *lower, *p;
 +    BOOL game;
 +
-+    if (image_path && ((image_path[0] && image_path[1] == ':') || !strncmp( image_path, "\\??\\", 4 )))
-+        path = image_path;
++    if (image && (!strncmp( image, "\\??\\", 4 ) || !strncmp( image, "\\\\?\\", 4 ))) image += 4;
++    if (image && ((image[0] >= 'A' && image[0] <= 'Z') || (image[0] >= 'a' && image[0] <= 'z')) &&
++        image[1] == ':' && (image[2] == '\\' || image[2] == '/')) path = image;
 +    if (!path || (!strchr( path, '/' ) && !strchr( path, '\\' ))) return FALSE;
 +    if (!(lower = strdup( path ))) return FALSE;
-+    for (p = lower; *p; p++) if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
-+    game = !strstr( lower, ":\\windows\\" ) && !strstr( lower, "/drive_c/windows/" );
++    for (p = lower; *p; p++)
++    {
++        if (*p >= 'A' && *p <= 'Z') *p += 'a' - 'A';
++        if (*p == '\\') *p = '/';
++    }
++    game = !strstr( lower, ":/windows/" ) && !strstr( lower, "/drive_c/windows/" );
 +    free( lower );
 +    return game;
 +}
  
-+static void scope_steam_overlay( const char *program, const char *image_path )
++/* Match the launcher's confirmed executable by file identity, using the actual
++ * PE image path rather than argv[2]. Drive links supply Wine's current mapping;
++ * unsupported/absent paths preserve injection. This requires no Wine subprocess
++ * or path API before ntdll's file subsystem has initialized. */
++static BOOL is_chromium_game_image( const char *image_path )
++{
++    const char *binding = getenv( "GLUON_CHROMIUM_OVERLAY_IMAGE" ), *path = image_path;
++    struct stat expected, actual;
++    char *unix_path, *p, drive;
++    BOOL same;
++
++    if (!binding || binding[0] != '/' || !path || !config_dir) return FALSE;
++    if (!strncmp( path, "\\??\\", 4 ) || !strncmp( path, "\\\\?\\", 4 )) path += 4;
++    if (!((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) ||
++        path[1] != ':' || (path[2] != '\\' && path[2] != '/')) return FALSE;
++    drive = path[0];
++    if (drive >= 'A' && drive <= 'Z') drive += 'a' - 'A';
++    if (asprintf( &unix_path, "%s/dosdevices/%c:%s", config_dir, drive, path + 2 ) < 0) return FALSE;
++    for (p = unix_path + strlen( config_dir ) + strlen( "/dosdevices/z:" ); *p; p++)
++        if (*p == '\\') *p = '/';
++    same = !stat( binding, &expected ) && S_ISREG( expected.st_mode ) &&
++           !stat( unix_path, &actual ) && S_ISREG( actual.st_mode ) &&
++           expected.st_dev == actual.st_dev && expected.st_ino == actual.st_ino;
++    free( unix_path );
++    return same;
++}
++
++/* The launcher identifies Chromium resources and keeps GPU presentation in the
++ * browser. Only exact, known background roles may skip native overlay startup.
++ * argv[0:2] are Wine's reserved loader slots; argv[2] is the Windows program.
++ * Unknown/ambiguous switches fail open, preserving the overlay. */
++static BOOL is_chromium_background_process( char **argv, const char *image_path )
++{
++    const char *marker = getenv( "GLUON_CHROMIUM_OVERLAY_SCOPE" ), *role = NULL;
++    unsigned int i;
++
++    if (!marker || strcmp( marker, "in-process-gpu-v1" )) return FALSE;
++    if (!argv || !argv[2]) return FALSE;
++    for (i = 3; argv[i]; i++)
++    {
++        if (!strcmp( argv[i], "--" )) break;
++        if (!strcmp( argv[i], "--type" )) return FALSE;
++        if (strncmp( argv[i], "--type=", 7 )) continue;
++        if (role) return FALSE;
++        role = argv[i] + 7;
++    }
++    return role && (!strcmp( role, "renderer" ) || !strcmp( role, "utility" ) ||
++                    !strcmp( role, "crashpad-handler" )) && is_chromium_game_image( image_path );
++}
++
++static void scope_steam_overlay( char **argv, const char *image_path )
 +{
 +    const char *overlay = getenv( "GLUON_OVERLAY_INSERT" );
  
 +    if (!overlay) return;
-+    if (*overlay && is_game_image( program, image_path )) setenv( "DYLD_INSERT_LIBRARIES", overlay, 1 );
++    if (*overlay && is_game_image( argv[2], image_path ) && !is_chromium_background_process( argv, image_path ))
++        setenv( "DYLD_INSERT_LIBRARIES", overlay, 1 );
 +    else unsetenv( "DYLD_INSERT_LIBRARIES" );
 +}
 +
  static void preloader_exec( char **argv, const char *image_path )
  {
-+    scope_steam_overlay( argv[2], image_path );
++    scope_steam_overlay( argv, image_path );
 +
  #ifdef HAVE_WINE_PRELOADER
      asprintf( &argv[0], "%s-preloader", argv[1] );

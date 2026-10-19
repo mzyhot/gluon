@@ -27,10 +27,13 @@ for defines, output in [([], 'steamclient.dylib'),
     subprocess.run(['clang', *architectures, '-dynamiclib', *defines,
                     'packaging/launcher-steam-client.c', '-o', fixtures + output],
                    check=True, timeout=60)
+subprocess.run(['clang', *common, '-dynamiclib', 'packaging/launcher-appkit-startup.m',
+                '-o', fixtures + 'appkit-startup.dylib'], check=True, timeout=60)
 command = [sys.executable, 'packaging/test-launcher-host.py',
            'build/launcher-host/gluon-launcher-host',
            fixtures + 'launcher-host-controller', fixtures + 'launcher-steam-owner',
-           fixtures + 'steamclient.dylib', fixtures + 'steamclient-missing.dylib']
+           fixtures + 'steamclient.dylib', fixtures + 'steamclient-missing.dylib',
+           fixtures + 'appkit-startup.dylib']
 process = subprocess.Popen(command, start_new_session=True)
 try:
     code = process.wait(timeout=60)
@@ -42,3 +45,4 @@ except subprocess.TimeoutExpired:
     raise SystemExit('Launcher host fixtures exceeded the 60-second hard deadline.')
 raise SystemExit(code)
 PY
+python3 packaging/check-native-memory.py

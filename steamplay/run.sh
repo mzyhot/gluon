@@ -24,10 +24,9 @@ case "${tool_directory##*/}" in
     ;;
   gluon-proton)
     [ -n "${STEAM_COMPAT_DATA_PATH:-}" ] || { echo 'gluon: missing Cloud compatibility directory' >&2; exit 1; }
-    cloud_layout="$(PYTHONPATH="$gluon_home/lib" PYTHONDONTWRITEBYTECODE=1 /usr/bin/arch -arm64 /usr/bin/python3 \
-      -m gluon.cloud --check-app "${STEAM_COMPAT_APP_ID:-${SteamAppId:-0}}" --compat "$STEAM_COMPAT_DATA_PATH" --show-error)" || exit 1
-    unset GLUON_NATIVE_CLOUD
-    [ "$cloud_layout" != prefix ] || export GLUON_NATIVE_CLOUD=1
+    # The launcher checks the final selected prefix once, after applying the
+    # game's settings. The native guard already protected Steam's earlier sync.
+    export GLUON_NATIVE_CLOUD=1
     ;;
 esac
 # Steam references its Windows install-script evaluator under legacycompat. Obtain

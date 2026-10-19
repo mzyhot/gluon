@@ -17,6 +17,7 @@
 
 extern char **environ;
 static volatile sig_atomic_t received_signal;
+static double host_started;
 
 static void remember_signal(int number)
 {
@@ -104,11 +105,13 @@ static NSRunningApplication *steam_owner(NSString *directory)
 @property(nonatomic, strong) NSRunningApplication *steamOwner;
 @property(nonatomic, strong) dispatch_semaphore_t steamWatcherDone;
 @property(nonatomic) int steamLog;
+@property(nonatomic, strong) NSString *steamLogPath;
 @property(nonatomic) off_t steamLogOffset;
 @property(nonatomic, strong) NSMutableData *steamLogLine;
 @property(nonatomic) double steamExitDeadline;
 @property(nonatomic) double raiseDeadline;
 - (void)poll;
+- (void)startChild;
 @end
 
 @implementation GluonLauncherHost
@@ -124,6 +127,9 @@ static NSRunningApplication *steam_owner(NSString *directory)
     self.finished = YES;
     self.result = status;
     [self.timer invalidate];
+    self.timer = nil;
+    if (self.steamLog >= 0) { close(self.steamLog); self.steamLog = -1; }
+    self.steamLogLine = nil;
     [NSApp stop:nil];
     /* Wake run's nextEvent wait when finish was called by a timer/delegate. */
     [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
@@ -184,6 +190,7 @@ static NSRunningApplication *steam_owner(NSString *directory)
         return;
     }
     self.steamLog = log;
+    self.steamLogPath = path;
     self.steamLogOffset = info.st_size;
     self.steamLogLine = [NSMutableData data];
     fprintf(stderr, "gluon: Steam's exit request will stop this session\n");
@@ -204,8 +211,18 @@ static NSRunningApplication *steam_owner(NSString *directory)
 
 - (void)readSteamConsole
 {
-    struct stat info;
-    if (self.steamLog < 0 || fstat(self.steamLog, &info)) return;
+    struct stat info, named;
+    if (self.steamLog < 0) return;
+    if (fstat(self.steamLog, &info) || stat(self.steamLogPath.fileSystemRepresentation, &named) ||
+        named.st_dev != info.st_dev || named.st_ino != info.st_ino)
+    {
+        /* A rotated/missing log must not silently remove Steam quit handling. */
+        close(self.steamLog);
+        self.steamLog = -1;
+        fprintf(stderr, "gluon: Steam exit log changed; enabling SDK callback fallback\n");
+        [self watchSteamShutdown];
+        return;
+    }
     if (info.st_size < self.steamLogOffset)
     {
         self.steamLogOffset = 0;
@@ -354,7 +371,15 @@ static NSRunningApplication *steam_owner(NSString *directory)
 - (void)watchSteamShutdown
 {
     NSString *directory = self.steamDirectory;
-    if (!directory) return;
+    if (!directory || self.steamWatcherDone) return;
+    if (self.steamOwner && self.steamLog >= 0)
+    {
+        /* Both validated monitors are already active. Loading a complete second
+         * Steam SDK client per game adds threads, IPC and memory during startup.
+         * Keep it as a fallback if the log disappears or cannot be opened. */
+        fprintf(stderr, "gluon: Steam process and exit-log watches active; SDK callback fallback idle\n");
+        return;
+    }
     /* Steam IPC or library initialization must never block Cocoa Stop, shell
      * reaping or the cleanup deadline. Only the main thread signals the child. */
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
@@ -368,10 +393,9 @@ static NSRunningApplication *steam_owner(NSString *directory)
     }];
 }
 
-- (void)applicationDidFinishLaunching:(NSNotification *)notification
+- (void)startChild
 {
-    (void)notification;
-    if (self.finished || self.stopping) return;
+    if (self.finished || self.stopping || self.child) return;
     if (received_signal)
     {
         [self requestStop:(int)received_signal];
@@ -402,9 +426,24 @@ static NSRunningApplication *steam_owner(NSString *directory)
         [self finish:126];
         return;
     }
+    fprintf(stderr, "gluon: launcher host started shell after %.1f ms\n",
+            (NSProcessInfo.processInfo.systemUptime - host_started) * 1000.0);
     /* Cocoa callbacks and the timer are serialized on the main thread. A
      * POSIX signal during spawn only sets a flag, checked after PID capture. */
     if (received_signal) [self requestStop:(int)received_signal];
+}
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification
+{
+    (void)notification;
+    if (self.finished || self.stopping) return;
+    fprintf(stderr, "gluon: launcher host %d Cocoa ready after %.1f ms\n", getpid(),
+            (NSProcessInfo.processInfo.systemUptime - host_started) * 1000.0);
+    if (received_signal)
+    {
+        [self requestStop:(int)received_signal];
+        return;
+    }
     [self watchSteamShutdown];
 }
 
@@ -491,27 +530,37 @@ int main(int argc, char **argv)
 
     @autoreleasepool
     {
+        host_started = NSProcessInfo.processInfo.systemUptime;
         GluonLauncherHost *host = [GluonLauncherHost new];
         /* Reuse the original argv allocation without copying argument bytes. */
         argv[0] = "/bin/bash";
         host.arguments = argv;
-        [NSApplication sharedApplication];
-        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        /* Capture the exit-log offset before starting the session, so even an
+         * immediate Steam quit is retained while Cocoa starts. The shell can
+         * prepare Wine in parallel with AppKit registration and owner lookup.
+         * Signal handling and child ownership are already established. */
         host.steamDirectory = steam_client_directory();
-        host.steamOwner = steam_owner(host.steamDirectory);
         [host watchSteamConsole:steam_console_log(host.steamDirectory)];
-        if (host.steamOwner)
-            fprintf(stderr, "gluon: Steam application %d exit will stop this session\n",
-                host.steamOwner.processIdentifier);
-        else if (host.steamDirectory)
-            fprintf(stderr, "gluon: owning Steam application not identified; exit fallback inactive\n");
-        NSApp.delegate = host;
-        host.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
-            (void)timer;
-            [host poll];
-        }];
-        [NSRunLoop.mainRunLoop addTimer:host.timer forMode:NSRunLoopCommonModes];
-        [NSApp run];
+        [host startChild];
+        if (!host.finished)
+        {
+            [NSApplication sharedApplication];
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+            host.steamOwner = steam_owner(host.steamDirectory);
+            if (host.steamOwner)
+                fprintf(stderr, "gluon: Steam application %d exit will stop this session\n",
+                    host.steamOwner.processIdentifier);
+            else if (host.steamDirectory)
+                fprintf(stderr, "gluon: owning Steam application not identified; exit fallback inactive\n");
+            NSApp.delegate = host;
+            __weak GluonLauncherHost *weakHost = host;
+            host.timer = [NSTimer timerWithTimeInterval:0.1 repeats:YES block:^(NSTimer *timer) {
+                (void)timer;
+                [weakHost poll];
+            }];
+            [NSRunLoop.mainRunLoop addTimer:host.timer forMode:NSRunLoopCommonModes];
+            [NSApp run];
+        }
         /* Let the watcher release its Steam pipe, but never wait on blocked IPC. */
         if (host.steamWatcherDone)
             dispatch_semaphore_wait(host.steamWatcherDone,

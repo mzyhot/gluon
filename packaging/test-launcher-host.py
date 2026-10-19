@@ -20,12 +20,12 @@ RELEASED = ["release-user", "release-pipe", "release-thread-memory"]
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or sys.platform != "darwin":
         raise SystemExit("Launcher host fixtures require a GitHub Actions macOS runner.")
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 7:
         raise SystemExit("Usage: test-launcher-host.py HOST CONTROLLER STEAM_OWNER "
-                         "STEAM_CLIENT STEAM_CLIENT_MISSING_CALLBACK")
+                         "STEAM_CLIENT STEAM_CLIENT_MISSING_CALLBACK APPKIT_STARTUP_PROBE")
     if os.getpgrp() != os.getpid():
         raise SystemExit("Run through check-launcher-host.sh in its owned fixture process group.")
-    host, controller, steam_owner, steam_client, steam_client_missing = (
+    host, controller, steam_owner, steam_client, steam_client_missing, appkit_probe = (
         str(Path(arg).resolve()) for arg in sys.argv[1:])
     active = []
     deadline = time.monotonic() + 60
@@ -59,6 +59,7 @@ fi
 trap 'printf "TERM\\n" >> "$result"; exit 143' TERM
 trap 'printf "INT\\n" >> "$result"; exit 130' INT
 trap 'printf "HUP\\n" >> "$result"; exit 129' HUP
+printf 'spawned\\n' >> "$result.spawned"
 printf 'ready\\n' > "$result.ready"
 while :; do /bin/sleep 0.05; done
 ''')
@@ -77,7 +78,8 @@ while :; do /bin/sleep 0.05; done
 
         def ready(process, name):
             path = Path(str(name) + ".ready")
-            while not path.exists():
+            while (not path.exists() or
+                   f"launcher host {process.pid} Cocoa ready" not in host_output()):
                 if process.poll() is not None:
                     raise AssertionError(f"Fixture exited before ready: {process.returncode}")
                 time.sleep(min(0.025, left()))
@@ -151,6 +153,25 @@ while :; do /bin/sleep 0.05; done
                 assert invalid.returncode == 64
             wait(spawn("status", "7", "one argument", "*.exe"), 7)
             print("launcher-host: arguments, marker and exit status passed", flush=True)
+
+            # Delay AppKit until it sees the real shell's marker. This catches
+            # startup serialization without changing production timing or
+            # relying on a runner's scheduling speed. Cocoa Stop must still work.
+            evidence = root / "parallel-startup"
+            order = root / "parallel-startup.order"
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith(("Steam", "STEAM_", "DYLD_"))}
+            environment.update(DYLD_INSERT_LIBRARIES=appkit_probe,
+                               GLUON_FIXTURE_CHILD_READY=str(evidence) + ".ready",
+                               GLUON_FIXTURE_COCOA_RESULT=str(order))
+            process = spawn("wait", str(evidence), environment=environment)
+            ready(process, evidence)
+            assert order.read_text() == "child-first\n", "AppKit startup blocked the shell"
+            assert Path(str(evidence) + ".spawned").read_text() == "spawned\n", "Shell started twice"
+            cocoa_quit(process)
+            wait(process, 143)
+            assert evidence.read_text() == "TERM\n"
+            print("launcher-host: shell overlaps AppKit startup and retains Cocoa Stop passed", flush=True)
 
             # SIG_IGN and a blocked TERM inherited from Steam must not reach Bash.
             for number, label in ((signal.SIGTERM, "TERM"), (signal.SIGINT, "INT"),
@@ -262,6 +283,39 @@ while :; do /bin/sleep 0.05; done
             assert output.count("Steam is exiting; stopping session") == 2, output
             assert output.count("Steam refused its exit request; session continues") == 2, output
             print("launcher-host: Steam exit request stopped every running game passed", flush=True)
+
+            # A verified owner and readable exit log need no extra SDK client.
+            # If Steam rotates that log, the callback fallback must take over.
+            steam, environment = make_steam("fast-monitors")
+            console = steam.parents[3] / 'logs/console_log.txt'
+            console.parent.mkdir()
+            console.touch()
+            steam_app = start_steam(steam)
+            evidence = root / 'fast-monitors-game'
+            game = spawn('wait', str(evidence), environment=environment)
+            ready(game, evidence)
+            time.sleep(min(.3, left()))
+            assert steam_events(steam, game) == [], 'Normal launch loaded an unnecessary Steam SDK client'
+            with console.open('a') as output:
+                output.write(exit_line.format(3))
+            wait(game, 143)
+            assert evidence.read_text() == 'TERM\n'
+            assert steam_events(steam, game) == [], 'Exit-log handling needed an SDK client'
+
+            evidence = root / 'rotated-monitors'
+            game = spawn('wait', str(evidence), environment=environment)
+            ready(game, evidence)
+            assert steam_events(steam, game) == []
+            console.rename(console.with_suffix('.previous'))
+            console.touch()
+            steam_event(steam, game, CONNECTED[-1])
+            (steam / 'shutdown').touch()
+            wait(game, 143)
+            assert evidence.read_text() == 'TERM\n'
+            assert steam_events(steam, game) == CONNECTED + ['get:704', 'free:704'] + RELEASED
+            steam_app.terminate()
+            steam_app.wait(timeout=min(5, left()))
+            print('launcher-host: SDK-free normal launch and rotated-log fallback passed', flush=True)
 
             # A Steam IPC call that never returns must not delay Stop or host exit.
             steam, environment = make_steam("blocked", mode="block-get")

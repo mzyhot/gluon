@@ -24,6 +24,8 @@ jobs:
         run: brew install cmake
       - name: Native launcher lifecycle fixtures
         run: packaging/check-launcher-host.sh
+      - name: Native first-window focus fixtures
+        run: python3 packaging/check-wine-focus.py --self-test
       - name: Build and inspect Steam Play payload
         run: |
           set -o pipefail
