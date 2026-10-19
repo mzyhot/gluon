@@ -113,8 +113,10 @@ def main():
         (cloud_documents / 'cloud-fixture.txt').write_text('Steam-written-save\n')
         run("wine-prefix", [wine, "wineboot", "--init"], seconds=60)
         # wineboot can return while setup/service children are still running.
-        # Match the launcher's first-run barrier before probing other DLLs.
-        run("wine-prefix-idle", [server, "-w"], seconds=30)
+        # Hosted first boot can exceed the ordinary 30-second probe budget.
+        # Require natural idle, matching the launcher's first-run barrier;
+        # never kill setup processes to make this prerequisite pass.
+        run("wine-prefix-idle", [server, "-w"], seconds=90)
         cloud_command('--check', str(compat))
         # Batch files avoid an extra Unix argv -> Windows command-line quoting
         # layer around cmd's /c expression. Quotes belong to the Windows script.
