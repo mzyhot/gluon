@@ -20,6 +20,7 @@ runtime, probes, baseline = (Path(p).resolve() for p in sys.argv[1:])
 steam = probes / 'cloud-steam'
 compat = steam / 'steamapps/compatdata/123'
 prefix = compat / 'pfx-wine'
+sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / 'tests'))
 from test_migration import cache_bytes
 (steam / 'appcache').mkdir(exist_ok=True)
@@ -83,6 +84,19 @@ medians = {label: round(statistics.median(r['ready_seconds'] for r in rows
            for label in ('released', 'candidate')}
 (probes / 'launch-profile.json').write_text(json.dumps({'samples': rows, 'warm_medians': medians}, indent=2))
 print('Windows command fixture startup (no game/Steam/GPU):', medians)
+with (probes / 'wine-native-leaks.log').open('w') as output:
+    scan = subprocess.run(['/usr/bin/leaks', '--atExit', '--', str(runtime / 'bin/wine'),
+                           'cmd', '/c', 'exit', '0'], env=dict(base_env, GLUON_HOME=str(home)),
+                          stdout=output, stderr=subprocess.STDOUT, timeout=60)
+subprocess.run([str(runtime / 'bin/wineserver'), '-k'], env=base_env, check=True, timeout=10)
+subprocess.run([str(runtime / 'bin/wineserver'), '-w'], env=base_env, check=True, timeout=10)
+# Keep a third-party Wine finding visible as evidence, distinct from the
+# first-party host/guard checks that gate the build. Never label an error clean.
+native_scan = {'exit_code': scan.returncode,
+               'result': 'clean' if scan.returncode == 0 else 'findings-or-scan-error',
+               'scope': 'Wine native allocations while running a Windows command, not game heaps'}
+(probes / 'wine-native-leaks.json').write_text(json.dumps(native_scan, indent=2))
+print('Wine native memory scan:', native_scan)
 summary = os.environ.get('GITHUB_STEP_SUMMARY')
 if summary:
     with open(summary, 'a') as output:
