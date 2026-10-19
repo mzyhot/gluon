@@ -270,7 +270,7 @@ while :; do /bin/sleep 0.05; done
             console.parent.mkdir()
             console.touch()
             steam_app = start_steam(steam)
-            evidence = root / 'fast-monitors'
+            evidence = root / 'fast-monitors-game'
             game = spawn('wait', str(evidence), environment=environment)
             ready(game, evidence)
             time.sleep(min(.3, left()))
