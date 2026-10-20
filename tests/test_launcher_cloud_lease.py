@@ -112,19 +112,23 @@ with (root / 'wine-events').open('a') as stream:
 
     def start(self):
         self.process = subprocess.Popen([str(self.launcher), 'waitforexitandrun', str(self.game)],
-                                        env=self.environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                        env=self.environment, cwd=self.root,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def early_check_finished(self):
         deadline = time.monotonic() + 4
         while not (self.root / 'early-checked').exists():
-            self.assertIsNone(self.process.poll())
+            if self.process.poll() is not None:
+                log = self.home / 'logs/launch-123.log'
+                self.fail('fixture exited before preparation: ' + (log.read_text() if log.exists() else repr(self.process.communicate())))
             self.assertLess(time.monotonic(), deadline)
             time.sleep(0.01)
 
     def test_unpatched_wine_is_leased_and_rechecked_before_any_runtime_command(self):
         self.start()
         output = self.process.communicate(timeout=5)
-        self.assertEqual(self.process.returncode, 0, output)
+        self.assertEqual(self.process.returncode, 0,
+                         (output, (self.home / 'logs/launch-123.log').read_text()))
         self.assertTrue((self.root / 'late-checked').exists())
         events = [json.loads(line) for line in (self.root / 'wine-events').read_text().splitlines()]
         self.assertTrue(all(event['lease_held'] and not event['lease_inherited'] for event in events), events)
@@ -160,7 +164,8 @@ with (root / 'wine-events').open('a') as stream:
         self.state.write_text('native')
         self.start()
         output = self.process.communicate(timeout=5)
-        self.assertEqual(self.process.returncode, 0, output)
+        self.assertEqual(self.process.returncode, 0,
+                         (output, (self.home / 'logs/launch-123.log').read_text()))
         self.assertTrue((self.root / 'late-checked').exists())
 
 
