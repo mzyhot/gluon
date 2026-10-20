@@ -33,6 +33,15 @@ hooks default unmapped Windows-only games to Gluon. Steam's Compatibility
 settings provide tool overrides. Hook availability depends on the Steam build
 and successful runtime signature validation.
 
+For older Mac games, open **Steam > Settings > Gluon**, enable **Use Gluon for
+32-bit Mac games**, then restart Steam. The automatic setting preserves native
+64-bit Mac launches and explicit tool choices. See [Steam Settings](docs/STEAM-SETTINGS.md)
+for how games are identified.
+
+Steam Cloud follows Steam's existing settings automatically. Gluon preserves
+existing saves and reports conflicting prefix layouts before starting the game;
+there is no separate Cloud mode to enable.
+
 ```sh
 "$HOME/Library/Application Support/Gluon/bin/gluonctl" status
 "$HOME/Library/Application Support/Gluon/bin/gluonctl" repair

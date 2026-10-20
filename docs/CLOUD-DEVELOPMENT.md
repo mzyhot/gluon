@@ -3,11 +3,11 @@
 Run macOS builds and runtime checks in GitHub Actions. Codespaces is optional for
 source review and Linux source validation. Local Mac work normally consists of
 reading/editing files and controlling GitHub through its API or CLI. Compilation
-and full runtime builds stay on Actions. The owner's latest instruction permits
-one explicitly authorized short local test at a time, with reduced workload and
-priority, a hard timeout, stop on failure and prefix-specific cleanup. Never
-repeat the failed partial OpenGL-module substitution or run parallel local probes.
-Temperature polling was withdrawn; do not start it without a new request.
+and runtime checks stay on Actions. The owner will perform personal Steam and
+game acceptance tests when available. Do not launch games, change their prefixes
+or install a development runtime for testing without a new request. Local static
+syntax/patch inspection and read-only investigation remain separate from runtime
+execution. Temperature polling was withdrawn; do not start it without a new request.
 
 ## Codespaces
 
@@ -24,14 +24,16 @@ timeout 19m bash packaging/check-sources.sh
 ```
 
 This checks tracked shell/Python syntax, downloads the same SHA-256-pinned
-CodeWeavers open-source archive as the runtime build, and extracts only the six
-Wine/DXVK source files needed for validation. It applies the Wine alias patch,
+CodeWeavers open-source archive as the runtime build, and extracts the
+Wine/DXVK source files needed for validation. It applies the Wine source patches,
 verifies repeat application, checks all 34 aliases and their signatures against
 the pinned Khronos XML registry, runs the validator's negative cases, and checks
 all three DXVK patches. The helper rejects macOS and environments outside GitHub
 Codespaces or GitHub Actions. Download cache contents are reverified on every run.
 
-No compiler or native graphics API runs during these checks. Linux Codespaces
+Actions also compiles isolated source-extracted lifecycle and ownership fixtures
+with sanitizers and behavioral negative controls. No Wine runtime or native
+graphics API runs during these checks. Linux Codespaces
 cannot verify Apple's Metal/OpenGL behavior, Rosetta, macOS WGL contexts, or game
 rendering. A passing source check therefore establishes source consistency only.
 
