@@ -32,12 +32,14 @@ const jsx=(type,props)=>({type,...props});
 const page = settings.render(jsx), label=page.children[0], input=label.children[0];
 assert.equal(input.role,'switch');assert.equal(input.defaultChecked,false);
 assert.equal(label.children[1].children,'Use Gluon for 32-bit Mac games');
+assert.match(page.children[1].children,/Restart Steam after changing/,'restart requirement stays visible before and after saving');
+assert.match(page.children[2].children,/support is off/,'an unchecked saved setting reports the effective policy');
 const status={textContent:''};
 const target={checked:true,disabled:false,closest:()=>({querySelector:()=>status})};
 (async()=>{
  await input.onChange({currentTarget:target});
  assert.equal(context.calls[0][0],0);assert.equal(context.calls[0][1],'__gluon_settings_mac32_on_v1');
- assert.equal(settings.autoMac32,true);assert.equal(target.disabled,false);assert.match(status.textContent,/Restart Steam/);assert.equal(settings.effectiveMac32,false);
+ assert.equal(settings.autoMac32,true);assert.equal(target.disabled,false);assert.match(status.textContent,/Saved\. Restart Steam.*support on/);assert.equal(settings.effectiveMac32,false);
  context.fail=true;target.checked=false;
  await input.onChange({currentTarget:target});
  assert.equal(target.checked,true);assert.equal(settings.autoMac32,true);assert.match(status.textContent,/could not be saved/);

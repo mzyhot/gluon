@@ -13,15 +13,28 @@ launches, rewrite app metadata, change save locations or create per-game mapping
 The classifier requires a native Mac launch entry and a Windows launch. It accepts
 explicit 32-bit architecture on a Mac launch entry, or an installed 32-bit Mach-O
 executable (including an app bundle's executable) whose installed Mac/shared depot
-manifests match that branch's current versions. The common `osarch=32` field is
-not treated as proof of Mac architecture. A 64-bit or Apple Silicon declaration,
-64-bit executable or universal binary with a 64-bit slice always vetoes automatic
-selection. Legacy Windows EXEs falsely tagged as Mac builds are excluded.
+manifests match that branch's current versions. Valve shell wrappers such as
+Half-Life's `hl.sh` are resolved from their literal `GAMEEXE` defaults to the
+installed Mac executable without running the script. The wrapper must use a recognized executable invocation, a script-local
+`GAMEROOT`, and literal `GAMEEXE` assignments. Printed/commented commands, dynamic
+assignments, unrelated files and missing Mac targets do not count as proof. A 64-bit executable
+alternative vetoes the wrapper.
+
+Common `osarch` and shared-depot architecture can describe a different platform;
+neither is treated as a declaration about the Mac executable. A Mac-specific
+32-bit depot alone also cannot prove an uninstalled launch: the executable may
+live in a different shared depot. A Mac-specific
+64-bit or Apple Silicon declaration, 64-bit executable or universal binary with a
+64-bit slice always vetoes automatic selection. Legacy Windows EXEs falsely
+tagged as Mac builds are excluded. Conditional language and violence depots are
+not required when absent; if installed, their manifests must match before the
+observed executable is attested.
 
 Missing `macos64` metadata is not proof of 32-bit architecture. Games with unknown
 architecture stay native until positive evidence becomes available. In particular,
-uninstalled old games and script launchers that do not declare their Mac
-architecture cannot safely be classified from the local cache alone. The native
+uninstalled old games and unrecognized or dynamic script launchers that do not
+declare their Mac architecture cannot safely be classified from the local cache
+alone. The native
 catalog refreshes in the background after installation or metadata updates; stale
 app metadata is rejected while it refreshes.
 
@@ -40,7 +53,9 @@ unversioned Mac content and corrupt or unwritable evidence stay conservative.
 The preference lives in `Gluon/steamplay/auto-mac32` in the user's Application
 Support folder and persists across installer upgrades. The active Steam process
 keeps its startup policy until restart so that its separate Settings and Library
-windows agree on launch availability.
+windows agree on launch availability. The Settings page always explains the
+restart requirement and shows whether the saved choice is active or pending a
+restart.
 
 `steamplay/check-settings.py` runs only on GitHub macOS runners. It exercises the
 built appinfo helper with disposable metadata and Mach-O fixtures, production

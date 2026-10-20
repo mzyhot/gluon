@@ -684,7 +684,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
  
  let args = CommandLine.arguments
  let platforms = args.count == 3 && args[2] == "--platforms"
-@@ -203,13 +205,384 @@
+@@ -203,13 +205,468 @@
      return found
  }
  
@@ -795,6 +795,84 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +        if ![UInt32(7), 12, 18].contains(cpu) { return nil }
 +    }
 +    return 32
++}
++
++// Some Valve Mac launches name a shell wrapper (hl.sh/hl2.sh) rather than
++// the Mach-O. Resolve only its literal GAMEEXE default, never execute the
++// script, expand an environment variable or guess from an unrelated dylib.
++// Every non-Linux default must be present and parseable; a 64-bit alternative
++// vetoes the wrapper. General/dynamic shell launchers remain unknown.
++func installedLaunchBits(_ launch: URL, _ missingWrapperTarget: inout Bool) -> Int? {
++    if let bits = machoBits(launch) { return bits }
++    guard launch.pathExtension.lowercased() == "sh",
++          let attributes = try? FileManager.default.attributesOfItem(atPath: launch.path),
++          let size = attributes[.size] as? NSNumber, size.intValue <= 128 << 10,
++          let data = try? Data(contentsOf: launch),
++          let script = String(data: data, encoding: .utf8), !script.contains("\0"),
++          let first = script.split(separator: "\n", omittingEmptySubsequences: false).first,
++          ["#!/bin/bash", "#!/bin/sh", "#!/usr/bin/env bash", "#!/usr/bin/env sh"].contains(String(first)) else { return nil }
++    let whole = NSRange(script.startIndex..<script.endIndex, in: script)
++    let game = #"(?:"\$\{GAMEROOT\}/\$\{GAMEEXE\}"|"\$\{GAMEROOT\}"/\$\{GAMEEXE\})"#
++    let debugger = #"(?:\$\{DEBUGGER\}|\$DEBUGGER)"#
++    // The default command and Valve's gdb/lldb paths are recognized separately
++    // from echo output. A comment or printed example is never an invocation.
++    let command = #"(?:exec[ \t]+)?(?:"# + debugger + #"(?:[ \t]+-x[ \t]+"\$ARGSFILE"[ \t]+\$DEBUGGER_ARGS[ \t]+--args|[ \t]+-s[ \t]+"\$ARGSFILE"[ \t]+--)?[ \t]+)?"# + game + #"[ \t]+"\$@"[ \t]*(?:#.*)?$"#
++    guard let assignments = try? NSRegularExpression(pattern: #"(?m)^[ \t]*(?:export[ \t]+)?GAMEEXE=(?:"([A-Za-z0-9_.+-]+)"|'([A-Za-z0-9_.+-]+)'|([A-Za-z0-9_.+-]+))[ \t]*(?:#.*)?$"#),
++          let writes = try? NSRegularExpression(pattern: #"\bGAMEEXE[ \t]*\+?="#),
++          let invoke = try? NSRegularExpression(pattern: #"^[ \t]*"# + command),
++          let printed = try? NSRegularExpression(pattern: #"^[ \t]*echo[ \t]+"# + command),
++          let emptyCheck = try? NSRegularExpression(pattern: #"^[ \t]*if[ \t]+\[[ \t]+-z[ \t]+(?:\$GAMEEXE|"\$GAMEEXE")[ \t]+\][ \t]*;[ \t]*then[ \t]*(?:#.*)?$"#),
++          let root = try? NSRegularExpression(pattern: #"(?m)^[ \t]*GAMEROOT=\$\(cd[ \t]+"\$\{0%/\*\}"[ \t]+&&[ \t]+echo[ \t]+(?:\$PWD|"\$PWD")\)[ \t]*$"#),
++          let rootWrites = try? NSRegularExpression(pattern: #"\bGAMEROOT[ \t]*\+?="#),
++          let indirect = try? NSRegularExpression(pattern: #"\b(?:eval|source)\b|(?:^|[;&|])[ \t]*\.[ \t]"#),
++          let otherLocal = try? NSRegularExpression(pattern: #"^[ \t]*(?:exec[ \t]+)?(?:\./|"?\$\{GAMEROOT\}(?:"?/))"#) else { return nil }
++    let matches = assignments.matches(in: script, range: whole)
++    guard !matches.isEmpty, matches.count == writes.numberOfMatches(in: script, range: whole),
++          root.numberOfMatches(in: script, range: whole) == 1,
++          rootWrites.numberOfMatches(in: script, range: whole) == 1 else { return nil }
++    var hasInvocation = false
++    for line in script.components(separatedBy: "\n") {
++        let trimmed = line.trimmingCharacters(in: .whitespaces)
++        if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
++        let range = NSRange(line.startIndex..<line.endIndex, in: line)
++        if indirect.numberOfMatches(in: line, range: range) != 0 { return nil }
++        if invoke.numberOfMatches(in: line, range: range) == 1 { hasInvocation = true; continue }
++        // Exhaust the supported references, rejecting reads, +=, indirect
++        // writes and alternate command forms rather than interpreting shell.
++        if line.contains("GAMEEXE") {
++            if assignments.numberOfMatches(in: line, range: range) == 1 ||
++                printed.numberOfMatches(in: line, range: range) == 1 ||
++                emptyCheck.numberOfMatches(in: line, range: range) == 1 { continue }
++            return nil
++        }
++        if otherLocal.numberOfMatches(in: line, range: range) != 0 { return nil }
++    }
++    guard hasInvocation else { return nil }
++    let stem = launch.deletingPathExtension().lastPathComponent
++    var found32 = false, foundMacDefault = false, missing = false
++    for match in matches {
++        let name = (1...3).compactMap { index -> String? in
++            guard let range = Range(match.range(at: index), in: script) else { return nil }
++            return String(script[range])
++        }.first ?? ""
++        // These wrappers share Linux and Mac defaults. An absent ELF launch
++        // from the Linux branch cannot identify a Mac architecture.
++        if name == stem + "_linux" { continue }
++        let macDefault = name == stem + "_osx" || name == stem + "_mac" || name == stem + "_macos"
++        guard let target = safeChild(launch.deletingLastPathComponent(), name) else { return nil }
++        if !FileManager.default.fileExists(atPath: target.path), macDefault {
++            missing = true; foundMacDefault = true; continue
++        }
++        guard let bits = machoBits(target) else { return nil }
++        if bits == 64 { return 64 }
++        if macDefault { foundMacDefault = true }
++        found32 = true
++    }
++    // A recognized wrapper may remain in a shared depot after Steam removes
++    // the native binary. Retain only an existing version-bound proof then;
++    // missing bytes never mint a fresh observation.
++    if missing { missingWrapperTarget = foundMacDefault; return nil }
++    return found32 && foundMacDefault ? 32 : nil
 +}
 +
 +func steamLibraries(_ root: URL) -> [URL] {
@@ -910,7 +988,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +    var signature: String? = nil
 +    var mac64 = false
 +    var required: [String: String] = [:]
-+    var language: [String: String] = [:]
++    var conditional: [String: String] = [:]
 +    var macDepots: Set<String> = []
 +    func attested(_ state: [String: Value]) -> Bool {
 +        var installed: [String: String] = [:]
@@ -922,11 +1000,11 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +                if (UInt64(gid) ?? 0) != 0 { installed[id] = gid }
 +            }
 +        }
-+        guard signature != nil, !required.isEmpty || !language.isEmpty else { return false }
++        guard signature != nil, !required.isEmpty || !conditional.isEmpty else { return false }
 +        for (id, gid) in required where gid.isEmpty || installed[id] != gid { return false }
-+        for (id, gid) in language where installed[id] != nil && (gid.isEmpty || installed[id] != gid) { return false }
++        for (id, gid) in conditional where installed[id] != nil && (gid.isEmpty || installed[id] != gid) { return false }
 +        if !macDepots.isEmpty && !macDepots.contains(where: { installed[$0] != nil }) { return false }
-+        return required.keys.contains { installed[$0] != nil } || language.keys.contains { installed[$0] != nil }
++        return required.keys.contains { installed[$0] != nil } || conditional.keys.contains { installed[$0] != nil }
 +    }
 +}
 +
@@ -963,7 +1041,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +            guard let depot = resolved(declared, id) else { complete = false; continue }
 +            let config = section(depot["config"]), os = words(config["oslist"])
 +            if !os.isEmpty && !os.contains("macos") && !os.contains("all") { continue }
-+            if !words(config["osarch"]).isDisjoint(with: arch64) { result.mac64 = true; return result }
++            if os.contains("macos") && !words(config["osarch"]).isDisjoint(with: arch64) { result.mac64 = true; return result }
 +            let manifest = branchValue(section(depot["manifests"]), branch)
 +            let encrypted = branchValue(section(depot["encryptedmanifests"]), branch)
 +            let normal = section(manifest), secret = section(encrypted)
@@ -972,15 +1050,20 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +            // Do not substitute public for a missing beta manifest: its inherited
 +            // version cannot be proved from this cache.
 +            guard (UInt64(gid) ?? 0) != 0 || !encryptedGID.isEmpty else { complete = false; continue }
-+            if text(config["language"]).isEmpty { result.required[id] = gid }
-+            else { result.language[id] = gid }
++            // Language and violence variants are mutually conditional content,
++            // not depots every native installation must carry. If mounted,
++            // their manifest must still match before attesting any bytes.
++            let conditional = !text(config["language"]).isEmpty ||
++                ["lowviolence", "highviolence"].contains { ["1", "true"].contains(text(config[$0]).lowercased()) }
++            if conditional { result.conditional[id] = gid }
++            else { result.required[id] = gid }
 +            if os.contains("macos") { result.macDepots.insert(id) }
 +            versions[id] = ["config": config.mapValues(jsonValue), "gid": gid,
 +                            "encrypted_gid": encryptedGID, "source_app": text(depot["gluon_source_app"])]
 +        }
 +        guard complete, !versions.isEmpty else { return result }
 +        let macFlags = words(common["osextended"]).filter { $0.hasPrefix("macos") }.sorted()
-+        let signature: [String: Any] = ["version": 1, "branch": branch, "osarch": text(common["osarch"]),
++        let signature: [String: Any] = ["version": 2, "branch": branch,
 +            "mac_flags": macFlags, "launches": launches.mapValues(jsonValue), "depots": versions]
 +        guard let data = try? JSONSerialization.data(withJSONObject: signature, options: [.sortedKeys]) else { return result }
 +        result.signature = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
@@ -994,7 +1077,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +          systems.contains("windows") else { evidence.forget(id); return false }
 +    let extended = words(common["osextended"])
 +    let arch64: Set<String> = ["64", "arm64", "x86_64", "amd64"]
-+    if extended.contains("macos64") || extended.contains("macosapplesilicon") || !words(common["osarch"]).isDisjoint(with: arch64) {
++    if extended.contains("macos64") || extended.contains("macosapplesilicon") {
 +        evidence.forget(id); return false
 +    }
 +    var installations: [(URL, [String: Value])] = []
@@ -1035,12 +1118,13 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +        for (installed, state) in installations {
 +            if let target = safeChild(installed, text(launch["executable"])) {
 +                if let native = nativeExecutable(target) {
-+                    if let bits = machoBits(native) {
++                    var missingWrapperTarget = false
++                    if let bits = installedLaunchBits(native, &missingWrapperTarget) {
 +                        if bits == 64 { evidence.forget(id); return false }
 +                        // Bind observed bytes to the installed Mac/shared manifest
 +                        // versions before assigning the current catalogue signature.
 +                        if version.attested(state) { proof32 = true; installed32 = true }
-+                    } else if FileManager.default.fileExists(atPath: native.path) && !proof32 { unknownExecutable = true }
++                    } else if FileManager.default.fileExists(atPath: native.path) && !proof32 && !missingWrapperTarget { unknownExecutable = true }
 +                } else if FileManager.default.fileExists(atPath: target.path) && !proof32 { unknownExecutable = true }
 +            }
 +        }

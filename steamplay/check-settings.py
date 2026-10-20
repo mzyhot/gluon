@@ -48,13 +48,26 @@ with tempfile.TemporaryDirectory() as temporary:
                6: app(), 7: app(mac='Windows.exe', arch='32'),
                8: app(), 9: app(), 10: app(), 11: app(), 12: app(mac='stub.sh'),
                13: app(arch='32'), 14: app(mac='../escape', arch=None),
-               15: app(arch='32'), 17: app(common={'osarch':'32'})}
+               15: app(arch='32'), 17: app(common={'osarch':'32'}),
+               18: app(mac='Game.sh'), 19: app(mac='Game.sh'),
+               20: app(mac='Game.sh'), 21: app(common={'osarch':'64'}),
+               22: app(), 23: app(mac='Game.sh'), 24: app(mac='Game.sh'),
+               25: app(mac='Game.sh'), 26: app(mac='Game.sh'), 27: app(mac='Game.sh'),
+               28: app(mac='Game.sh'), 29: app(mac='Game.sh'),
+               30: app(mac='Game.sh'), 31: app(mac='Game.sh'),
+               32: app(mac='Game.sh'), 33: app()}
+    # A shared/Windows declaration is not a declaration about the Mac binary.
+    entries[22]['depots']['102']['config'] = {'osarch':'64'}
+    entries[33]['depots']['100']['config']['osarch'] = '32'  # A content subset cannot prove an uninstalled launch.
+    for appid in (18,23):
+        entries[appid]['depots']['103'] = {'config':{'lowviolence':'1'}, 'manifests':{'public':{'gid':'4000'}}}
+
     entries[13]['config']['launch'].pop('0')  # No Windows build to run.
     entries[15]['config']['launch']['2'] = {'executable':'Game64.app', 'config':{'oslist':'macos','osarch':'64'}}
     macho32 = struct.pack('<IIIIIII', 0xfeedface, 7, 3, 2, 0, 0, 0)
     macho64 = struct.pack('<IIIIIIII', 0xfeedfacf, 0x01000007, 3, 2, 0, 0, 0, 0)
     fat = struct.pack('>II', 0xcafebabe, 2) + struct.pack('>IIIII', 7, 3, 48, 28, 0) + struct.pack('>IIIII', 0x01000007, 3, 76, 32, 0) + macho32 + macho64
-    for appid, binary in ((8,macho32),(9,macho64),(10,fat),(11,b'not a Mach-O'),(12,macho32)):
+    for appid, binary in ((8,macho32),(9,macho64),(10,fat),(11,b'not a Mach-O'),(12,macho32),(18,macho32),(19,macho64),(20,macho32),(21,macho32),(22,macho32),(23,macho32),(24,macho32),(25,macho32),(26,macho32),(27,macho32),(28,macho32),(29,macho32),(30,macho32),(31,macho32),(32,macho32)):
         install = library / ('steamapps/common/Game%d' % appid)
         target = install / 'Game.app/Contents/MacOS/Game'
         target.parent.mkdir(parents=True)
@@ -63,18 +76,73 @@ with tempfile.TemporaryDirectory() as temporary:
         if appid == 12:  # Arbitrary scripts are not mistaken for native binaries.
             (install / 'stub.sh').write_text('#!/bin/sh\nexit 0\n')
         (library / ('steamapps/appmanifest_%d.acf' % appid)).write_text('"AppState" { "installdir" "Game%d" "InstalledDepots" { "100" { "manifest" "1000" } "102" { "manifest" "3000" } } }' % appid)
+        if appid in (18,19,20,23,24,25,26,27,28,29,30,31,32):
+            # Reproduce the Valve wrapper layout with original synthetic text;
+            # no game script/binary or personal metadata is copied into CI.
+            (install/'Game_osx').write_bytes(binary)
+            wrapper = '#!/bin/bash\nGAMEROOT=$(cd "${0%/*}" && echo "$PWD")\nUNAME=$(uname)\nif [ "$UNAME" = Darwin ]; then\n GAMEEXE=Game_osx\nelse\n GAMEEXE=Game_linux\nfi\n"${GAMEROOT}"/${GAMEEXE} "$@"\n'
+            if appid == 20:
+                wrapper = wrapper.replace('GAMEEXE=Game_osx','GAMEEXE="$(choose_binary)"')
+            if appid == 24:
+                (install/'Game_osx').unlink()
+            if appid == 25:
+                (install/'Game64').write_bytes(macho64)
+                wrapper = wrapper.replace(' GAMEEXE=Game_osx',' GAMEEXE=Game_osx\n GAMEEXE=Game64')
+            if appid == 26:
+                wrapper = '#!/bin/sh\n# An unrelated Mach-O in this directory is not launch proof.\nexit 0\n'
+            if appid == 27:
+                wrapper = wrapper.replace(' GAMEEXE=Game_osx',' GAMEEXE=Game_osx\n GAMEEXE+=64')
+            if appid == 28:
+                wrapper = wrapper.replace(' GAMEEXE=Game_osx',' GAMEEXE=Game_osx\n read GAMEEXE')
+            if appid == 29:
+                (install/'Game64').write_bytes(macho64)
+                wrapper = wrapper.replace('"${GAMEROOT}"/${GAMEEXE} "$@"', '# "${GAMEROOT}"/${GAMEEXE} "$@"\n./Game64 "$@"')
+            if appid == 30:
+                wrapper = wrapper.replace('"${GAMEROOT}"/${GAMEEXE} "$@"', 'if [ -z $GAMEEXE ]; then\n GAMEEXE=Game_osx\nfi\necho $DEBUGGER -x "$ARGSFILE" $DEBUGGER_ARGS --args "${GAMEROOT}/${GAMEEXE}" "$@"\n$DEBUGGER -x "$ARGSFILE" $DEBUGGER_ARGS --args "${GAMEROOT}/${GAMEEXE}" "$@"\n${DEBUGGER} -s "$ARGSFILE" -- "${GAMEROOT}"/${GAMEEXE} "$@"\n${DEBUGGER} "${GAMEROOT}"/${GAMEEXE} "$@"')
+            if appid == 31:
+                wrapper = wrapper.replace('GAMEROOT=$(cd "${0%/*}" && echo "$PWD")','GAMEROOT=/other/native64/game')
+            if appid == 32:
+                wrapper = wrapper.replace(' GAMEEXE=Game_osx',' GAMEEXE=Game_osx\n . ./choose-target.sh')
+            (install/'Game.sh').write_text(wrapper)
+            if appid == 23:
+                (library/('steamapps/appmanifest_%d.acf' % appid)).write_text('"AppState" { "installdir" "Game%d" "InstalledDepots" { "100" { "manifest" "1000" } "102" { "manifest" "3000" } "103" { "manifest" "3999" } } }' % appid)
     cache = steam / 'appcache/appinfo.vdf'
     helper_env = dict(os.environ, GLUON_HOME=str(home))
     cache.write_bytes(app_cache(entries))
     output = subprocess.check_output([str(source / 'out/appinfo'), str(cache), '--platforms'], text=True, env=helper_env)
     lists = dict(line.split('=',1) for line in output.splitlines())
-    assert lists['mac32'] == '1,2,8', output
+    assert lists['mac32'] == '1,2,8,18,21,22,30', output
     # A native64 executable vetoes metadata32 too, including universal binaries.
     entries[9]['config']['launch']['1']['config']['osarch'] = '32'
     entries[10]['config']['launch']['1']['config']['osarch'] = '32'
     cache.write_bytes(app_cache(entries))
     output = subprocess.check_output([str(source / 'out/appinfo'), str(cache), '--platforms'], text=True, env=helper_env)
-    assert dict(line.split('=',1) for line in output.splitlines())['mac32'] == '1,2,8', output
+    assert dict(line.split('=',1) for line in output.splitlines())['mac32'] == '1,2,8,18,21,22,30', output
+    # Optional violence content may legitimately be omitted (Half-Life uses
+    # this layout). If present it must attest its current version as usual.
+    assert '18' in json.loads((home/'state/mac32-evidence.json').read_text())['apps']
+    (library/'steamapps/common/Game18/Game_osx').unlink()
+    output = subprocess.check_output([str(source/'out/appinfo'),str(cache),'--platforms'],text=True,env=helper_env)
+    assert '18' in dict(line.split('=',1) for line in output.splitlines())['mac32'].split(','), 'Wrapper architecture evidence did not survive Windows depot replacement'
+    wrapper18 = library/'steamapps/common/Game18/Game.sh'
+    original_wrapper = wrapper18.read_text()
+    wrapper18.write_text(original_wrapper.replace('GAMEEXE=Game_osx','GAMEEXE="$(choose_binary)"'))
+    output = subprocess.check_output([str(source/'out/appinfo'),str(cache),'--platforms'],text=True,env=helper_env)
+    assert '18' not in dict(line.split('=',1) for line in output.splitlines())['mac32'].split(','), 'Dynamic wrapper retained an old native proof'
+    wrapper18.write_text(original_wrapper)
+    (library/'steamapps/common/Game18/Game_osx').write_bytes(macho32)
+    output = subprocess.check_output([str(source/'out/appinfo'),str(cache),'--platforms'],text=True,env=helper_env)
+    assert '18' in dict(line.split('=',1) for line in output.splitlines())['mac32'].split(',')
+    (library/'steamapps/common/Game18/Game_osx').write_bytes(macho64)
+    output = subprocess.check_output([str(source/'out/appinfo'),str(cache),'--platforms'],text=True,env=helper_env)
+    assert '18' not in dict(line.split('=',1) for line in output.splitlines())['mac32'].split(','), 'A wrapper upgrade to native64 retained old32 evidence'
+    (library/'steamapps/common/Game18/Game_osx').write_bytes(macho32)
+    output = subprocess.check_output([str(source/'out/appinfo'),str(cache),'--platforms'],text=True,env=helper_env)
+    assert '18' in dict(line.split('=',1) for line in output.splitlines())['mac32'].split(',')
+    entries[18]['config']['launch']['1']['config']['osarch'] = 'arm64'
+    cache.write_bytes(app_cache(entries))
+    output = subprocess.check_output([str(source/'out/appinfo'),str(cache),'--platforms'],text=True,env=helper_env)
+    assert '18' not in dict(line.split('=',1) for line in output.splitlines())['mac32'].split(','), 'Mac-specific arm64 must revoke wrapper evidence'
     # Each helper call is a fresh process, matching refreshes and Steam restarts.
     # Replacing the Mac depot with Windows must not erase the only Mac32 proof.
     native = library/'steamapps/common/Game8/Game.app/Contents/MacOS/Game'
