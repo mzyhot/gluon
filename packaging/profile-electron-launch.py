@@ -290,6 +290,7 @@ def main() -> None:
         subprocess.run(['clang', '-arch', 'arm64', '-fobjc-arc',
             '-Wall', '-Wextra', '-Werror', '-framework', 'AppKit', '-framework', 'CoreGraphics',
             str(root / 'packaging/profile-electron-window.m'), '-o', str(observer)], check=True, timeout=60)
+        sys.path.insert(0, str(root))
         sys.path.insert(0, str(root / 'tests'))
         from test_migration import cache_bytes
 
