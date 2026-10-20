@@ -45,7 +45,7 @@ PE files before and after neutral bootstrap, then seals the server. Native DLL
 overrides in the prefix, changed system binaries, startup items, missing evidence
 or a verification budget overrun select ordinary Wine shutdown automatically.
 Verified file hashes are cached against inode, size and modification/change times;
-each Play has a 0.5-second/128-MiB verification budget. First launches may use
+PE verification has a 0.5-second/128-MiB budget per Play. First launches may use
 ordinary shutdown while that cache fills. A later service start, legacy system
 registration or image mapping in a retained core service revokes retention before
 execution. Cloud then waits for complete ordinary server shutdown.

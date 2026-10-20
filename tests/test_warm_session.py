@@ -303,6 +303,7 @@ class WarmSessionTests(unittest.TestCase):
         arguments, options = popen.call_args
         self.assertEqual(arguments[0], [str(self.runtime / "bin/wine"), str(self.runtime / "lib/wine/x86_64-windows/gluon-session-bootstrap.exe"), ])
         self.assertTrue(options["close_fds"])
+        self.assertEqual(options['cwd'], str(self.runtime))
         self.assertTrue(options["env"]["WINEDLLOVERRIDES"].endswith("gluon-session-bootstrap.exe=b"))
         self.assertEqual(options["env"]["WINEPREFIX"], str(self.prefix))
         self.assertEqual(options["env"]["WINELOADER"], str(self.runtime / "bin/wine"))

@@ -170,6 +170,8 @@ def _startup_empty(prefix):
     # bootstrap can be sealed. A redirected folder is covered by the registry
     # snapshot; unknown entries in standard locations also force cold.
     users = prefix / 'drive_c/users'
+    if (prefix / 'drive_c').is_symlink() or users.is_symlink():
+        return False
     roots = list(users.iterdir()) if users.is_dir() else []
     if len(roots) > 32:
         return False
@@ -193,7 +195,7 @@ def _safe_relative(value):
 
 def _inventory(prefix, *, expected=None, cache=None, deadline=None, hash_budget=None):
     windows = prefix / "drive_c/windows"
-    if windows.is_symlink() or not windows.is_dir():
+    if (prefix / 'drive_c').is_symlink() or windows.is_symlink() or not windows.is_dir():
         raise PolicyError("unknown Windows directory")
     files, count, hashed = {}, 0, 0
     for directory, dirs, names in os.walk(windows, followlinks=False):

@@ -38,6 +38,7 @@ def _run_helper(wineserver: str, argument: str, timeout: float, *, prefix=None, 
         elif prefix is not None:
             environment = dict(os.environ, WINEPREFIX=str(prefix))
         child = subprocess.Popen([wineserver, argument], env=environment,
+                                 cwd=str(Path(wineserver).parent.parent) if neutral else None,
                                  preexec_fn=_reset_child_signals, close_fds=True)
     except OSError as error:
         print("gluon: cannot start wineserver %s: %s" % (argument, error), file=sys.stderr, flush=True)
@@ -285,7 +286,7 @@ def _bootstrap_services(runtime, prefix, timeout=30.0):
         raise SessionError("runtime lacks its builtin Wine bootstrap command")
     try:
         child = subprocess.Popen([str(Path(runtime) / "bin/wine"), str(command)],
-                                 env=environment, preexec_fn=_reset_child_signals, close_fds=True)
+                                 env=environment, cwd=str(runtime), preexec_fn=_reset_child_signals, close_fds=True)
     except OSError as error:
         raise SessionError("cannot bootstrap Wine services") from error
     try:
