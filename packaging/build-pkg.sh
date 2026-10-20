@@ -50,6 +50,15 @@ printf '{"name":"%s"}\n' "$steamplay_name" > "$root/steamplay/pending.json"
 # runtime's own separate launcher program (Gluon is driven by Steam, not by an app).
 rsync -a --exclude '/files/share/default_pfx' --exclude '/*.lock' --exclude '/bin/pmac' \
     "$runtime_src/" "$root/runtime/$runtime_name/"
+# The package is staged as root, then copied into the account by an unprivileged
+# installer. Stock policy contains only public-runtime fixture data; unlike the
+# private per-prefix hash cache, it must be readable across that boundary.
+service_policy="$root/runtime/$runtime_name/share/gluon/warm-service-policy.json"
+if [ -e "$service_policy" ] || [ -L "$service_policy" ]; then
+    [ -f "$service_policy" ] && [ ! -L "$service_policy" ] \
+        || { echo 'warm service policy must be an ordinary file' >&2; exit 1; }
+    chmod 644 "$service_policy"
+fi
 if [ -f "$runtime_src/.gluon-wine-patches" ]; then
     expected_patches="$("$here/packaging/apply-wine-patches.sh" --hash)"
     [ "$(cat "$runtime_src/.gluon-wine-patches")" = "$expected_patches" ] \

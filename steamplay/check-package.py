@@ -2,6 +2,7 @@
 from pathlib import Path
 import json
 import sys
+import stat
 root = Path(sys.argv[1])
 manifests = list(root.rglob('steamplay/payloads/*/payload.json'))
 assert len(manifests) == 1, 'expected one versioned Steam Play payload'
@@ -21,4 +22,7 @@ manifest = json.loads(manifests[0].read_text())
 for path in manifest['files']:
     assert (payload / path).is_file(), path
 assert list((payload / 'signatures/macos.arm64').glob('*.json'))
+policies = list((home / 'runtime').glob('*/share/gluon/warm-service-policy.json'))
+assert len(policies) == 1, 'expected the stock service policy in the runtime fixture'
+assert stat.S_IMODE(policies[0].stat().st_mode) == 0o644, 'unprivileged installation must be able to read the policy'
 print('Package contains launcher, installer, native library, signatures, licenses and staged runtime')

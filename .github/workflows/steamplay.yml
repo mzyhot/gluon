@@ -44,6 +44,9 @@ jobs:
           mkdir -p build/fixture-runtime/bin build/fixture-runtime/licenses
           printf '#!/bin/sh\nexit 0\n' > build/fixture-runtime/bin/wine
           chmod +x build/fixture-runtime/bin/wine
+          mkdir -p build/fixture-runtime/share/gluon
+          printf '{"schema":1}\n' > build/fixture-runtime/share/gluon/warm-service-policy.json
+          chmod 600 build/fixture-runtime/share/gluon/warm-service-policy.json
           cp LICENSE build/fixture-runtime/licenses/
           GLUON_PKG_RUNTIME="$PWD/build/fixture-runtime" packaging/build-pkg.sh 0.0.0-ci-fixture
           pkgutil --expand-full dist/Gluon-0.0.0-ci-fixture.pkg build/pkg-expanded
