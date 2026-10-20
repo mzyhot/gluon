@@ -214,6 +214,28 @@ class NativeCloudTests(unittest.TestCase):
         self.assertEqual(cloud.prepare_installed(), [])
         self.assertFalse(self.compat.exists())
 
+    def test_installer_prepares_mac_titles_selected_by_the_packaged_classifier(self):
+        from test_migration import cache_bytes
+        cache = Path(steam.APPINFO)
+        cache.parent.mkdir()
+        cache.write_bytes(cache_bytes({'common': {'oslist': 'windows,macos,linux'},
+            'ufs': {'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}}}))
+        with patch.object(cloud.platforms, 'automatic_mac_candidates', return_value={'123'}):
+            cloud.prepare_installed()
+        self.assertEqual(cloud.check_app('123'), 'prefix')
+
+    def test_installer_mac_classification_never_overrides_explicit_choices(self):
+        self.rules({'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}})
+        config = self.library / 'config/config.vdf'
+        config.parent.mkdir()
+        for choice in ('gluon.none', 'another-tool', 'gluon-custom'):
+            with self.subTest(choice=choice):
+                config.write_text('"InstallConfigStore" { "Software" { "Valve" { "Steam" { '
+                                  '"CompatToolMapping" { "123" { "name" "' + choice + '" } } } } } }')
+                with patch.object(cloud.platforms, 'automatic_mac_candidates', return_value={'123'}):
+                    self.assertEqual(cloud.prepare_installed(), [])
+                self.assertFalse(self.compat.exists())
+
     def test_installer_respects_an_explicit_non_gluon_choice(self):
         self.rules({'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}})
         config = self.library / 'config/config.vdf'

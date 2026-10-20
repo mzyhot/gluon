@@ -21,7 +21,7 @@ import subprocess
 import sys
 import uuid
 
-from . import appinfo, session, steam, steamplay, vdf
+from . import appinfo, platforms, session, steam, steamplay, vdf
 
 MARKER = '.gluon-native-cloud.json'
 FOLDERS = ('Documents', 'Desktop', 'Downloads', 'Music', 'Pictures', 'Videos',
@@ -52,7 +52,13 @@ class PreparationRequired(CloudError):
 
 def _resolve(path):
     try:
-        return Path(path).resolve()
+        # Python 3.13+ deliberately tolerates loops in non-strict resolve().
+        # Probe strictly first so macOS and Linux reject the same cyclic view,
+        # while allowing ordinary paths that preparation has not created yet.
+        try:
+            return Path(path).resolve(strict=True)
+        except FileNotFoundError:
+            return Path(path).resolve()
     except RuntimeError as error:
         raise CloudError('Cloud paths contain a symbolic-link loop; saves were left unchanged: ' + str(path)) from error
     except OSError as error:
@@ -199,7 +205,7 @@ def _recover_migration(compat):
 
 def _inside(path, root):
     try:
-        path.resolve().relative_to(root.resolve())
+        _resolve(path).relative_to(_resolve(root))
         return True
     except (ValueError, OSError, RuntimeError):
         return False
@@ -451,6 +457,7 @@ def prepare_installed():
         raise CloudError('Invalid compatibility tool selections')
     global_choice = vdf.iget(mappings, '0', default={})
     global_name = vdf.iget(global_choice, 'name', default='') if isinstance(global_choice, dict) else ''
+    automatic_mac = platforms.automatic_mac_candidates(steamplay.Installation())
     for appid in index()['apps']:
         try:
             choice = vdf.iget(mappings, appid, default={})
@@ -464,9 +471,9 @@ def prepare_installed():
                 common = data.get('common', {})
                 if not isinstance(common, dict):
                     raise CloudError('Invalid game platform metadata')
-                systems = str(common.get('oslist', '')).lower().split(',')
-                if 'windows' not in systems or 'macos' in systems:
-                    continue  # Native Mac games are not automatically routed through Gluon.
+                systems = {value.strip().lower() for value in str(common.get('oslist', '')).split(',')}
+                if 'windows' not in systems or ('macos' in systems and appid not in automatic_mac):
+                    continue  # Only the packaged native classifier may broaden Mac eligibility.
             notes += prepare(appid)
             _error_path(appid).unlink(missing_ok=True)
         except (CloudError, steamplay.SteamPlayError, OSError, ValueError) as error:

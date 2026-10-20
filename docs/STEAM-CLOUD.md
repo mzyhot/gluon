@@ -47,6 +47,10 @@ AutoCloud paths do not need Windows prefix views, so they leave separate prefixe
 untouched. Installation and repair preflight installed Windows-root games while
 Steam is closed. The metadata cache is read once per helper, and a fingerprint of
 the game's Cloud rules prevents an old preparation from authorizing changed paths.
+Installer preparation reuses the packaged native classifier for automatically
+selected Mac32 titles and games with inaccurate common Mac flags. It follows the
+saved Mac32 preference and preserves explicit compatibility-tool choices, without
+implementing a second architecture classifier in Python.
 
 ## Save preservation
 
