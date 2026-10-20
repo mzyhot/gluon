@@ -72,6 +72,10 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/win32u/freetype.c \
     sources/wine/dlls/ws2_32/protocol.c \
     sources/wine/dlls/ntdll/unix/loader.c \
+    sources/wine/server/main.c \
+    sources/wine/server/request.h \
+    sources/wine/server/request.c \
+    sources/wine/server/process.c \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
     sources/dxvk/src/d3d9/d3d9_include.h \
@@ -130,6 +134,13 @@ if [ "${GITHUB_ACTIONS:-}" = true ]; then
     python3 "$GLUON_SOURCE_ROOT/packaging/check-gl-compat-as-core.py" "$GLUON_SOURCE_TEMP/wine" --self-test
 else
     python3 "$GLUON_SOURCE_ROOT/packaging/check-gl-compat-as-core.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
+fi
+
+echo "Checking Wine warm-session cleanup, idle-only teardown and bounded lifetime"
+if [ "${GITHUB_ACTIONS:-}" = true ]; then
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-session.py" "$GLUON_SOURCE_TEMP/wine" --self-test
+else
+    python3 "$GLUON_SOURCE_ROOT/packaging/check-wine-session.py" "$GLUON_SOURCE_TEMP/wine" --source-only --self-test
 fi
 
 echo "Checking DXVK patch applicability against the pinned source"
