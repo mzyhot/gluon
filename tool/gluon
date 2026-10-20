@@ -358,6 +358,7 @@ fi
 # interpreter. Keep the Cloud check after settings and final prefix selection,
 # before any Wine command can change it. Steam's earlier sync has its own guard.
 bundle="" overlay_insert="" overlay_scoped=""
+cloud_check_requested="${GLUON_NATIVE_CLOUD:-}" cloud_check_mode=""
 patches="$runtime/licenses/gluon-wine-patches/APPLIED.txt"
 ! grep -qx wine-macos-overlay-scope "$patches" 2>/dev/null || overlay_scoped=1
 if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ] || { [ -n "$game_session" ] && [ "$kind" = wine ] \
@@ -370,8 +371,8 @@ if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ] || { [ -n "$game_session" ] && [ "$kind" = 
         2>> "$LOG")" || fail "launch preparation failed (see $LOG)"
     while IFS= read -r setting; do
         case "$setting" in
-            cloud=prefix) ;;
-            cloud=*) unset GLUON_NATIVE_CLOUD ;;
+            cloud=prefix) cloud_check_mode=prefix ;;
+            cloud=*) cloud_check_mode="${setting#cloud=}"; unset GLUON_NATIVE_CLOUD ;;
             overlay=*) overlay_insert="${setting#overlay=}" ;;
             bundle=*) bundle="${setting#bundle=}" ;;
         esac
@@ -416,7 +417,7 @@ stop_requested=""
 # A Stop before lease acquisition must not terminate its current owner. Set
 # this before installing traps, including the window before FD9 is opened.
 lease_pending=""
-if [ "$kind" = wine ] && [ -n "$game_session" ] && grep -qx wine-session-idle "$patches" 2>/dev/null; then
+if [ "$kind" = wine ] && [ -n "$game_session" ]; then
     lease_pending=1
 fi
 run_wait() {
@@ -527,8 +528,9 @@ if [ "$kind" = proton ]; then
     run_wait "$runtime/proton" "$verb" "$exe" "$@"
     status=$?
 else
-    warm_session="" session_lib=""
-    if [ -n "$game_session" ] && grep -qx wine-session-idle "$patches" 2>/dev/null; then
+    warm_session="" warm_protocol="" session_lib=""
+    if [ -n "$game_session" ]; then
+        ! grep -qx wine-session-idle "$patches" 2>/dev/null || warm_protocol=1
         # A lease belongs to this shell, and is excluded from every Wine/open
         # child. Warm services can therefore outlive Steam's tracked launcher
         # without retaining its game ownership or blocking the next launch.
@@ -537,14 +539,18 @@ else
         exec 9>> "$compat/.gluon-session.lock" || fail "cannot open the prefix session lease"
         lease_pending=1 lease_call=1
         log "  waiting for exclusive prefix ownership"
+        cloud_recheck=()
+        [ "$cloud_check_requested" != 1 ] || cloud_recheck=(--check-cloud "$appid" --cloud-mode "$cloud_check_mode")
         PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
             run_wait /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session \
-                --lease-fd 9 --compat "$compat"
+                --lease-fd 9 --compat "$compat" "${cloud_recheck[@]}"
         lease_status=$?
         lease_call=""
-        [ "$lease_status" = 0 ] || fail "cannot acquire the prefix session lease"
+        [ "$lease_status" = 0 ] || fail "could not verify exclusive prefix ownership and Cloud saves (see $WINE_LOG)"
         lease_pending=""
-        [ "${GLUON_WARM_SERVER:-1}" = 0 ] || warm_session=1
+        if [ -n "$warm_protocol" ] && [ "${GLUON_WARM_SERVER:-1}" != 0 ]; then
+            warm_session=1
+        fi
     fi
     if [ ! -f "$WINEPREFIX/system.reg" ]; then
         # First run for this game: create the prefix up front.
@@ -557,12 +563,12 @@ else
         WINEDLLOVERRIDES="$setup_overrides" run_wait "$runtime/bin/wine" wineboot --init \
             || fail "Wine prefix setup failed (see $WINE_LOG)"
         run_wait "$wineserver" -w || fail "Wine prefix setup did not finish (see $WINE_LOG)"
-    elif [ "$verb" = waitforexitandrun ] && [ -z "$session_lib" ]; then
+    elif [ "$verb" = waitforexitandrun ] && [ -z "$warm_protocol" ]; then
         log "  waiting for previous prefix session"
         run_wait "$wineserver" -w || fail "Could not wait for the previous session (see $WINE_LOG)"
         log "  previous prefix session is idle"
     fi
-    if [ -n "$session_lib" ]; then
+    if [ -n "$warm_protocol" ]; then
         cold_session=()
         [ -n "$warm_session" ] || cold_session=(--cold)
         PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \

@@ -1,5 +1,7 @@
 import json
 import os
+import shlex
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -36,7 +38,14 @@ if sys.argv[1:2] == ['winepath']:
         server = runtime / 'bin/wineserver'
         server.write_text('#!/bin/sh\nexit 0\n')
         server.chmod(0o755)
-        (self.home / 'bin/gluon').symlink_to(ROOT / 'tool/gluon')
+        launcher = self.home / 'bin/gluon'
+        launcher.write_text((ROOT / 'tool/gluon').read_text().replace(
+            '/usr/bin/arch -arm64 /usr/bin/python3', shlex.quote(sys.executable)))
+        launcher.chmod(0o755)
+        package = self.home / 'lib/gluon'
+        package.mkdir(parents=True)
+        (package / '__init__.py').write_text('')
+        (package / 'session.py').write_text((ROOT / 'gluon/session.py').read_text())
         self.game = self.base / "library's space/steamapps/common/Example Game/Game.exe"
         self.game.parent.mkdir(parents=True)
         self.game.touch()

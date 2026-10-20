@@ -1,5 +1,7 @@
 """Steam Play plus a saved Launch Option must produce exactly one game session."""
 import os
+import shlex
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,8 +20,13 @@ class LauncherWrappingTests(unittest.TestCase):
         self.launcher = self.home / "bin/gluon"
         self.launcher.parent.mkdir(parents=True)
         self.launcher.write_text((ROOT / "tool/gluon").read_text().replace(
-            "/usr/bin/osascript", "/usr/bin/true"))
+            "/usr/bin/osascript", "/usr/bin/true").replace(
+            "/usr/bin/arch -arm64 /usr/bin/python3", shlex.quote(sys.executable)))
         self.launcher.chmod(0o755)
+        package = self.home / "lib/gluon"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "session.py").write_text((ROOT / "gluon/session.py").read_text())
         runtime = self.home / "runtime/current/bin"
         runtime.mkdir(parents=True)
         for name, source in {

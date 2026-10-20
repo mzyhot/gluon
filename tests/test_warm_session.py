@@ -42,10 +42,10 @@ class WarmSessionTests(unittest.TestCase):
         self.bootstrap.start()
         self.addCleanup(self.bootstrap.stop)
 
-    def record(self):
+    def record(self, *, phase="ready"):
         identity = session._identity(self.prefix, self.runtime)
         path = session._state_path(self.home, self.prefix)
-        session._write_state(path, identity)
+        session._write_state(path, identity, phase=phase)
         return path
 
     def test_first_launch_starts_bounded_warm_server_after_full_wait(self):
@@ -60,10 +60,11 @@ class WarmSessionTests(unittest.TestCase):
 
     def test_repeat_launch_waits_for_real_user_idle_without_server_shutdown(self):
         self.record()
-        with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 0]) as run:
+        with mock.patch.object(session, '_run_helper', side_effect=[0]) as run:
             session.prepare_warm(self.home, self.prefix, self.runtime)
         self.assertEqual([call.args[1] for call in run.call_args_list],
-                         ['--wait-idle', '--gluon-session=120', '--wait-idle'])
+                         ['--wait-idle'])
+        session._bootstrap_services.assert_not_called()
         self.assertNotIn('-k', [call.args[1] for call in run.call_args_list])
 
     def test_expired_server_uses_ordinary_wait_then_starts_new_warm_server(self):
@@ -202,12 +203,66 @@ class WarmSessionTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in run.call_args_list], ['-w'])
 
     def test_existing_server_is_preserved_if_our_capability_check_fails(self):
-        self.record()
+        self.record(phase="starting")
         with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 1]) as run:
             with self.assertRaisesRegex(session.SessionError, "capability"):
                 session.prepare_warm(self.home, self.prefix, self.runtime)
         self.assertNotIn('--kill-idle', [call.args[1] for call in run.call_args_list])
         self.assertTrue(session._state_path(self.home, self.prefix).exists())
+
+    def test_interrupted_bootstrap_is_retried_before_ready_phase(self):
+        path = self.record(phase="starting")
+        with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 0]) as run:
+            session.prepare_warm(self.home, self.prefix, self.runtime)
+        session._bootstrap_services.assert_called_once()
+        self.assertEqual([call.args[1] for call in run.call_args_list],
+                         ['--wait-idle', '--gluon-session=120', '--wait-idle'])
+        self.assertEqual(session._read_state(path)['phase'], 'ready')
+
+    def test_legacy_unphased_record_does_not_skip_neutral_bootstrap(self):
+        path = self.record()
+        previous = json.loads(path.read_text())
+        previous.pop('phase')
+        path.write_text(json.dumps(previous))
+        with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 0]):
+            session.prepare_warm(self.home, self.prefix, self.runtime)
+        session._bootstrap_services.assert_called_once()
+        self.assertEqual(session._read_state(path)['phase'], 'ready')
+
+    def test_failed_ready_publication_cleans_up_new_server(self):
+        write = session._write_state
+        def publish(path, identity, *, phase='ready'):
+            if phase == 'ready':
+                raise OSError('ready write failed')
+            return write(path, identity, phase=phase)
+        with mock.patch.object(session, '_write_state', side_effect=publish), \
+             mock.patch.object(session, '_run_helper', return_value=0) as run:
+            with self.assertRaisesRegex(OSError, 'ready write'):
+                session.prepare_warm(self.home, self.prefix, self.runtime)
+        self.assertEqual([call.args[1] for call in run.call_args_list][-2:], ['--kill-idle', '-w'])
+        self.assertFalse(session._state_path(self.home, self.prefix).exists())
+
+    def test_cloud_recheck_is_read_only_and_runs_under_the_lease(self):
+        from gluon import cloud
+        def check(appid, compat):
+            self.assertEqual((appid, compat), ('123', str(self.compat)))
+            with self.lease.open('a') as contender:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return 'prefix'
+        with self.lease.open('a') as owner, \
+             mock.patch.object(cloud, 'check_app', side_effect=check), \
+             mock.patch.object(cloud, 'prepare') as prepare, mock.patch.object(cloud, 'index') as index:
+            self.assertEqual(session.main(['--lease-fd', str(owner.fileno()), '--compat', str(self.compat),
+                                           '--check-cloud', '123', '--cloud-mode', 'prefix']), 0)
+        prepare.assert_not_called()
+        index.assert_not_called()
+
+    def test_changed_cloud_mode_cannot_start_with_an_old_preparation(self):
+        from gluon import cloud
+        with mock.patch.object(cloud, 'check_app', return_value='native'):
+            with self.assertRaisesRegex(session.SessionError, 'changed while'):
+                session.check_cloud_after_lease('123', str(self.compat), 'prefix')
 
     def test_bootstrap_has_no_game_identity_and_disables_cmd_autorun(self):
         self.bootstrap.stop()

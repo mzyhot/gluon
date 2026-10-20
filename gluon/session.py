@@ -154,10 +154,15 @@ def _read_state(path):
         state = json.loads(path.read_text())
     except (OSError, ValueError) as error:
         raise SessionError("cannot read warm-session state") from error
-    if (not isinstance(state, dict) or set(state) != {"schema", "seconds", "identity"}
+    if isinstance(state, dict) and set(state) == {"schema", "seconds", "identity"}:
+        # The initial implementation did not distinguish crash recovery from a
+        # completed neutral bootstrap. Treat its attestation conservatively.
+        state["phase"] = "starting"
+    if (not isinstance(state, dict) or set(state) != {"schema", "seconds", "identity", "phase"}
             or type(state["schema"]) is not int or state["schema"] != WARM_PROTOCOL
             or type(state["seconds"]) is not int or state["seconds"] != WARM_SECONDS
-            or not isinstance(state["identity"], dict)):
+            or not isinstance(state["identity"], dict)
+            or state["phase"] not in ("starting", "ready")):
         raise SessionError("invalid warm-session state")
     identity = state["identity"]
     if (set(identity) != {"prefix", "prefix_inode", "runtime", "msync"}
@@ -172,14 +177,16 @@ def _read_state(path):
     return state
 
 
-def _write_state(path, identity):
+def _write_state(path, identity, *, phase="ready"):
+    if phase not in ("starting", "ready"):
+        raise ValueError("invalid warm-session phase")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp-" + str(os.getpid()))
     try:
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as stream:
             json.dump({"schema": WARM_PROTOCOL, "seconds": WARM_SECONDS,
-                       "identity": identity}, stream, sort_keys=True)
+                       "identity": identity, "phase": phase}, stream, sort_keys=True)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -307,20 +314,28 @@ def prepare_warm(home, prefix, runtime, *, enabled=True):
                 raise SessionError("previous Wine session did not finish")
         elif result != 0:
             raise SessionError("cannot confirm Wine user processes are idle")
+        elif state["phase"] == "ready":
+            # The matching live server was already bootstrapped neutrally.
+            # Avoid redundant server spawns, second idle checks and state I/O.
+            # If it expires before the game starts, the final --wait-idle
+            # falls back to a full ordinary server wait.
+            return
     if not enabled:
         return
     # Publish recovery authority before creating a daemon. A crash or failed
     # bootstrap must never leave an anonymous warm server imposing a 120s wait.
-    if state is None or state["identity"] != identity:
-        _write_state(state_path, identity)
+    _write_state(state_path, identity, phase="starting")
     status = _run_helper(server, "--gluon-session=" + str(WARM_SECONDS), 5.0, prefix=prefix, neutral=True)
     if status not in (0, 2):
         raise SessionError("cannot start bounded Wine warm session")
     try:
-        if status == 0:
-            _bootstrap_services(identity["runtime"]["path"], prefix)
+        # A starting record has recovery authority but no proof that retained
+        # services were initialized without the game's identity. Retry even
+        # when the previous interrupted attempt left a running server.
+        _bootstrap_services(identity["runtime"]["path"], prefix)
         if _run_helper(server, "--wait-idle", 5.0, prefix=prefix) != 0:
             raise SessionError("Wine warm-session capability was not confirmed")
+        _write_state(state_path, identity, phase="ready")
     except Exception:
         # We may clean up a newly created idle server. A pre-existing server
         # belongs to its previous session; our failure never tears that down.
@@ -334,11 +349,23 @@ def prepare_warm(home, prefix, runtime, *, enabled=True):
                 pass  # Retain the attestation for the next safe drain attempt.
         raise
 
+
+def check_cloud_after_lease(appid, compat, expected_mode):
+    from . import cloud, steamplay
+    try:
+        mode = cloud.check_app(appid, compat)
+        if mode != expected_mode:
+            raise cloud.CloudError("Cloud save paths changed while this launch waited; retry Play")
+    except (cloud.CloudError, steamplay.SteamPlayError) as error:
+        raise SessionError("Cloud validation before Wine launch: " + str(error)) from error
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wineserver")
     parser.add_argument("--lease-fd", type=int)
     parser.add_argument("--compat")
+    parser.add_argument("--check-cloud", metavar="APPID")
+    parser.add_argument("--cloud-mode", choices=("native", "prefix"))
     parser.add_argument("--prepare-warm", action="store_true")
     parser.add_argument("--cold", action="store_true")
     parser.add_argument("--home")
@@ -350,6 +377,10 @@ def main(argv=None) -> int:
             if not args.compat:
                 parser.error("--lease-fd requires --compat")
             acquire_lease(args.lease_fd, args.compat)
+            if args.check_cloud:
+                if not args.cloud_mode:
+                    parser.error("--check-cloud requires --cloud-mode")
+                check_cloud_after_lease(args.check_cloud, args.compat, args.cloud_mode)
             return 0
         if args.prepare_warm:
             if not all((args.home, args.prefix, args.runtime)):
