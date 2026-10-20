@@ -31,6 +31,10 @@ class SteamPlayError(RuntimeError):
     pass
 
 
+class InstallationBusy(SteamPlayError):
+    pass
+
+
 def _run(*args):
     try:
         result = subprocess.run(list(map(str, args)), capture_output=True, text=True, timeout=120)
@@ -227,7 +231,7 @@ class Installation:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
-                raise SteamPlayError("another Gluon installation is running") from error
+                raise InstallationBusy("another Gluon installation is running") from error
             yield
         finally:
             os.close(fd)

@@ -7,7 +7,10 @@ Conflicting prefixes and links outside the profile require manual reconciliation
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -41,6 +44,21 @@ class CloudError(RuntimeError):
 
 class WineBusy(CloudError):
     pass
+
+
+class PreparationRequired(CloudError):
+    pass
+
+
+def _resolve(path):
+    try:
+        return Path(path).resolve()
+    except RuntimeError as error:
+        raise CloudError('Cloud paths contain a symbolic-link loop; saves were left unchanged: ' + str(path)) from error
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise CloudError('Cloud paths contain a symbolic-link loop; saves were left unchanged: ' + str(path)) from error
+        raise
 
 
 def _app_data(appid):
@@ -98,7 +116,7 @@ def check_app(appid, compat=None):
     if not needs_prefix(appid):
         return 'native'
     expected = _candidates(str(appid))
-    if compat is not None and Path(compat).resolve() != expected.resolve():
+    if compat is not None and _resolve(compat) != _resolve(expected):
         raise CloudError('Launcher and Steam selected different compatibility directories')
     check(expected)
     if not _rules_current(expected, _rules_token(appid)):
@@ -215,7 +233,7 @@ def _layout(compat, legacy=None):
     for name in ('steamuser', 'crossover'):
         alias = users / name
         if os.path.lexists(alias) and alias != profile and not (
-                alias.is_symlink() and alias.resolve() == profile.resolve()):
+                alias.is_symlink() and _resolve(alias) == _resolve(profile)):
             raise CloudError(name + ' already refers to another profile')
     for name in FOLDERS:
         path = profile / name
@@ -226,7 +244,7 @@ def _layout(compat, legacy=None):
             # directory. Keep that location; moving it would strand existing saves.
             host_name = HOST_FOLDERS.get(name)
             known_host_folder = (host_name and ancestor == profile / name and
-                                 ancestor.resolve() == (Path.home() / host_name).resolve())
+                                 _resolve(ancestor) == _resolve(Path.home() / host_name))
             if ancestor.is_symlink() and not known_host_folder:
                 raise CloudError('Cloud folder is a link; its files were left unchanged: ' + str(ancestor))
             if ancestor.exists() and not ancestor.is_dir():
@@ -234,7 +252,7 @@ def _layout(compat, legacy=None):
     for old, target in ALIASES.items():
         path = profile / old
         expected = path.parent / target
-        if os.path.lexists(path) and not (path.is_symlink() and path.resolve() == expected.resolve()):
+        if os.path.lexists(path) and not (path.is_symlink() and _resolve(path) == _resolve(expected)):
             raise CloudError('Legacy save folder needs reconciliation; left unchanged: ' + str(path))
         if path.parent.is_symlink() or not _inside(path.parent, profile):
             raise CloudError('Legacy save folder parent leaves the profile')
@@ -244,20 +262,22 @@ def _layout(compat, legacy=None):
 def check(compat):
     if Path(compat).is_symlink():
         raise CloudError('Compatibility directory links are ambiguous; saves were left unchanged')
-    compat = Path(compat).resolve()
+    compat = _resolve(compat)
     marker = compat / MARKER
-    if marker.is_symlink() or not marker.is_file():
-        raise CloudError('Native Cloud prefix has not passed automatic preparation; restart Steam')
-    data = json.loads(marker.read_text())
     prefix, users, profile = _layout(compat)
+    if marker.is_symlink():
+        raise CloudError('Cloud readiness record must be an ordinary file')
+    if not marker.is_file():
+        raise PreparationRequired('Native Cloud prefix has not passed automatic preparation; retry Play after preparation finishes')
+    data = json.loads(marker.read_text())
     if (data != {'schema': 1, 'profile': str(profile.relative_to(prefix))}
             or not (compat / 'pfx').is_symlink()
             or not (users / 'steamuser').is_dir()
-            or (users / 'steamuser').resolve() != profile.resolve()
+            or _resolve(users / 'steamuser') != _resolve(profile)
             or not (users / 'crossover').is_dir()
-            or (users / 'crossover').resolve() != profile.resolve()
+            or _resolve(users / 'crossover') != _resolve(profile)
             or any(not (profile / old).is_symlink()
-                   or (profile / old).resolve() != ((profile / old).parent / target).resolve()
+                   or _resolve(profile / old) != _resolve((profile / old).parent / target)
                    for old, target in ALIASES.items())
             or any(not (profile / name).is_dir() for name in FOLDERS)
             or any(not (prefix / name).is_dir() for name in SHARED_FOLDERS)):
@@ -266,7 +286,7 @@ def check(compat):
 
 
 def _candidates(appid):
-    libraries = list(dict.fromkeys(Path(p).resolve() for p in steam.library_dirs()))
+    libraries = list(dict.fromkeys(_resolve(p) for p in steam.library_dirs()))
     installed = [p for p in libraries if (p / 'steamapps' / ('appmanifest_' + appid + '.acf')).is_file()]
     if len(installed) != 1:
         raise CloudError('Expected one installed game/library; conflicting or disconnected libraries were left unchanged')
@@ -288,8 +308,8 @@ def _document_backups(appid, profile):
     for relative, host_name in known.items():
         link = profile / relative
         if link.is_symlink():
-            target = (Path.home() / host_name).resolve()
-            if link.resolve() != target:
+            target = _resolve(Path.home() / host_name)
+            if _resolve(link) != target:
                 raise CloudError('Unexpected host-folder link; saves were left unchanged: ' + str(link))
             host_links.append((link, target))
     if not host_links:
@@ -364,6 +384,34 @@ def _wine_idle():
         raise WineBusy('Wine is active; prefix preparation will retry after it exits')
 
 
+@contextmanager
+def _preparation_lock(installation, appid):
+    try:
+        with installation.lock('cloud-' + appid + '.lock'):
+            yield
+    except steamplay.InstallationBusy as error:
+        raise WineBusy('Cloud preparation for this game is already in progress; retry after it finishes') from error
+
+
+@contextmanager
+def _prefix_lease(compat):
+    """Exclude launches during a Cloud transaction without waiting on a game."""
+    compat.mkdir(parents=True, exist_ok=True)
+    fd = os.open(compat / session.LEASE_NAME, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise WineBusy('This game is starting or running; Cloud preparation will retry after it exits') from error
+        try:
+            session.acquire_lease(fd, compat)
+        except session.SessionError as error:
+            raise CloudError('Cannot verify exclusive Cloud prefix ownership; saves were left unchanged') from error
+        yield
+    finally:
+        os.close(fd)
+
+
 def _error_path(appid):
     if not str(appid).isdigit() or int(appid) <= 0:
         raise CloudError('Expected a positive Steam app ID')
@@ -375,8 +423,17 @@ def status(appid):
         mode = check_app(appid)
         return ['Steam Cloud is ready for %s (%s paths)' % (appid, mode)]
     except (CloudError, OSError, ValueError) as error:
-        saved = _error_path(appid)
-        reason = steamplay._json(saved).get('reason', str(error)) if saved.exists() else str(error)
+        reason = str(error)
+        # A previous preparation failure can explain an absent readiness record,
+        # but must never mask a newer conflict or changed publisher save rules.
+        if isinstance(error, PreparationRequired):
+            try:
+                record = steamplay._json(_error_path(appid))
+                if (isinstance(record, dict) and record.get('schema') == 1
+                        and isinstance(record.get('reason'), str) and record['reason']):
+                    reason = record['reason'][:3000]
+            except (OSError, ValueError, steamplay.SteamPlayError):
+                pass
         return ['Steam Cloud needs attention for %s: %s' % (appid, reason),
                 'Existing prefixes and saves are retained. Details: ' + str(Path(steam.GLUON_HOME) / 'steamplay/cloud.log')]
 
@@ -438,13 +495,17 @@ def prepare(appid, *, automatic=False):
     if not appid.isdigit() or int(appid) <= 0:
         raise CloudError('Expected a positive Steam app ID')
     installation = steamplay.Installation()
-    with installation.lock('cloud-' + appid + '.lock'):
+    with _preparation_lock(installation, appid), ExitStack() as leases:
         if not needs_prefix(appid):
             return ['Steam Cloud uses native/API paths for ' + appid + '; existing prefixes are unchanged']
         compat = _candidates(appid)
         token = _rules_token(appid)
         idle = _wine_idle if automatic else installation.idle
+        leased = False
         if (compat / MIGRATION).exists() and not (compat / MARKER).exists():
+            idle()
+            leases.enter_context(_prefix_lease(compat))
+            leased = True
             idle()
             _recover_migration(compat)
         legacy = _legacy_prefix(compat)
@@ -457,6 +518,13 @@ def prepare(appid, *, automatic=False):
             if _rules_current(compat, token):
                 return ['Native Cloud is already prepared for ' + appid]
         idle()
+        if not leased:
+            leases.enter_context(_prefix_lease(compat))
+            # Wine may have started between the first inventory and the lease.
+            idle()
+        if (_candidates(appid) != compat or _rules_token(appid) != token
+                or _layout(compat, legacy) != (prefix, users, profile)):
+            raise CloudError('Cloud selection changed during preparation; saves were left unchanged')
         sources = []
         if profile.exists():
             sources.append(('profile', profile))
@@ -484,7 +552,8 @@ def prepare(appid, *, automatic=False):
                 raise CloudError('Save backup verification failed; no layout changed')
         # Revalidate immediately before changing only this game's prefix aliases.
         idle()
-        if (_rules_token(appid) != token or _layout(compat, legacy) != (prefix, users, profile)
+        if (_candidates(appid) != compat or _rules_token(appid) != token
+                or _layout(compat, legacy) != (prefix, users, profile)
                 or legacy != _legacy_prefix(compat)
                 or any(steamplay._tree(source) != snapshots[name] for name, source in sources)):
             raise CloudError('Cloud profile changed during preparation; backup retained')
@@ -536,7 +605,7 @@ def index():
     # Capture before reading metadata/enumerating manifests. A concurrent update
     # must invalidate this catalogue, not stamp a stale decision as current.
     global_stamps = {str(p): _stamp(p) for p in watch}
-    libraries = list(dict.fromkeys(Path(p).resolve() for p in steam.library_dirs()))
+    libraries = list(dict.fromkeys(_resolve(p) for p in steam.library_dirs()))
     apps = {}
     for library in libraries:
         base = library / 'steamapps'
@@ -590,6 +659,7 @@ def main():
         elif args.automatic:
             try:
                 prepare(args.automatic, automatic=True)
+                _error_path(args.automatic).unlink(missing_ok=True)
             finally:
                 index()
         elif args.check_app:

@@ -33,7 +33,7 @@ selection remains Gluon; old mappings are normalized for display only.
      if (tool) {
          name = *(const char *const *)((const uint8_t *)tool + COMPAT_TOOL_NAME_OFF);
 -        if (name && !strncmp(name, "gluon", 5) && !gluon_cloud_ready(appid)) return NULL;
-+        if (name && !strncmp(name, "gluon", 5))
++        if (name && (!strcmp(name, "gluon") || !strcmp(name, "gluon-proton")))
 +            return gluon_cloud_select(appid, np_compat_registered_tool(self), np_compat_recovery_tool(self));
          return tool;
      }

@@ -1,5 +1,6 @@
 """Filesystem-only fixtures for native Cloud preparation; never run Wine or Steam."""
 import json
+import fcntl
 import os
 from pathlib import Path
 import shlex
@@ -387,6 +388,96 @@ class NativeCloudTests(unittest.TestCase):
         with self.assertRaises(steamplay.SteamPlayError):
             self.prepare()
         self.assertFalse(self.compat.exists())
+
+    def test_pending_launch_blocks_cloud_before_a_wine_process_exists(self):
+        profile = self.prefix / 'drive_c/users/crossover'
+        profile.mkdir(parents=True)
+        (profile / 'save.dat').write_bytes(b'existing save')
+        lease = self.compat / '.gluon-session.lock'
+        with lease.open('a') as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            before = steamplay._tree(self.compat)
+            with self.assertRaisesRegex(cloud.WineBusy, 'starting or running'):
+                cloud.prepare('123', automatic=True)
+            self.assertEqual(steamplay._tree(self.compat), before)
+        self.assertFalse((self.home / 'backups/cloud').exists())
+
+    def test_concurrent_preparation_is_transient_instead_of_a_cached_install_error(self):
+        with steamplay.Installation().lock('cloud-123.lock'):
+            with self.assertRaisesRegex(cloud.WineBusy, 'already in progress'):
+                cloud.prepare('123', automatic=True)
+        self.assertFalse(self.compat.exists())
+
+    def test_cloud_owns_launch_lease_through_backup_and_readiness_publication(self):
+        profile = self.prefix / 'drive_c/users/crossover'
+        profile.mkdir(parents=True)
+        (profile / 'save.dat').write_bytes(b'existing save')
+        phases = []
+        copy, write = cloud.shutil.copytree, steamplay._write_json
+
+        def assert_locked(phase):
+            with (self.compat / '.gluon-session.lock').open('a') as contender:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            phases.append(phase)
+
+        def backup(*args, **kwargs):
+            assert_locked('backup')
+            return copy(*args, **kwargs)
+
+        def publish(path, data):
+            if path.name in (cloud.MARKER, cloud.RULES):
+                assert_locked(path.name)
+            return write(path, data)
+
+        with patch.object(cloud.shutil, 'copytree', side_effect=backup), \
+                patch.object(steamplay, '_write_json', side_effect=publish):
+            self.prepare()
+        self.assertIn('backup', phases)
+        self.assertIn(cloud.MARKER, phases)
+        self.assertIn(cloud.RULES, phases)
+        with (self.compat / '.gluon-session.lock').open('a') as contender:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def test_wine_starting_before_lease_acquisition_defers_before_backup(self):
+        self.wine_idle.side_effect = [None, cloud.WineBusy('Wine started meanwhile')]
+        with self.assertRaisesRegex(cloud.WineBusy, 'meanwhile'):
+            cloud.prepare('123', automatic=True)
+        self.assertFalse(self.prefix.exists())
+        self.assertFalse((self.home / 'backups/cloud').exists())
+
+    def test_symbolic_link_cycles_report_a_conflict_without_changing_saves(self):
+        profile = self.prefix / 'drive_c/users/crossover'
+        profile.mkdir(parents=True)
+        (profile / 'save.dat').write_bytes(b'existing save')
+        for name in ('Documents', 'My Documents'):
+            with self.subTest(folder=name):
+                link = profile / name
+                link.symlink_to(name)
+                before = steamplay._tree(self.compat)
+                with self.assertRaisesRegex(cloud.CloudError, 'symbolic-link loop'):
+                    self.prepare()
+                self.assertFalse(cloud.index()['apps']['123']['ready'])
+                self.assertIn('symbolic-link loop', cloud.status('123')[0])
+                self.assertEqual(steamplay._tree(self.compat), before)
+                link.unlink()
+
+    def test_current_cloud_conflict_overrides_a_stale_busy_reason(self):
+        self.prepare()
+        steamplay._write_json(cloud._error_path('123'), {'schema': 1, 'reason': 'Old Wine busy error'})
+        (self.compat / 'pfx').unlink()
+        (self.compat / 'pfx').mkdir()
+        message = cloud.status('123')[0]
+        self.assertIn('separate pfx', message)
+        self.assertNotIn('Old Wine busy', message)
+
+    def test_malformed_historical_error_does_not_hide_preparation_status(self):
+        saved = cloud._error_path('123')
+        saved.parent.mkdir(parents=True)
+        for content in ('{', '[]', '{"schema": 1, "reason": 42}'):
+            with self.subTest(content=content):
+                saved.write_text(content)
+                self.assertIn('automatic preparation', cloud.status('123')[0])
 
     def test_tampered_ready_layout_is_rejected(self):
         self.prepare()

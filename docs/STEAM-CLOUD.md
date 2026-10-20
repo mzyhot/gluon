@@ -72,6 +72,15 @@ backups or insufficient backup space are rejected. A running Wine server postpon
 prepared layouts can be checked while another game is running. Steam's own Cloud
 preferences and conflict prompts retain their normal meaning.
 
+Preparation holds the same exclusive prefix lease as game launch through backup,
+migration and readiness publication. Wine activity is checked again after lease
+acquisition, and the launcher rechecks the final Cloud view after acquiring its
+lease. A pending launch or another preparation is a transient busy result, so
+the native guard retries instead of retaining a permanent failure. Current
+layout conflicts and publisher-rule changes take precedence over historical
+error messages. Symbolic-link cycles are reported as save-path conflicts without
+moving files.
+
 ## Validation limits
 
 CI runs the production native guard against disposable libraries, including API

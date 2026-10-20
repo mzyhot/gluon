@@ -30,8 +30,18 @@ int main(void) {
     assert(hook_FindToolForTargetApp((void *)1, 456) == &primary); // Existing Windows default.
     original_tool = &other;
     assert(hook_FindToolForTargetApp((void *)1, 123) == &other);
+    unsigned before_foreign = cloud_checks;
+    original_tool = &prefixed_other;
+    assert(hook_FindToolForTargetApp((void *)1, 123) == &prefixed_other);
+    assert(cloud_checks == before_foreign); // A similarly named foreign tool owns its own Cloud policy.
+    mapping = "gluon-custom";
+    original_tool = NULL; // An unavailable explicitly chosen foreign tool must not become Gluon.
+    assert(hook_FindToolForTargetApp((void *)1, 123) == NULL);
+    assert(cloud_checks == before_foreign);
+    mapping = NULL;
     original_tool = &primary;
     assert(hook_FindToolForTargetApp((void *)1, 123) == &primary);
+    assert(cloud_checks == before_foreign + 1);
     assert(hook_FindToolForTargetApp((void *)1, 0) == &primary);
     puts("Native global Mac32 routing, explicit choices and Cloud preflight fixture passed");
     return 0;

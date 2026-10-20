@@ -27,5 +27,7 @@
     "J(\"span\",{children:\"Use Gluon for 32-bit Mac games\"})]})," \
     "J(\"p\",{style:{opacity:.75,lineHeight:1.5,margin:\"10px 0 0 28px\"},children:" \
     "\"Automatically use the Windows version when a game's Mac version is 32-bit. 64-bit Mac games keep their native version. Restart Steam after changing this setting.\"})," \
-    "J(\"p\",{role:\"status\",\"aria-live\":\"polite\",style:{marginLeft:28},children:globalThis.__GLUON_SETTINGS__.status()})]});\n"
+    "J(\"p\",{role:\"status\",\"aria-live\":\"polite\",style:{marginLeft:28},children:globalThis.__GLUON_SETTINGS__.status()})," \
+    "J(\"p\",{style:{opacity:.75,lineHeight:1.5,marginTop:24},children:" \
+    "\"Steam Cloud works automatically for games that support it and follows your Steam Cloud settings. Existing saves are preserved. If save folders conflict, Gluon explains the issue before starting the game.\"})]});\n"
 #endif

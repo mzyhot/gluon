@@ -293,7 +293,7 @@ with tempfile.TemporaryDirectory() as temporary:
 #define NP_COMPAT_TOOL_NONE "gluon.none"
 #define NP_ERR(...) ((void)0)
 #define NP_DBG(...) ((void)0)
-static struct tool { const char *name; } primary={"gluon-proton"}, recovery={"gluon"}, other={"other-tool"};
+static struct tool { const char *name; } primary={"gluon-proton"}, recovery={"gluon"}, other={"other-tool"}, prefixed_other={"gluon-custom"};
 static void *orig_FindToolForTargetApp, *original_tool;
 static const char *mapping;
 static unsigned platforms, cloud_checks;
