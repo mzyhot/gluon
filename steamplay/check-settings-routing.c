@@ -14,6 +14,15 @@ int main(void) {
     mapping = NULL;
     auto_mac32 = 0;
     assert(hook_FindToolForTargetApp((void *)1, 123) == NULL);
+    windows_launch_only = 1;
+    assert(hook_FindToolForTargetApp((void *)1, 480) == &primary); // Spacewar's common Mac flag is inaccurate.
+    mapping = "gluon.none";
+    assert(hook_FindToolForTargetApp((void *)1, 480) == NULL);
+    mapping = "unavailable-explicit-tool";
+    assert(hook_FindToolForTargetApp((void *)1, 480) == NULL);
+    mapping = NULL;
+    windows_launch_only = 0;
+    assert(hook_FindToolForTargetApp((void *)1, 480) == NULL); // Unknown native platform is not inferred.
     platforms = COMPAT_PLATFORM_MACOS;
     auto_mac32 = 1;
     assert(hook_FindToolForTargetApp((void *)1, 123) == NULL); // Mac-only has no Windows transport.

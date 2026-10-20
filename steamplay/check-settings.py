@@ -62,6 +62,23 @@ with tempfile.TemporaryDirectory() as temporary:
     for appid in (18,23):
         entries[appid]['depots']['103'] = {'config':{'lowviolence':'1'}, 'manifests':{'public':{'gid':'4000'}}}
 
+    # Original generated metadata reproduces Spacewar's inaccurate common
+    # platform flags plus its sole implicit Windows executable launch.
+    def windows_launch_only():
+        return {'common':{'type':'Game','oslist':'windows,macos,linux','osarch':'','osextended':''},
+                'config':{'launch':{'0':{'executable':'Example.exe','type':'none'}}},
+                'depots':{'100':{'manifests':{'public':{'gid':'1000'}}},
+                          '101':{'config':{'oslist':'windows'},'depotfromapp':'999'}}}
+    for appid in range(34,43):
+        entries[appid] = windows_launch_only()
+    entries[35]['config']['launch']['1'] = {'executable':'Native.app','config':{'oslist':'macos'}}
+    entries[36]['common']['osextended'] = 'macos64'
+    entries[37]['depots']['100']['config'] = {'oslist':'macos','osarch':'32'}
+    entries[38]['config']['launch']['0']['executable'] = 'Native.app'
+    entries[39]['config']['launch']['1'] = {'executable':'linux-game','config':{'oslist':'linux'}}
+    entries[40]['config']['launch']['0']['config'] = {'oslist':'all'}
+    entries[41]['config']['launch']['1'] = {'executable':'Native.app','config':{'oslist':'macos','osarch':'arm64','BetaKey':'beta'}}
+    entries[42]['depots']['100'] = {'depotfromapp':'998'} # Unresolved native/shared platform is ambiguous.
     entries[13]['config']['launch'].pop('0')  # No Windows build to run.
     entries[15]['config']['launch']['2'] = {'executable':'Game64.app', 'config':{'oslist':'macos','osarch':'64'}}
     macho32 = struct.pack('<IIIIIII', 0xfeedface, 7, 3, 2, 0, 0, 0)
@@ -112,6 +129,7 @@ with tempfile.TemporaryDirectory() as temporary:
     output = subprocess.check_output([str(source / 'out/appinfo'), str(cache), '--platforms'], text=True, env=helper_env)
     lists = dict(line.split('=',1) for line in output.splitlines())
     assert lists['mac32'] == '1,2,8,18,21,22,30', output
+    assert lists['windows_launch_only'] == '34,39', output
     # A native64 executable vetoes metadata32 too, including universal binaries.
     entries[9]['config']['launch']['1']['config']['osarch'] = '32'
     entries[10]['config']['launch']['1']['config']['osarch'] = '32'
@@ -279,10 +297,11 @@ static struct tool { const char *name; } primary={"gluon-proton"}, recovery={"gl
 static void *orig_FindToolForTargetApp, *original_tool;
 static const char *mapping;
 static unsigned platforms, cloud_checks;
-static int auto_mac32;
+static int auto_mac32, windows_launch_only;
 static void *fixture_original(void *mgr, uint32_t appid) { (void)mgr; (void)appid; return original_tool; }
 static unsigned np_compat_valid_platforms(void *mgr, uint32_t appid) { (void)mgr; (void)appid; return platforms; }
 static int gluon_settings_auto_app(uint32_t appid) { return auto_mac32 && appid == 123; }
+static int np_nativeplatform_is_windows_launch_only(uint32_t appid) { return windows_launch_only && appid == 480; }
 static const char *np_compat_app_mapping(void *mgr, uint32_t appid) { (void)mgr; (void)appid; return mapping; }
 static void *np_compat_registered_tool(void *mgr) { (void)mgr; return &primary; }
 static void *np_compat_recovery_tool(void *mgr) { (void)mgr; return &recovery; }

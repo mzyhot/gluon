@@ -50,6 +50,13 @@ old leftover files cannot attest a newly advertised Mac version. It is exposed t
 automatic routing only after it has been persisted;
 unversioned Mac content and corrupt or unwritable evidence stay conservative.
 
+A separate Windows fallback handles games whose common platform flags advertise
+macOS but whose launch catalogue defines only Windows executables, such as
+Spacewar. It does not classify a Windows PE as a native Mac32 executable and does
+not depend on this toggle. A native Mac launch on any branch, Mac-specific depot,
+Mac64/Apple Silicon flag, unresolved shared-depot platform or unknown launch
+command prevents that correction. Explicit per-game choices still win.
+
 The preference lives in `Gluon/steamplay/auto-mac32` in the user's Application
 Support folder and persists across installer upgrades. The active Steam process
 keeps its startup policy until restart so that its separate Settings and Library

@@ -20,26 +20,28 @@ The preference takes effect on a Steam restart and never writes per-game mapping
  
          #expect(result.status == 0)
 -        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\n")
-+        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\nmac32=\n")
++        #expect(result.stdout == "mac=10,50\nwindows=10,20,30\nmac32=\nwindows_launch_only=\n")
      }
  
      @Test("--platforms on a cache that stops early prints nothing and fails", arguments: [false, true])
 --- a/dylib/feats/compat.c
 +++ b/dylib/feats/compat.c
-@@ -1,5 +1,6 @@
+@@ -1,5 +1,7 @@
  // Compatibility tool support
  #include "compat.h"
 +#include "gluon_settings.h"
++#include "nativeplatform.h"
  #include "../util/log.h"
  #include "../util/file.h"
  #include "../util/a64.h"
-@@ -737,7 +738,8 @@
+@@ -737,7 +738,9 @@
      if (!compat_mgr || !appid)
          return false;
      uint32_t platforms = np_compat_valid_platforms(compat_mgr, appid);
 -    return (platforms & COMPAT_PLATFORM_WINDOWS) && !(platforms & COMPAT_PLATFORM_MACOS);
 +    return (platforms & COMPAT_PLATFORM_WINDOWS) &&
-+        (!(platforms & COMPAT_PLATFORM_MACOS) || gluon_settings_auto_app(appid));
++        (!(platforms & COMPAT_PLATFORM_MACOS) || gluon_settings_auto_app(appid) ||
++         np_nativeplatform_is_windows_launch_only(appid));
  }
  
  typedef void *(*fn_FindMapping)(void *compat_mgr, uint32_t appid);
@@ -127,12 +129,12 @@ The preference takes effect on a Steam restart and never writes per-game mapping
  
      int fds[2];
      if (pipe(fds) != 0) return NULL;
-@@ -152,24 +160,104 @@
+@@ -152,24 +160,115 @@
      return list;
  }
  
 +static pthread_mutex_t g_catalog_lock = PTHREAD_MUTEX_INITIALIZER;
-+static char *g_mac32;
++static char *g_mac32, *g_windows_launch_only;
 +static int g_catalog_loaded, g_refreshing;
 +static long long g_refreshed;
 +static struct stat g_appinfo_stamp;
@@ -151,34 +153,38 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +    if (!same_stamp(&before, &after)) { free(out); return NULL; }
      const char *at = out;
 -    size_t mac_len = 0, windows_len = 0;
-+    size_t mac_len = 0, windows_len = 0, mac32_len = 0;
++    size_t mac_len = 0, windows_len = 0, mac32_len = 0, launch_only_len = 0;
      const char *mac = take_list(&at, "mac=", &mac_len);
      const char *windows = mac ? take_list(&at, "windows=", &windows_len) : NULL;
 -    if (!windows || *at) {
 +    const char *mac32 = windows ? take_list(&at, "mac32=", &mac32_len) : NULL;
-+    if (!mac32 || *at) {
++    const char *launch_only = mac32 ? take_list(&at, "windows_launch_only=", &launch_only_len) : NULL;
++    if (!launch_only || *at) {
          NP_WARN("nativeplatform: appinfo helper printed something unexpected");
          free(out);
          return NULL;
      }
 -    size_t cap = mac_len + windows_len + 128;
 +    char *ids = strndup(mac32, mac32_len);
-+    if (!ids) { free(out); return NULL; }
++    char *launch_ids = strndup(launch_only, launch_only_len);
++    if (!ids || !launch_ids) { free(ids); free(launch_ids); free(out); return NULL; }
 +    pthread_mutex_lock(&g_catalog_lock);
 +    free(g_mac32);
 +    g_mac32 = ids;
++    free(g_windows_launch_only);
++    g_windows_launch_only = launch_ids;
 +    g_appinfo_stamp = after;
 +    g_catalog_loaded = 1;
 +    g_refreshed = now_ms();
 +    pthread_mutex_unlock(&g_catalog_lock);
-+    size_t cap = mac_len + windows_len + mac32_len + 160;
++    size_t cap = mac_len + windows_len + mac32_len + launch_only_len + 256;
      char *js = malloc(cap);
      if (js)
          snprintf(js, cap,
 -                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s])};\n",
 -                 (int)mac_len, mac, (int)windows_len, windows);
-+                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s]),mac32:new Set([%.*s])};\n",
-+                 (int)mac_len, mac, (int)windows_len, windows, (int)mac32_len, mac32);
++                 "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([%.*s]),windows:new Set([%.*s]),mac32:new Set([%.*s]),windowsLaunchOnly:new Set([%.*s])};\n",
++                 (int)mac_len, mac, (int)windows_len, windows, (int)mac32_len, mac32, (int)launch_only_len, launch_only);
      free(out);
      return js;
  }
@@ -186,7 +192,10 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +void np_nativeplatform_refresh(void) {
 +    char *js = np_nativeplatform_javascript();
 +    pthread_mutex_lock(&g_catalog_lock);
-+    if (!js) { free(g_mac32); g_mac32 = NULL; memset(&g_appinfo_stamp, 0, sizeof g_appinfo_stamp); }
++    if (!js) {
++        free(g_mac32); g_mac32 = NULL; free(g_windows_launch_only); g_windows_launch_only = NULL;
++        memset(&g_appinfo_stamp, 0, sizeof g_appinfo_stamp);
++    }
 +    free(js);
 +    g_catalog_loaded = 1; // A failing helper stays conservative and does not spin.
 +    g_refreshed = now_ms();
@@ -202,7 +211,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +    return NULL;
 +}
 +
-+int np_nativeplatform_is_mac32(unsigned int appid) {
++static int catalog_contains(unsigned int appid, int windows_launch_only) {
 +    int found = 0, refresh = 0, first;
 +    char path[PATH_MAX]; struct stat current = {0};
 +    appinfo_path(path, sizeof path); stat(path, &current);
@@ -227,7 +236,8 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +    }
 +    pthread_mutex_lock(&g_catalog_lock);
 +    // Never route using architecture evidence from an older app metadata cache.
-+    const char *at = same_stamp(&current, &g_appinfo_stamp) ? g_mac32 : NULL;
++    const char *at = same_stamp(&current, &g_appinfo_stamp) ?
++        (windows_launch_only ? g_windows_launch_only : g_mac32) : NULL;
 +    while (at && *at) {
 +        char *end;
 +        unsigned long id = strtoul(at, &end, 10);
@@ -237,13 +247,17 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +    pthread_mutex_unlock(&g_catalog_lock);
 +    return found;
 +}
++
++int np_nativeplatform_is_mac32(unsigned int appid) { return catalog_contains(appid, 0); }
++int np_nativeplatform_is_windows_launch_only(unsigned int appid) { return catalog_contains(appid, 1); }
 --- a/dylib/feats/nativeplatform.h
 +++ b/dylib/feats/nativeplatform.h
-@@ -3,5 +3,7 @@
+@@ -3,5 +3,8 @@
  #define NOTPROTON_FEATS_NATIVEPLATFORM_H
  
  char *np_nativeplatform_javascript(void);
 +int np_nativeplatform_is_mac32(unsigned int appid);
++int np_nativeplatform_is_windows_launch_only(unsigned int appid);
 +void np_nativeplatform_refresh(void);
  
  #endif // NOTPROTON_FEATS_NATIVEPLATFORM_H
@@ -418,12 +432,13 @@ The preference takes effect on a Steam restart and never writes per-game mapping
      size_t patched_len = 0;
 --- a/dylib/tests/compatcheck.c
 +++ b/dylib/tests/compatcheck.c
-@@ -22,6 +22,9 @@
+@@ -22,6 +22,10 @@
  #include <stdatomic.h>
  #include <sys/wait.h>
  
 +static int stub_auto_mac32;
 +bool gluon_settings_auto_app(uint32_t appid) { return appid == 7 && stub_auto_mac32; }
++int np_nativeplatform_is_windows_launch_only(unsigned appid) { (void)appid; return 0; }
 +
  static atomic_int home_calls;
  static atomic_int home_ready;
@@ -658,10 +673,10 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 -           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10])};\n");
 -    expect("empty lists", "printf 'mac=\\nwindows=\\n'",
 -           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([])};\n");
-+    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\nmac32=30\\n'",
-+           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10]),mac32:new Set([30])};\n");
-+    expect("empty lists", "printf 'mac=\\nwindows=\\nmac32=\\n'",
-+           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([]),mac32:new Set([])};\n");
++    expect("two lists", "[ \"$2\" = --platforms ] || exit 2\nprintf 'mac=20,30\\nwindows=10\\nmac32=30\\nwindows_launch_only=20\\n'",
++           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([20,30]),windows:new Set([10]),mac32:new Set([30]),windowsLaunchOnly:new Set([20])};\n");
++    expect("empty lists", "printf 'mac=\\nwindows=\\nmac32=\\nwindows_launch_only=\\n'",
++           "window.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([]),windows:new Set([]),mac32:new Set([]),windowsLaunchOnly:new Set([])};\n");
      expect("no helper", NULL, NULL);
      expect("a helper that fails", "printf 'mac=1\\nwindows=2\\n'; exit 1", NULL);
      expect("script in a list", "printf 'mac=1,2]);alert(1);//\\nwindows=\\n'", NULL);
@@ -671,7 +686,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
  // Reads Steam's appinfo.vdf cache and prints key=value metadata for one app on
  // stdout. Usage: appinfo <appinfo.vdf> <appid>.
 -// With --platforms instead of an appid it prints mac= and windows= appid lists.
-+// With --platforms it prints mac=, windows= and positively identified mac32= lists.
++// With --platforms it prints mac=, windows=, mac32= and windows_launch_only= lists.
  //
  // common/icon is a 32x32 thumbnail. common/clienticon is the real multi-res
  // icon, and the two hashes differ for most apps, so the icon cannot be
@@ -684,7 +699,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
  
  let args = CommandLine.arguments
  let platforms = args.count == 3 && args[2] == "--platforms"
-@@ -203,13 +205,468 @@
+@@ -203,13 +205,505 @@
      return found
  }
  
@@ -1071,6 +1086,42 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +    }
 +}
 +
++// Some catalogue entries advertise macos globally while defining only a
++// Windows launch (Spacewar is one example). This is separate from native Mac32:
++// no native architecture is invented, and the automatic Windows default does
++// not depend on the Mac32 preference. Any possible native Mac launch/content,
++// Mac64/Apple Silicon flag or unknown platform command keeps the app native.
++func isWindowsLaunchOnly(_ app: [String: Value], _ depots: MacDepotVersions) -> Bool {
++    let common = section(app["common"]), systems = words(common["oslist"])
++    guard text(common["type"]).lowercased() == "game", systems.contains("windows"), systems.contains("macos") else { return false }
++    let extended = words(common["osextended"])
++    guard !extended.contains("macos64"), !extended.contains("macosapplesilicon") else { return false }
++    for (id, value) in section(app["depots"]) where UInt32(id) != nil {
++        let declared = section(value), declaredOS = words(section(declared["config"])["oslist"])
++        if !declaredOS.isEmpty && declaredOS.isSubset(of: ["windows", "linux"]) { continue }
++        guard let depot = depots.resolved(declared, id) else { return false }
++        let os = words(section(depot["config"])["oslist"])
++        if os.contains("macos") || os.contains("all") { return false }
++    }
++    var windows = false
++    for value in section(section(app["config"])["launch"]).values {
++        let entry = section(value), config = section(entry["config"])
++        let executable = text(entry["executable"]), os = words(config["oslist"])
++        if executable.isEmpty { continue }
++        if os.contains("macos") || os.contains("all") { return false }
++        if os.isEmpty {
++            // Steam's omitted launch oslist defaults to Windows. Require its
++            // executable suffix too rather than infer from an unknown command.
++            if !executable.lowercased().hasSuffix(".exe") { return false }
++            windows = true
++        } else {
++            if !os.isSubset(of: ["windows", "linux"]) { return false }
++            if os.contains("windows") { windows = true }
++        }
++    }
++    return windows
++}
++
 +func isMac32(_ app: [String: Value], _ id: UInt32, _ libraries: [URL], _ evidence: Mac32Evidence, _ depots: MacDepotVersions) -> Bool {
 +    let common = section(app["common"]), systems = words(common["oslist"])
 +    guard text(common["type"]).lowercased() == "game", systems.contains("macos"),
@@ -1143,7 +1194,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
  func printPlatforms(_ b: [UInt8]) throws {
      var mac: [UInt32] = []
      var windows: [UInt32] = []
-+    var mac32: [UInt32] = []
++    var mac32: [UInt32] = [], windowsLaunchOnly: [UInt32] = []
 +    let evidence = Mac32Evidence(), depots = MacDepotVersions()
 +    let libraries = steamLibraries(URL(fileURLWithPath: args[1]).deletingLastPathComponent().deletingLastPathComponent())
      let complete = try forEachApp(b) { id, keys in
@@ -1151,10 +1202,11 @@ The preference takes effect on a Steam restart and never writes per-game mapping
 +        let app = try keys()
 +        guard case .section(let common)? = app["common"] else { return true }
 +        if isMac32(app, id, libraries, evidence, depots) { mac32.append(id) }
++        if isWindowsLaunchOnly(app, depots) { windowsLaunchOnly.append(id) }
          guard case .string(let oslist)? = common["oslist"] else {
              windows.append(id)
              return true
-@@ -220,8 +593,11 @@
+@@ -220,8 +593,12 @@
          return true
      }
      guard complete else { throw VDFError.truncated }
@@ -1163,6 +1215,7 @@ The preference takes effect on a Steam restart and never writes per-game mapping
      print("mac=" + mac.map(String.init).joined(separator: ","))
      print("windows=" + windows.map(String.init).joined(separator: ","))
 +    print("mac32=" + mac32.map(String.init).joined(separator: ","))
++    print("windows_launch_only=" + windowsLaunchOnly.map(String.init).joined(separator: ","))
  }
  
  do {

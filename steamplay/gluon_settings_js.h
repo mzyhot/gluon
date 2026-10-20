@@ -9,7 +9,7 @@
     "const p=globalThis.__NOTPROTON_NATIVE_PLATFORM__,d=globalThis.appDetailsStore?.GetAppDetails(this.appid)," \
     "n=d?.strCompatToolName||\"\",gluon=/^(gluon|gluon-proton)$/.test(n),explicit=d?.nCompatToolPriority>=250;" \
     "if(n===\"gluon.none\"||explicit&&!gluon)return true;if(gluon)return false;if(n)return true;" \
-    "if(p?.windows?.has(this.appid)&&!p.mac?.has(this.appid))return false;" \
+    "if(p?.windowsLaunchOnly?.has(this.appid)||p?.windows?.has(this.appid)&&!p.mac?.has(this.appid))return false;" \
     "return !(globalThis.__GLUON_SETTINGS__?.effectiveMac32&&p?.mac32?.has(this.appid))}"
 
 // An actual Settings section, using the page's JSX runtime and an accessible

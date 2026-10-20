@@ -8,7 +8,7 @@ const settings = context.__GLUON_SETTINGS__;
 // Use the exact generated overview getter; raw invalid OS flags are true in
 // these cases, so a mistaken clear would hide a real unsupported/native state.
 const overview=vm.runInContext(fs.readFileSync(process.argv[3],'utf8'),context);
-context.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([32,64]),windows:new Set([11,32,64]),mac32:new Set([32])};
+context.__NOTPROTON_NATIVE_PLATFORM__={mac:new Set([32,64,480]),windows:new Set([11,32,64,480]),mac32:new Set([32]),windowsLaunchOnly:new Set([480])};
 let details;
 context.appDetailsStore={GetAppDetails:()=>details};
 const invalid=(id,chosen,priority,enabled=true)=>{
@@ -25,6 +25,9 @@ assert.equal(invalid(32,'gluon-proton',250,false),false,'explicit Gluon remains 
 assert.equal(invalid(32,'',0),false,'confirmed Mac32 uses the enabled automatic policy');
 assert.equal(invalid(32,'',0,false),true,'disabled Mac32 automatic policy preserves unsupported state');
 assert.equal(invalid(64,'',0),true,'Mac64 is never made eligible by the Mac32 policy');
+assert.equal(invalid(480,'',0,false),false,'proven Windows-only launch stays usable despite common Mac flag and disabled Mac32 preference');
+assert.equal(invalid(480,'gluon.none',250,false),true,'explicit None wins over the proven Windows launch fallback');
+assert.equal(invalid(480,'other-tool',250,false),true,'explicit other tool wins over the proven Windows launch fallback');
 assert.equal(invalid(11,'gluon.none',250),true,'Windows explicit None remains respected');
 settings.effectiveMac32=false;
 
