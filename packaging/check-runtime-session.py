@@ -27,6 +27,7 @@ def wait_file(path, timeout=10):
         time.sleep(0.01)
 
 
+
 def check(runtime, output):
     wine = str(runtime / 'bin/wine')
     server = str(runtime / 'bin/wineserver')
@@ -79,8 +80,10 @@ def check(runtime, output):
                                  ':done\r\n')
                 # Native cmd's start returns with its child still alive. Use
                 # the requested PE architecture for both parent and descendant.
-                command = 'start "" /b "' + windows(cmd) + '" /c "' + windows(batch) + '"'
-                parent = spawn([wine, str(cmd), '/c', command])
+                parent_batch = work / (arch + '-parent.cmd')
+                parent_batch.write_text('@echo off\r\nstart "" /b "' + windows(cmd)
+                                        + '" /d /c "' + windows(batch) + '"\r\n')
+                parent = spawn([wine, str(cmd), '/d', '/c', windows(parent_batch)])
                 wait_file(ready)
                 if parent.wait(timeout=10) != 0:
                     raise RuntimeError('detached-child launcher failed')
@@ -100,7 +103,9 @@ def check(runtime, output):
                 if full.poll() is not None:
                     raise RuntimeError('warm server exited at game completion')
                 repeated = work / (arch + '-repeated')
-                run([wine, str(cmd), '/c', 'echo repeated>"' + windows(repeated) + '"'])
+                repeat_batch = work / (arch + '-repeat.cmd')
+                repeat_batch.write_text('@echo off\r\necho repeated>"' + windows(repeated) + '"\r\n')
+                run([wine, str(cmd), '/d', '/c', windows(repeat_batch)])
                 wait_file(repeated)
                 run([server, '--wait-idle'])
                 if full.poll() is not None:

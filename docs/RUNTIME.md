@@ -2,8 +2,11 @@
 
 This replaces the useful launcher/runtime work from PR #1 while retaining native
 Steam Play. It does not restore the metadata agent, depot rewrites or experimental
-Steam probe. For an old 32-bit Mac title with a Windows build, select Gluon in
-Steam's Compatibility settings; Steam selects its Windows depots through the tool.
+Steam probe. Steam Settings > Gluon can automatically route positively identified
+32-bit Mac titles with Windows builds through Gluon after restarting Steam.
+64-bit and ambiguous Mac titles retain native selection. Explicit per-game
+Compatibility choices take precedence; Steam selects Windows depots through its
+compatibility manager. See [classification rules](STEAM-SETTINGS.md).
 
 ## Game sessions and responsiveness
 
@@ -28,6 +31,29 @@ retained because a game launcher can exit while its child game keeps running.
 These changes do not establish a measured launch-time improvement: real window
 readiness, natural-exit latency, Stop and Big Picture remain manual acceptance tests.
 
+Packaged Wine runtimes with the warm-session protocol retain system services for
+up to 120 idle seconds after a normal game exit. Repeat launches in that interval
+reuse the same prefix server. Completion waits for all Wine user processes,
+including detached game children, and flushes their registry writes before
+releasing Steam's tracked host. System-service lifetime is separate from game
+lifetime. Services are bootstrapped without the game's Steam identifiers, native
+overlay or app-bundle loader. Stop still requests a complete prefix shutdown.
+
+An exclusive prefix lease prevents overlapping launches from taking ownership of
+the same prefix. Stop while waiting for another launch cancels only the waiting
+launch. Runtime, prefix inode and synchronization settings must match the saved
+warm identity before reuse. Changes retire the previous idle server first; an
+active or unverifiable server is not forcibly replaced. Cloud preparation and
+runtime activation can retire attested idle servers, then retain their global
+Wine activity checks. Dry-run activation never retires a server. Older runtimes
+and Proton retain their existing full-server wait.
+
+This targets repeated Wine initialization and the shutdown tail. A first launch
+after services expire still needs cold initialization, and game-engine loading
+is unchanged. The retained services consume memory until their bounded expiry;
+set `GLUON_WARM_SERVER=0` to use full shutdown after each game. Actual Steam UI
+running-state timing still requires manual acceptance.
+
 ## Settings
 
 Settings are `NAME=value` lines in `Gluon/settings.env`, then
@@ -42,6 +68,7 @@ Native install helpers retain their original argument strings.
 | `GLUON_OVERLAY` | `1` | Steam-supplied native overlay |
 | `GLUON_STEAM_BRIDGE` | `1` | Existing optional Steam API bridge |
 | `GLUON_CAFFEINATE` | `1` | Keep the display/system awake during a game |
+| `GLUON_WARM_SERVER` | `1` | Retain compatible Wine services for up to 120 idle seconds |
 | `WINEMSYNC` | `1` | Mach semaphore synchronization for plain Wine |
 | `GLUON_GL_COMPAT_AS_CORE` | `0` | Opt in to mapping OpenGL 3.0–4.1 compatibility requests onto Apple's core profile |
 

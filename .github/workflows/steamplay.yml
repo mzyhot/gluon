@@ -26,6 +26,12 @@ jobs:
         run: packaging/check-launcher-host.sh
       - name: Native first-window focus fixtures
         run: python3 packaging/check-wine-focus.py --self-test
+      - name: Compile external Electron window observer
+        run: |
+          mkdir -p build/evidence
+          clang -arch arm64 -fobjc-arc -Wall -Wextra -Werror \
+            -framework AppKit -framework CoreGraphics packaging/profile-electron-window.m \
+            -o build/evidence/electron-window-observer
       - name: Build and inspect Steam Play payload
         run: |
           set -o pipefail

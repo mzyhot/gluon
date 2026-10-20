@@ -51,6 +51,12 @@ jobs:
         run: packaging/check-launcher-host.sh
       - name: Native first-window focus fixtures
         run: python3 packaging/check-wine-focus.py --self-test
+      - name: Compile external Electron window observer
+        run: |
+          mkdir -p build/evidence
+          clang -arch arm64 -fobjc-arc -Wall -Wextra -Werror \
+            -framework AppKit -framework CoreGraphics packaging/profile-electron-window.m \
+            -o build/evidence/electron-window-observer
 
       - name: Cache downloads
         uses: actions/cache@v4
@@ -187,6 +193,10 @@ jobs:
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
 
+      - name: Check compiled warm-session lifecycle
+        timeout-minutes: 5
+        run: python3 packaging/check-runtime-session.py build/gluon-wine build/graphics-probes
+
       - name: Check compiled Chromium child overlay routing
         timeout-minutes: 4
         run: python3 packaging/check-runtime-overlay.py build/gluon-wine build/graphics-probes
@@ -198,6 +208,14 @@ jobs:
           mkdir -p build/launch-baseline
           git archive v0.4.1-fixed gluon tool/gluon tools/gluon-launcher-host.m tools/gluon-steam-client.h steamplay/run.sh | tar -x -C build/launch-baseline
           python3 packaging/profile-launch.py build/gluon-wine build/graphics-probes build/launch-baseline
+
+      - name: Compare public Electron native-window startup with v0.4.2
+        timeout-minutes: 12
+        run: |
+          git fetch --depth=1 origin tag v0.4.2
+          mkdir -p build/electron-baseline
+          git archive v0.4.2 gluon tool/gluon tools/gluon-launcher-host.m tools/gluon-steam-client.h steamplay/run.sh | tar -x -C build/electron-baseline
+          python3 packaging/profile-electron-launch.py build/gluon-wine build/graphics-probes build/electron-baseline
 
       - name: Build logs on failure
         if: failure()

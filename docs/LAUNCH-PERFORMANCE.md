@@ -41,6 +41,32 @@ excludes the first launch from each median, and records four samples per version
 The fixture excludes the game, Steam IPC, overlay and GPU. Its result must not be
 presented as Happy Wheels' end-to-end launch time.
 
+The candidate also has a bounded warm Wine session. Wine tracks user-process
+completion separately from retained system services, flushes the registry before
+publishing idle, and exposes an atomic idle-only shutdown request. The launcher
+holds a per-prefix lease until the game ends. Compatible repeats within 120 idle
+seconds reuse the existing server; Stop drains the prefix completely. No daemon
+or game prelaunch is installed. A cold first launch still incurs Wine boot work.
+
+The complete-runtime workflow compares the `v0.4.2` wrapper and candidate with
+the same newly compiled Wine using pinned, publicly released Windows Electron
+and a generated offline canvas app. It collects three samples after a warmup for
+released/cold, candidate/cold and candidate/warm. Cold means a stopped Wine
+server; OS, shader and Electron profile caches are not flushed. Warm samples must
+retain the same kernel-locked Wine server process. These samples have no latency
+pass threshold and cannot establish Happy Wheels' new launch time.
+
+An external native observer polls WindowServer metadata every 20 ms. A matching
+window must belong to the exact generated bundle and Wine executable, be visible
+at layer zero and have the generated normal-window bounds. Its unique title is
+checked when macOS exposes it. The timestamp records first observation of an
+onscreen native window, including polling delay; it is not a compositor-frame or
+game-ready timestamp. Renderer canvas output is checked separately. The fixture
+excludes Steam IPC, the Steam helper, real overlay libraries, custom game addons
+and all game assets. It disables Chromium sandboxing only in the generated CI
+fixture. Public archives, cloned prefixes and downloaded binaries are removed
+after the run; retained evidence consists of bounded logs and JSON.
+
 Native checks include Clang static analysis, Apple's live `leaks` inspection of
 an isolated Cocoa host, and a separate Cloud-guard `leaks --atExit` run that
 repeatedly replaces its catalogue. ASan/UBSan run separately from Apple's malloc
