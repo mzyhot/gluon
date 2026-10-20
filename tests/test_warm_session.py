@@ -30,6 +30,9 @@ class WarmSessionTests(unittest.TestCase):
             path = self.runtime / 'bin' / name
             path.write_text('fixture, never executed')
             path.chmod(0o755)
+        command = self.runtime / 'lib/wine/x86_64-windows/cmd.exe'
+        command.parent.mkdir(parents=True)
+        command.write_text('fixture, never executed')
         marker = self.runtime / 'licenses/gluon-wine-patches/APPLIED.txt'
         marker.parent.mkdir(parents=True)
         marker.write_text(session.WARM_PATCH + '\n')
@@ -273,8 +276,9 @@ class WarmSessionTests(unittest.TestCase):
             popen.return_value.wait.return_value = 0
             session._bootstrap_services(self.runtime, self.prefix)
         arguments, options = popen.call_args
-        self.assertEqual(arguments[0], [str(self.runtime / "bin/wine"), "cmd.exe", "/d", "/c", "exit", "0"])
+        self.assertEqual(arguments[0], [str(self.runtime / "bin/wine"), str(self.runtime / "lib/wine/x86_64-windows/cmd.exe"), "/d", "/c", "exit", "0"])
         self.assertTrue(options["close_fds"])
+        self.assertTrue(options["env"]["WINEDLLOVERRIDES"].endswith("cmd.exe=b"))
         self.assertEqual(options["env"]["WINEPREFIX"], str(self.prefix))
         self.assertEqual(options["env"]["WINELOADER"], str(self.runtime / "bin/wine"))
         self.assertFalse(any(key.startswith(("Steam", "STEAM_", "GLUON_", "DYLD_")) for key in options["env"]))

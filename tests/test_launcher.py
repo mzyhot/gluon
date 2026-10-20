@@ -86,7 +86,7 @@ elif args[:2] == ['wineboot', '--init']:
     prefix = pathlib.Path(os.environ['WINEPREFIX'])
     prefix.mkdir(parents=True, exist_ok=True)
     (prefix / 'system.reg').write_text('fixture')
-elif args == ['cmd.exe', '/d', '/c', 'exit', '0']:
+elif args[1:] == ['/d', '/c', 'exit', '0'] and pathlib.Path(args[0]).name == 'cmd.exe':
     record('bootstrap', appid=os.environ.get('SteamAppId'), host=os.environ.get('GLUON_HOST_PID'))
 elif args[:1] == ['reg']:
     if phase == 'registry':
@@ -137,6 +137,9 @@ class LauncherLifecycleTests(unittest.TestCase):
             path.write_text("#!%s\n%s" % (sys.executable, STUB))
             path.chmod(0o755)
         if warm:
+            command = self.runtime / "lib/wine/x86_64-windows/cmd.exe"
+            command.parent.mkdir(parents=True, exist_ok=True)
+            command.write_text("fixture, never executed")
             marker = self.runtime / "licenses/gluon-wine-patches/APPLIED.txt"
             marker.parent.mkdir(parents=True)
             marker.write_text("wine-session-idle\n")

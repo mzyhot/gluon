@@ -272,8 +272,15 @@ def _system_environment(runtime, prefix):
 
 def _bootstrap_services(runtime, prefix, timeout=30.0):
     environment = _system_environment(runtime, prefix)
+    # Never resolve cmd.exe through a game's working directory or prefix PATH.
+    # Select the packaged builtin even if the game installed a native override.
+    command = Path(runtime) / "lib/wine/x86_64-windows/cmd.exe"
+    if not command.is_file():
+        raise SessionError("runtime lacks its builtin Wine bootstrap command")
+    overrides = environment.get("WINEDLLOVERRIDES", "")
+    environment["WINEDLLOVERRIDES"] = (overrides + ";" if overrides else "") + "cmd.exe=b"
     try:
-        child = subprocess.Popen([str(Path(runtime) / "bin/wine"), "cmd.exe", "/d", "/c", "exit", "0"],
+        child = subprocess.Popen([str(Path(runtime) / "bin/wine"), str(command), "/d", "/c", "exit", "0"],
                                  env=environment, preexec_fn=_reset_child_signals, close_fds=True)
     except OSError as error:
         raise SessionError("cannot bootstrap Wine services") from error
