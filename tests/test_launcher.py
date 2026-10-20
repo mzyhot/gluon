@@ -75,7 +75,7 @@ elif role == 'wineserver':
             print('err:fixture: final server wait failed', file=sys.stderr)
             sys.exit(42)
         # shutdown-timeout: the server never releases its lock after -k hangs.
-        if phase in ('registry-wait', 'prelaunch-wait', 'final-wait', 'shutdown-timeout'):
+        if phase in ('registry-wait', 'prelaunch-wait', 'final-wait', 'shutdown-timeout', 'helper-tail'):
             block()
 elif role == 'proton':
     if phase in ('proton', 'proton-ignores-term', 'shutdown-timeout'):
@@ -241,6 +241,20 @@ class LauncherLifecycleTests(unittest.TestCase):
 
     def test_term_interrupts_wineboot(self):
         self.assert_cancelled("wineboot")
+
+    def test_install_helper_holds_lease_through_descendant_completion_barrier(self):
+        import fcntl
+        self.prepare('helper-tail')
+        self.start('runinprefix')
+        blocked = self.wait_for_blocked()
+        self.assertEqual(blocked['args'], ['-w'])
+        with (self.compat / '.gluon-session.lock').open('a') as contender:
+            with self.assertRaises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.process.terminate()
+        output = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 143, output)
+        self.assertFalse(any(event['args'] == ['-k'] for event in self.events()))
 
     def test_term_interrupts_registry_server_wait(self):
         self.assert_cancelled("registry-wait", bridge=True)

@@ -182,6 +182,10 @@ sys.exit(int(os.environ.get('LEASE_WINE_STATUS', '0')))
         output = self.process.communicate(timeout=5)
         self.assertEqual(self.process.returncode, 0, output)
         events = [json.loads(line) for line in (self.root / 'wine-events').read_text().splitlines()]
+        waits = [event for event in events if event['role'] == 'wineserver']
+        self.assertEqual([event['args'] for event in waits], [['--wait-idle']])
+        self.assertTrue(all(event['lease_held'] and not event['lease_inherited'] for event in waits))
+        events = [event for event in events if event['role'] == 'wine']
         self.assertEqual(len(events), 1, events)
         self.assertEqual(events[0]['role'], 'wine')
         self.assertTrue(events[0]['lease_held'])
@@ -198,6 +202,9 @@ sys.exit(int(os.environ.get('LEASE_WINE_STATUS', '0')))
         self.assertEqual(self.process.returncode, 0, output)
         self.assertEqual(output[0], (target + '\n').encode())
         events = [json.loads(line) for line in (self.root / 'wine-events').read_text().splitlines()]
+        self.assertEqual(events[-1]['args'], ['-w'])
+        self.assertTrue(events[-1]['lease_held'])
+        events = [event for event in events if event['role'] == 'wine']
         self.assertEqual(len(events), 1, events)
         self.assertEqual(events[0]['args'], ['winepath', '-u', target])
         self.assertTrue(events[0]['lease_held'])

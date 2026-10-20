@@ -82,6 +82,8 @@ acquisition, and the launcher rechecks the final Cloud view after acquiring its
 lease. Plain-Wine installation helpers and Wine-backed path conversions also use
 this lease without acquiring game identity or enabling warm sessions. Cancelling
 one of those helpers never requests prefix-wide shutdown.
+Natural helper completion retains the lease through native descendant cleanup;
+an installer returning early does not expose a still-writing child to migration.
 A pending launch or another preparation is a transient busy result, so
 the native guard retries instead of retaining a permanent failure. Current
 layout conflicts and publisher-rule changes take precedence over historical

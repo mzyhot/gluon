@@ -437,6 +437,21 @@ run_wait() {
     return "$child_status"
 }
 
+wait_prefix_writers() {
+    # Installers and winepath may return before a setup/installer descendant.
+    # Keep their lease until native user cleanup, without retaining a new server
+    # or terminating an unrelated manual Wine session on cancellation.
+    if grep -qx wine-session-idle "$patches" 2>/dev/null; then
+        run_wait "$wineserver" --wait-idle
+        prefix_wait_status=$?
+        [ "$prefix_wait_status" != 3 ] || { run_wait "$wineserver" -w; prefix_wait_status=$?; }
+    else
+        run_wait "$wineserver" -w
+        prefix_wait_status=$?
+    fi
+    return "$prefix_wait_status"
+}
+
 signal_child() {
     # The shell may have reaped an exited job already. Consult its live job
     # table so a delayed shutdown never signals a reused PID.
@@ -553,6 +568,9 @@ if [ -n "$path_conversion" ]; then
     wait "$child_pid"
     status=$?
     child_pid=""
+    wait_prefix_writers
+    helper_wait_status=$?
+    [ "$status" -ne 0 ] || status=$helper_wait_status
     exit "$status"
 fi
 
@@ -713,6 +731,10 @@ else
             log "  session wait failed (exit status $server_status)"
             [ "$status" -ne 0 ] || status=$server_status
         fi
+    else
+        wait_prefix_writers
+        helper_wait_status=$?
+        [ "$status" -ne 0 ] || status=$helper_wait_status
     fi
 fi
 elapsed=$(( $(date +%s) - started ))
