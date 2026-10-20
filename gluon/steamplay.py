@@ -233,7 +233,7 @@ class Installation:
             os.close(fd)
 
     def idle(self):
-        if not runtime._idle():
+        if not runtime._idle(home=self.home):
             raise SteamPlayError("quit Steam, Steam helpers and Wine games before changing Steam Play")
         result = subprocess.run(["pgrep", "-x", "steamwebhelper|Steam Helper"], capture_output=True)
         if result.returncode != 1:

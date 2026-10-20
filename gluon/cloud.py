@@ -18,7 +18,7 @@ import subprocess
 import sys
 import uuid
 
-from . import appinfo, steam, steamplay, vdf
+from . import appinfo, session, steam, steamplay, vdf
 
 MARKER = '.gluon-native-cloud.json'
 FOLDERS = ('Documents', 'Desktop', 'Downloads', 'Music', 'Pictures', 'Videos',
@@ -353,7 +353,13 @@ def _document_backups(appid, profile):
 
 
 def _wine_idle():
+    # A bounded warm server is not an active game. Retire only Gluon's
+    # attested idle servers, then keep the existing global activity barrier.
+    # A busy, foreign or unverified server still prevents prefix changes.
     result = subprocess.run(['pgrep', '-x', 'wineserver'], capture_output=True, timeout=5)
+    if result.returncode == 0:
+        session.drain_warm_sessions(steam.GLUON_HOME)
+        result = subprocess.run(['pgrep', '-x', 'wineserver'], capture_output=True, timeout=5)
     if result.returncode != 1:
         raise WineBusy('Wine is active; prefix preparation will retry after it exits')
 

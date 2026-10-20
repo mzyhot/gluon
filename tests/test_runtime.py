@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from gluon import runtime, steam
+from gluon import runtime, session, steam
 
 
 class RuntimeSelectionTests(unittest.TestCase):
@@ -161,6 +161,15 @@ class RuntimeSelectionTests(unittest.TestCase):
 
     def test_dry_run_preserves_selection_and_creates_no_backup(self):
         self.assertEqual(len(self.activate(dry_run=True)), 1)
+        self.assert_old()
+        self.assertFalse((self.home / "backups").exists())
+
+    def test_dry_run_does_not_retire_a_warm_session_to_activate_an_update(self):
+        with mock.patch.object(runtime.subprocess, "run", return_value=
+                               subprocess.CompletedProcess([], 0, b"123\n", b"")), \
+                mock.patch.object(session, "drain_warm_sessions") as drain:
+            self.assertEqual(self.activate(dry_run=True), [])
+            drain.assert_not_called()
         self.assert_old()
         self.assertFalse((self.home / "backups").exists())
 

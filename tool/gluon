@@ -25,6 +25,7 @@
 #   GLUON_OVERLAY            load Steam's overlay into the game
 #   GLUON_STEAM_BRIDGE       let the game reach the Steam client (achievements, overlay)
 #   GLUON_GL_COMPAT_AS_CORE  map OpenGL 3.x compatibility requests to the core profile
+#   GLUON_WARM_SERVER        retain compatible Wine services for up to 120 idle seconds
 #   WINEMSYNC                msync for plain Wine runtimes
 # Native AutoCloud is prepared automatically before Steam resolves save paths.
 # The launcher verifies the same prefix view again. No cache edits are used.
@@ -412,9 +413,19 @@ fi
 child_pid=""
 launching=""
 stop_requested=""
+# A Stop before lease acquisition must not terminate its current owner. Set
+# this before installing traps, including the window before FD9 is opened.
+lease_pending=""
+if [ "$kind" = wine ] && [ -n "$game_session" ] && grep -qx wine-session-idle "$patches" 2>/dev/null; then
+    lease_pending=1
+fi
 run_wait() {
     launching=1
-    "$@" >> "$WINE_LOG" 2>&1 &
+    if [ "${lease_call:-}" = 1 ]; then
+        "$@" >> "$WINE_LOG" 2>&1 &
+    else
+        "$@" 9>&- >> "$WINE_LOG" 2>&1 &
+    fi
     child_pid=$!
     launching=""
     [ -z "$stop_requested" ] || stop_session
@@ -439,10 +450,18 @@ stop_session() {
     # Terminate only the helper we own and the server selected by WINEPREFIX.
     # Wine children may outlive the helper, so confirm server shutdown too.
     signal_child TERM
+    if [ -n "${lease_pending:-}" ]; then
+        # Another launch owns this prefix. Cancel our own lock helper without
+        # terminating that session or touching its saves/cloud lifecycle.
+        signal_child KILL
+        [ -z "$child_pid" ] || wait "$child_pid" 2>/dev/null
+        exec 9>&-
+        exit 143
+    fi
     session_lib="$GLUON_HOME/lib"
     [ -f "$session_lib/gluon/session.py" ] || session_lib="$source_root"
     PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
-        /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session --wineserver "$wineserver" >> "$WINE_LOG" 2>&1 &
+        /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session --wineserver "$wineserver" 9>&- >> "$WINE_LOG" 2>&1 &
     wait $!
     shutdown_status=$?
     if [ -n "${game_log:-}" ] && [ -f "$game_log" ]; then
@@ -478,17 +497,17 @@ trap request_stop TERM INT HUP
 # through dyld for the first process and everything that process starts.
 start_wine_directly() {
     if [ -n "$overlay_insert" ] && [ -n "$overlay_scoped" ]; then
-        GLUON_OVERLAY_INSERT="$overlay_insert" "$runtime/bin/wine" "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+        GLUON_OVERLAY_INSERT="$overlay_insert" "$runtime/bin/wine" "${game_command[@]}" 9>&- >> "$WINE_LOG" 2>&1 &
     elif [ -n "$overlay_insert" ]; then
-        DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+        DYLD_INSERT_LIBRARIES="$overlay_insert" "$runtime/bin/wine" "${game_command[@]}" 9>&- >> "$WINE_LOG" 2>&1 &
     else
-        "$runtime/bin/wine" "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+        "$runtime/bin/wine" "${game_command[@]}" 9>&- >> "$WINE_LOG" 2>&1 &
     fi
 }
 
 keep_awake() {
     [ -n "$game_session" ] && [ "${GLUON_CAFFEINATE:-1}" != 0 ] && [ -x /usr/bin/caffeinate ] || return 0
-    /usr/bin/caffeinate -d -i -w "$$" >/dev/null 2>&1 &
+    /usr/bin/caffeinate -d -i -w "$$" 9>&- >/dev/null 2>&1 &
 }
 
 printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
@@ -508,6 +527,25 @@ if [ "$kind" = proton ]; then
     run_wait "$runtime/proton" "$verb" "$exe" "$@"
     status=$?
 else
+    warm_session="" session_lib=""
+    if [ -n "$game_session" ] && grep -qx wine-session-idle "$patches" 2>/dev/null; then
+        # A lease belongs to this shell, and is excluded from every Wine/open
+        # child. Warm services can therefore outlive Steam's tracked launcher
+        # without retaining its game ownership or blocking the next launch.
+        session_lib="$GLUON_HOME/lib"
+        [ -f "$session_lib/gluon/session.py" ] || session_lib="$source_root"
+        exec 9>> "$compat/.gluon-session.lock" || fail "cannot open the prefix session lease"
+        lease_pending=1 lease_call=1
+        log "  waiting for exclusive prefix ownership"
+        PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
+            run_wait /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session \
+                --lease-fd 9 --compat "$compat"
+        lease_status=$?
+        lease_call=""
+        [ "$lease_status" = 0 ] || fail "cannot acquire the prefix session lease"
+        lease_pending=""
+        [ "${GLUON_WARM_SERVER:-1}" = 0 ] || warm_session=1
+    fi
     if [ ! -f "$WINEPREFIX/system.reg" ]; then
         # First run for this game: create the prefix up front.
         log "  creating prefix"
@@ -519,10 +557,20 @@ else
         WINEDLLOVERRIDES="$setup_overrides" run_wait "$runtime/bin/wine" wineboot --init \
             || fail "Wine prefix setup failed (see $WINE_LOG)"
         run_wait "$wineserver" -w || fail "Wine prefix setup did not finish (see $WINE_LOG)"
-    elif [ "$verb" = waitforexitandrun ]; then
+    elif [ "$verb" = waitforexitandrun ] && [ -z "$session_lib" ]; then
         log "  waiting for previous prefix session"
         run_wait "$wineserver" -w || fail "Could not wait for the previous session (see $WINE_LOG)"
         log "  previous prefix session is idle"
+    fi
+    if [ -n "$session_lib" ]; then
+        cold_session=()
+        [ -n "$warm_session" ] || cold_session=(--cold)
+        PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
+            run_wait /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session \
+                --prepare-warm --home "$GLUON_HOME" --prefix "$WINEPREFIX" \
+                --runtime "$runtime" "${cold_session[@]}" \
+            || fail "cannot prepare a compatible Wine session (see $WINE_LOG)"
+        [ -z "$warm_session" ] || log "  Wine services stay warm for up to 120 idle seconds"
     fi
     if [ -n "$steam_bridge" ]; then
         # The helper and the bridge DLL have to exist inside the prefix; a prefix made
@@ -544,7 +592,11 @@ else
                     /d 'C:\windows\system32\lsteamclient.dll' /f \
                     || fail "Steam bridge registry setup failed (see $WINE_LOG)"
             done
-            run_wait "$wineserver" -w || fail "Steam bridge setup did not finish (see $WINE_LOG)"
+            if [ -n "$warm_session" ]; then
+                run_wait "$wineserver" --wait-idle || fail "Steam bridge setup did not finish (see $WINE_LOG)"
+            else
+                run_wait "$wineserver" -w || fail "Steam bridge setup did not finish (see $WINE_LOG)"
+            fi
             : > "$compat/.gluon-steam-bridge"
             log "  steam bridge: registry entries written"
         fi
@@ -579,7 +631,7 @@ else
         log "  starting ${bundle##*/} through LaunchServices (output in $WINE_LOG)"
         bundle_started=$SECONDS
         /usr/bin/open -n -W -a "$bundle" --stdout "$game_out" --stderr "$game_log" \
-            "${launch_environment[@]}" --args "${game_command[@]}" >> "$WINE_LOG" 2>&1 &
+            "${launch_environment[@]}" --args "${game_command[@]}" 9>&- >> "$WINE_LOG" 2>&1 &
     else
         log "  starting Wine (output in $WINE_LOG)"
         start_wine_directly
@@ -614,8 +666,19 @@ else
         # Child launchers can leave a running game after their first process exits.
         # Preserve that session while measuring the Wine service teardown tail.
         log "  waiting for remaining prefix processes"
-        run_wait "$wineserver" -w
-        server_status=$?
+        if [ -n "$warm_session" ]; then
+            run_wait "$wineserver" --wait-idle
+            server_status=$?
+            if [ "$server_status" = 3 ]; then
+                # A server that naturally expired or restarted cold has no
+                # warm capability. Its ordinary lifetime remains authoritative.
+                run_wait "$wineserver" -w
+                server_status=$?
+            fi
+        else
+            run_wait "$wineserver" -w
+            server_status=$?
+        fi
         if [ "$server_status" -ne 0 ]; then
             log "  session wait failed (exit status $server_status)"
             [ "$status" -ne 0 ] || status=$server_status

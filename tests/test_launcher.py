@@ -12,10 +12,10 @@ import unittest
 
 
 STUB = r'''import json, os, pathlib, signal, sys
-root = pathlib.Path(os.environ['GLUON_LAUNCHER_FIXTURE'])
+root = pathlib.Path(os.environ.get('GLUON_LAUNCHER_FIXTURE') or os.environ['LAUNCHER_FIXTURE_ROOT'])
 role = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
-phase = os.environ.get('GLUON_LAUNCHER_PHASE', '')
+phase = os.environ.get('GLUON_LAUNCHER_PHASE') or os.environ.get('LAUNCHER_FIXTURE_PHASE', '')
 
 def record(event, **extra):
     item = dict(event=event, pid=os.getpid(), role=role, args=args,
@@ -23,7 +23,12 @@ def record(event, **extra):
     with (root / 'trace.jsonl').open('a') as stream:
         stream.write(json.dumps(item) + '\n')
 
-record('started')
+try:
+    os.fstat(9)
+    inherited_lease = True
+except OSError:
+    inherited_lease = False
+record('started', inherited_lease=inherited_lease)
 
 def block():
     def finish(number, frame):
@@ -42,7 +47,18 @@ def block():
 if role == 'notify':
     sys.exit(0)
 elif role == 'wineserver':
-    if args == ['-k']:
+    if args == ['--gluon-session=120']:
+        if (root / 'warm').exists():
+            sys.exit(2)
+        (root / 'warm').touch()
+    elif args == ['--wait-idle']:
+        if not (root / 'warm').exists():
+            sys.exit(3)
+        if phase == 'warm-final' and (root / 'warm-game').exists() and not (root / 'stopped').exists():
+            block()
+    elif args == ['--kill-idle']:
+        (root / 'warm').unlink(missing_ok=True)
+    elif args == ['-k']:
         if phase == 'shutdown-timeout':
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             record('shutdown-blocked')
@@ -70,6 +86,8 @@ elif args[:2] == ['wineboot', '--init']:
     prefix = pathlib.Path(os.environ['WINEPREFIX'])
     prefix.mkdir(parents=True, exist_ok=True)
     (prefix / 'system.reg').write_text('fixture')
+elif args == ['cmd.exe', '/d', '/c', 'exit', '0']:
+    record('bootstrap', appid=os.environ.get('SteamAppId'), host=os.environ.get('GLUON_HOST_PID'))
 elif args[:1] == ['reg']:
     if phase == 'registry':
         block()
@@ -77,6 +95,7 @@ elif args[:1] == ['reg']:
         sys.exit(42)
 else:
     record('game')
+    (root / 'warm-game').touch()
     if phase == 'game':
         block()
 '''
@@ -96,7 +115,7 @@ class LauncherLifecycleTests(unittest.TestCase):
         self.process = None
         self.addCleanup(self.stop_fixture_processes)
 
-    def prepare(self, phase, bridge=False, proton=False):
+    def prepare(self, phase, bridge=False, proton=False, warm=False):
         self.prefix = self.compat / ("pfx" if proton else "pfx-wine")
         if phase != "wineboot":
             self.prefix.mkdir(parents=True)
@@ -117,12 +136,19 @@ class LauncherLifecycleTests(unittest.TestCase):
             path = self.runtime / "proton"
             path.write_text("#!%s\n%s" % (sys.executable, STUB))
             path.chmod(0o755)
+        if warm:
+            marker = self.runtime / "licenses/gluon-wine-patches/APPLIED.txt"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("wine-session-idle\n")
+            for name in (".gluon-wine-patches", ".gluon-runtime-build-key"):
+                (self.runtime / name).write_text("a" * 64)
         environment = dict(os.environ)
         for name in list(environment):
             if name.startswith(("GLUON_", "STEAM_", "Steam", "WINE", "PROTON_")):
                 environment.pop(name)
         environment.update(GLUON_HOME=str(self.home), GLUON_RUNTIME=str(self.runtime),
                            GLUON_LAUNCHER_FIXTURE=str(self.root), GLUON_LAUNCHER_PHASE=phase,
+                           LAUNCHER_FIXTURE_ROOT=str(self.root), LAUNCHER_FIXTURE_PHASE=phase,
                            STEAM_COMPAT_DATA_PATH=str(self.compat), SteamAppId="12345")
         self.environment = environment
 
@@ -136,12 +162,16 @@ class LauncherLifecycleTests(unittest.TestCase):
         notifier.write_text("#!%s\n%s" % (sys.executable, STUB))
         notifier.chmod(0o755)
         package = self.home / "lib/gluon"
-        package.mkdir(parents=True)
+        package.mkdir(parents=True, exist_ok=True)
         (package / "__init__.py").write_text("")
         (package / "session.py").write_text((source.parents[1] / "gluon/session.py").read_text())
         launcher = self.root / "launcher"
         # Preserve launcher behavior while recording notifications without using macOS UI.
-        launcher.write_text(source.read_text().replace(
+        launcher_source = source.read_text()
+        if getattr(self, 'inject_early_stop', False):
+            launcher_source = launcher_source.replace('trap request_stop TERM INT HUP',
+                                                      'trap request_stop TERM INT HUP\nkill -TERM $$')
+        launcher.write_text(launcher_source.replace(
             "/usr/bin/arch -arm64 /usr/bin/python3", shlex.quote(sys.executable)
         ).replace("/usr/bin/osascript", shlex.quote(str(notifier))))
         launcher.chmod(0o755)
@@ -263,6 +293,68 @@ class LauncherLifecycleTests(unittest.TestCase):
         self.assertNotEqual(self.process.returncode, 0, output)
         self.assertFalse((self.compat / ".gluon-steam-bridge").exists())
         self.assertFalse(any(event["event"] == "game" for event in self.events()))
+
+
+    def test_warm_repeat_retains_server_without_inheriting_shell_lease(self):
+        self.prepare("warm-success", warm=True)
+        self.start("waitforexitandrun")
+        first = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 0, first)
+        first_count = len(self.events())
+        self.start("waitforexitandrun")
+        second = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 0, second)
+        events = self.events()
+        self.assertFalse(any(event.get("inherited_lease") for event in events), events)
+        bootstraps = [event for event in events if event["event"] == "bootstrap"]
+        self.assertEqual(len(bootstraps), 1, events)
+        self.assertTrue(all(event["appid"] is None and event["host"] is None for event in bootstraps))
+        repeat = events[first_count:]
+        self.assertFalse(any(event["args"] == ["-w"] for event in repeat), repeat)
+        self.assertTrue(any(event["args"] == ["--wait-idle"] for event in repeat), repeat)
+        self.assertTrue(any(event["event"] == "game" for event in repeat), repeat)
+
+    def test_stop_interrupts_warm_user_idle_wait_and_confirms_full_shutdown(self):
+        self.prepare("warm-final", warm=True)
+        self.start()
+        blocked = self.wait_for_blocked()
+        self.assertEqual(blocked["args"], ["--wait-idle"])
+        self.process.terminate()
+        output = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 143, output)
+        events = self.events()
+        self.assertEqual(len([event for event in events if event["args"] == ["-k"]]), 1)
+        self.assertTrue(any(event["args"] == ["-w"] for event in events[events.index(blocked):]))
+        self.assertFalse(any(event.get("inherited_lease") for event in events), events)
+
+    def test_stop_during_lease_wait_does_not_terminate_another_game(self):
+        import fcntl
+        self.prepare("warm-success", warm=True)
+        lease_path = self.compat / ".gluon-session.lock"
+        with lease_path.open("a") as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX)
+            self.start()
+            deadline = time.monotonic() + 4
+            launch_log = self.home / "logs/launch-12345.log"
+            while not launch_log.exists() or "waiting for exclusive prefix ownership" not in launch_log.read_text():
+                self.assertLess(time.monotonic(), deadline)
+                self.assertIsNone(self.process.poll(), self.process.communicate() if self.process.poll() is not None else "")
+                time.sleep(0.01)
+            self.process.terminate()
+            output = self.process.communicate(timeout=3)
+        self.assertEqual(self.process.returncode, 143, output)
+        self.assertFalse(any(event["role"] == "wineserver" for event in self.events()), self.events())
+        self.assertFalse(any(event["event"] == "game" for event in self.events()), self.events())
+
+
+    def test_stop_before_lease_open_does_not_kill_another_prefix_owner(self):
+        self.prepare("warm-success", warm=True)
+        self.inject_early_stop = True
+        self.start()
+        output = self.process.communicate(timeout=3)
+        self.assertEqual(self.process.returncode, 143, output)
+        self.assertFalse(any(event["role"] == "wineserver" for event in self.events()), self.events())
+        self.assertFalse(any(event["event"] == "game" for event in self.events()), self.events())
 
 
 if __name__ == "__main__":

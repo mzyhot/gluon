@@ -16,7 +16,7 @@ import sys
 import uuid
 from typing import List
 
-from . import steam
+from . import session, steam
 
 
 class RuntimeSelectionError(Exception):
@@ -67,11 +67,17 @@ def _current(path: Path):
     return os.readlink(path)
 
 
-def _idle() -> bool:
+def _idle(*, home=None, drain_warm=True) -> bool:
     if steam.is_running():
         return False
     try:
         result = subprocess.run(["pgrep", "-x", "wineserver"], capture_output=True, timeout=5)
+        if result.returncode == 0 and drain_warm:
+            # Only attested, user-idle Gluon servers can be asked to retire.
+            # The global inventory remains authoritative for foreign servers,
+            # active sessions and incomplete/unsupported idle requests.
+            session.drain_warm_sessions(home or steam.GLUON_HOME)
+            result = subprocess.run(["pgrep", "-x", "wineserver"], capture_output=True, timeout=5)
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeSelectionError("cannot check Wine activity; runtime selection was left alone") from error
     if result.returncode not in (0, 1):
@@ -79,10 +85,10 @@ def _idle() -> bool:
     return result.returncode == 1
 
 
-def _can_activate(previous) -> bool:
+def _can_activate(previous, *, home=None, drain_warm=True) -> bool:
     # A first selection only creates a missing link. It replaces no runtime that
     # Steam or Wine could already be using, so it need not wait for them to quit.
-    return previous is None or _idle()
+    return previous is None or _idle(home=home, drain_warm=drain_warm)
 
 
 def activate_pending(dry_run: bool = False, home: str = None,
@@ -112,14 +118,15 @@ def activate_pending(dry_run: bool = False, home: str = None,
             return []
         if previous == request["name"]:
             return []
-        if not _can_activate(previous):
+        if not _can_activate(previous, home=home_path, drain_warm=not dry_run):
             return []
         if dry_run:
             return ["would select packaged runtime " + request["name"]]
 
         # Recheck the request, selection and process state immediately before
         # publishing. A concurrent install or Steam launch defers replacement.
-        if _request(pending) != request or _current(current) != previous or not _can_activate(previous):
+        if (_request(pending) != request or _current(current) != previous
+                or not _can_activate(previous, home=home_path, drain_warm=not dry_run)):
             return []
         token = uuid.uuid4().hex
         backup = home_path / "backups" / ("runtime-" + token)
@@ -135,7 +142,8 @@ def activate_pending(dry_run: bool = False, home: str = None,
             temporary.symlink_to(request["name"])
             # The complete old directory stays intact for rollback and never
             # receives files from the replacement runtime.
-            if _request(pending) != request or _current(current) != previous or not _can_activate(previous):
+            if (_request(pending) != request or _current(current) != previous
+                    or not _can_activate(previous, home=home_path, drain_warm=not dry_run)):
                 return []
             if previous is None:
                 try:
