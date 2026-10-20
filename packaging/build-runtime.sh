@@ -92,6 +92,14 @@ if [ ! -d "$WORK/llvm-mingw" ]; then
     tar -xJf "$DL/llvm-mingw.tar.xz" -C "$WORK/llvm-mingw" --strip-components 1
 fi
 
+log "Checking Windows lifecycle entrypoints before the full runtime build"
+"$WORK/llvm-mingw/bin/x86_64-w64-mingw32-clang" -O2 -Wall -Wextra -Werror -mwindows \
+    "$ROOT/packaging/session-bootstrap.c" -luser32 -o "$WORK/bootstrap-link-check.exe"
+for probe_arch in x86_64 i686; do
+    "$WORK/llvm-mingw/bin/$probe_arch-w64-mingw32-clang" -O2 -Wall -Wextra -Werror \
+        "$ROOT/packaging/probes/session-lifecycle.c" -ladvapi32 -o "$WORK/session-link-check-$probe_arch.exe"
+done
+
 # Homebrew's bison and flex first (the system ones are too old for Wine); the PE
 # toolchain last so its clang never replaces Apple's for the macOS side.
 for tool in bison flex; do
@@ -198,10 +206,12 @@ bridge="$(ls "$WORK"/inputs/steam-bridge-*.tar.gz 2>/dev/null | head -1 || true)
 if [ -n "$bridge" ]; then
     log "Adding the Steam API bridge from $(basename "$bridge")"
     tar -xzf "$bridge" -C "$OUT"
-    WORK="$WORK" OUT="$OUT" "$ROOT/packaging/build-steam-helper.sh"
 else
     log "No Steam API bridge input; games will not see the Steam client"
 fi
+# The neutral bootstrap is required even for a runtime without bridge DLLs.
+# Both tiny programs use public source and the configured Wine import libraries.
+WORK="$WORK" OUT="$OUT" "$ROOT/packaging/build-steam-helper.sh"
 
 log "Writing license texts and the component list"
 L="$OUT/licenses"

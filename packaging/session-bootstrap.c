@@ -4,7 +4,8 @@
  */
 #include <windows.h>
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, WCHAR *command, int show)
+int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, char *command, int show)
 {
+    (void)instance; (void)previous; (void)command; (void)show;
     return GetDesktopWindow() ? 0 : 1;
 }
