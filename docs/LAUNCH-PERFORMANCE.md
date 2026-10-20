@@ -65,7 +65,10 @@ game-ready timestamp. Renderer canvas output is checked separately. The fixture
 excludes Steam IPC, the Steam helper, real overlay libraries, custom game addons
 and all game assets. It disables Chromium sandboxing only in the generated CI
 fixture. Public archives, cloned prefixes and downloaded binaries are removed
-after the run; retained evidence consists of bounded logs and JSON.
+after the run; retained evidence consists of bounded logs and JSON. An invalid
+or unavailable WebGL readback is recorded before using a verified CPU canvas
+fallback. All measured samples must use the same canvas mode. Fallback timings
+do not measure game GPU rendering.
 
 Native checks include Clang static analysis, Apple's live `leaks` inspection of
 an isolated Cocoa host, and a separate Cloud-guard `leaks --atExit` run that

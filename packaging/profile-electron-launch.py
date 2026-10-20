@@ -98,24 +98,37 @@ PRELOAD_JS = r'''const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('fixture', { frame: value => ipcRenderer.send('fixture-frame', value) });
 '''
 
-RENDERER_JS = r'''const canvas = document.querySelector('canvas');
+RENDERER_JS = r'''let canvas = document.querySelector('canvas');
 let mode = 'webgl';
 let pixel;
 const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
+const webglAttempt = { available: !!gl };
 if (gl) {
   gl.clearColor(0.2, 0.4, 0.6, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
   const bytes = new Uint8Array(4);
   gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
   pixel = Array.from(bytes);
-} else {
+  webglAttempt.pixel = pixel;
+  webglAttempt.error = gl.getError();
+  webglAttempt.contextLost = gl.isContextLost();
+  webglAttempt.renderer = String(gl.getParameter(gl.RENDERER)).slice(0, 128);
+}
+if (!gl || JSON.stringify(pixel) !== JSON.stringify([51, 102, 153, 255])) {
   mode = 'canvas2d-fallback';
-  const drawing = canvas.getContext('2d');
+  webglAttempt.fallbackReason = gl ? 'invalid-webgl-readback' : 'webgl-context-unavailable';
+  if (gl) gl.getExtension('WEBGL_lose_context')?.loseContext();
+  const replacement = document.createElement('canvas');
+  replacement.width = canvas.width;
+  replacement.height = canvas.height;
+  canvas.replaceWith(replacement);
+  canvas = replacement;
+  const drawing = canvas.getContext('2d', { willReadFrequently: true });
   drawing.fillStyle = '#336699';
   drawing.fillRect(0, 0, canvas.width, canvas.height);
   pixel = Array.from(drawing.getImageData(0, 0, 1, 1).data);
 }
-requestAnimationFrame(() => requestAnimationFrame(() => window.fixture.frame({ mode, pixel })));
+requestAnimationFrame(() => requestAnimationFrame(() => window.fixture.frame({ mode, pixel, webglAttempt })));
 '''
 
 
@@ -443,6 +456,7 @@ def main() -> None:
                        'ready_to_show_observed_seconds': round(times['ready-to-show'], 6),
                        'renderer_frame_observed_seconds': round(times['renderer-frame'], 6),
                        'canvas_mode': frame['mode'], 'electron_versions': ready['versions'],
+                       'webgl_attempt': frame['webglAttempt'],
                        'server_identity': identity, 'native_window': native,
                        'retained_ownership': retained_ownership,
                        'clean_exit': not stop, 'stop_case': stop}
@@ -462,6 +476,11 @@ def main() -> None:
                 target = probes / ('electron-%s-%s' % (label, source_log.name))
                 shutil.copy2(source_log, target)
                 trim(target)
+        modes = {row['canvas_mode'] for row in result['samples']
+                 if not row['stop_case'] and not row['excluded_warmup']}
+        if len(modes) != 1:
+            raise RuntimeError('Electron comparison changed canvas rendering mode between samples')
+        result['canvas_mode'] = modes.pop()
         result['medians'] = {label: round(statistics.median(row['native_window_onscreen_seconds']
             for row in result['samples'] if row['wrapper'] == label and not row['excluded_warmup']
             and not row['stop_case']), 6) for label in ('released-cold', 'candidate-cold', 'candidate-warm')}
@@ -504,6 +523,7 @@ def main() -> None:
     if summary:
         with open(summary, 'a') as output:
             output.write('\nOffline public Electron %s native-window startup; excludes games and Steam IPC.\n\n' % VERSION)
+            output.write('Verified canvas mode: `%s`. A CPU fallback does not measure game GPU rendering.\n\n' % result['canvas_mode'])
             output.write('| Wrapper / Wine server | Median native window |\n|---|---|\n')
             for label, seconds in result['medians'].items():
                 output.write('| %s | %.4f s |\n' % (label, seconds))
