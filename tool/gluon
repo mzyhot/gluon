@@ -379,25 +379,26 @@ if [ "${GLUON_NATIVE_CLOUD:-}" = 1 ] || { [ -n "$game_session" ] && [ "$kind" = 
     done <<< "$launch_setup"
 fi
 
-# Path conversion is part of Steam's native compatibility-tool protocol.
-# Keep stdout reserved for the converted path and never register a game session.
+# A path converter may start Wine and write its prefix. It uses the same
+# lease below, with stdout reserved for the converted path and no game host.
+path_conversion=""
 case "$verb" in
     getcompatpath|getnativepath)
         if [ "$kind" = proton ]; then
             exec "$runtime/proton" "$verb" "$exe" "$@"
         fi
-        direction=-u
-        [ "$verb" != getcompatpath ] || direction=-w
-        exec "$runtime/bin/wine" winepath "$direction" "$exe" 2>> "$WINE_LOG"
+        path_conversion=1
         ;;
 esac
-case "$exe" in
-    [A-Za-z]:*) ;;
-    */*)
-        exe="$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")" || fail "cannot resolve executable"
-        cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")"
-        ;;
-esac
+if [ -z "$path_conversion" ]; then
+    case "$exe" in
+        [A-Za-z]:*) ;;
+        */*)
+            exe="$(cd "$(dirname "$exe")" && pwd)/$(basename "$exe")" || fail "cannot resolve executable"
+            cd "$(dirname "$exe")" || fail "cannot enter $(dirname "$exe")"
+            ;;
+    esac
+fi
 # Bind child overlay scoping to the resource-identified executable after the
 # launcher's existing path normalization. Wine checks actual PE file identity;
 # unresolved/Windows-only launch paths conservatively keep ordinary injection.
@@ -417,7 +418,7 @@ stop_requested=""
 # A Stop before lease acquisition must not terminate its current owner. Set
 # this before installing traps, including the window before FD9 is opened.
 lease_pending=""
-if [ "$kind" = wine ] && [ -n "$game_session" ]; then
+if [ "$kind" = wine ]; then
     lease_pending=1
 fi
 run_wait() {
@@ -451,9 +452,9 @@ stop_session() {
     # Terminate only the helper we own and the server selected by WINEPREFIX.
     # Wine children may outlive the helper, so confirm server shutdown too.
     signal_child TERM
-    if [ -n "${lease_pending:-}" ]; then
-        # Another launch owns this prefix. Cancel our own lock helper without
-        # terminating that session or touching its saves/cloud lifecycle.
+    if [ -n "${lease_pending:-}" ] || { [ "$kind" = wine ] && [ -z "$game_session" ]; }; then
+        # A waiting launch does not own the prefix. Non-game helpers may share
+        # it with a manual Wine game, so they also cancel only their own child.
         signal_child KILL
         [ -z "$child_pid" ] || wait "$child_pid" 2>/dev/null
         exec 9>&-
@@ -515,6 +516,46 @@ printf '==== %s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$exe" >> "$WINE_LOG"
 started=$(date +%s)
 log_start=$(wc -l < "$WINE_LOG")
 
+warm_session="" warm_protocol="" session_lib=""
+if [ "$kind" = wine ]; then
+    if [ -n "$game_session" ] && grep -qx wine-session-idle "$patches" 2>/dev/null; then
+        warm_protocol=1
+    fi
+    # Keep every cooperating prefix writer behind the same lease, including
+    # install-script helpers and path conversion, before Wine can start.
+    session_lib="$GLUON_HOME/lib"
+    [ -f "$session_lib/gluon/session.py" ] || session_lib="$source_root"
+    exec 9>> "$compat/.gluon-session.lock" || fail "cannot open the prefix session lease"
+    lease_pending=1 lease_call=1
+    log "  waiting for exclusive prefix ownership"
+    cloud_recheck=()
+    [ "$cloud_check_requested" != 1 ] || cloud_recheck=(--check-cloud "$appid" --cloud-mode "$cloud_check_mode")
+    PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
+        run_wait /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session \
+            --lease-fd 9 --compat "$compat" "${cloud_recheck[@]}"
+    lease_status=$?
+    lease_call=""
+    [ "$lease_status" = 0 ] || fail "could not verify exclusive prefix ownership and Cloud saves (see $WINE_LOG)"
+    lease_pending=""
+    if [ -n "$warm_protocol" ] && [ "${GLUON_WARM_SERVER:-1}" != 0 ]; then
+        warm_session=1
+    fi
+fi
+
+if [ -n "$path_conversion" ]; then
+    direction=-u
+    [ "$verb" != getcompatpath ] || direction=-w
+    launching=1
+    "$runtime/bin/wine" winepath "$direction" "$exe" "$@" 9>&- 2>> "$WINE_LOG" &
+    child_pid=$!
+    launching=""
+    [ -z "$stop_requested" ] || stop_session
+    wait "$child_pid"
+    status=$?
+    child_pid=""
+    exit "$status"
+fi
+
 if [ "$kind" = proton ]; then
     # The tool creates the prefix, waits for an earlier session and returns when the game exits.
     if [ ! -d "$runtime/files/share/default_pfx" ] || [ ! -f "$WINEPREFIX/system.reg" ]; then
@@ -528,30 +569,6 @@ if [ "$kind" = proton ]; then
     run_wait "$runtime/proton" "$verb" "$exe" "$@"
     status=$?
 else
-    warm_session="" warm_protocol="" session_lib=""
-    if [ -n "$game_session" ]; then
-        ! grep -qx wine-session-idle "$patches" 2>/dev/null || warm_protocol=1
-        # A lease belongs to this shell, and is excluded from every Wine/open
-        # child. Warm services can therefore outlive Steam's tracked launcher
-        # without retaining its game ownership or blocking the next launch.
-        session_lib="$GLUON_HOME/lib"
-        [ -f "$session_lib/gluon/session.py" ] || session_lib="$source_root"
-        exec 9>> "$compat/.gluon-session.lock" || fail "cannot open the prefix session lease"
-        lease_pending=1 lease_call=1
-        log "  waiting for exclusive prefix ownership"
-        cloud_recheck=()
-        [ "$cloud_check_requested" != 1 ] || cloud_recheck=(--check-cloud "$appid" --cloud-mode "$cloud_check_mode")
-        PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
-            run_wait /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session \
-                --lease-fd 9 --compat "$compat" "${cloud_recheck[@]}"
-        lease_status=$?
-        lease_call=""
-        [ "$lease_status" = 0 ] || fail "could not verify exclusive prefix ownership and Cloud saves (see $WINE_LOG)"
-        lease_pending=""
-        if [ -n "$warm_protocol" ] && [ "${GLUON_WARM_SERVER:-1}" != 0 ]; then
-            warm_session=1
-        fi
-    fi
     if [ ! -f "$WINEPREFIX/system.reg" ]; then
         # First run for this game: create the prefix up front.
         log "  creating prefix"

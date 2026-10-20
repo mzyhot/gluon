@@ -79,7 +79,10 @@ preferences and conflict prompts retain their normal meaning.
 Preparation holds the same exclusive prefix lease as game launch through backup,
 migration and readiness publication. Wine activity is checked again after lease
 acquisition, and the launcher rechecks the final Cloud view after acquiring its
-lease. A pending launch or another preparation is a transient busy result, so
+lease. Plain-Wine installation helpers and Wine-backed path conversions also use
+this lease without acquiring game identity or enabling warm sessions. Cancelling
+one of those helpers never requests prefix-wide shutdown.
+A pending launch or another preparation is a transient busy result, so
 the native guard retries instead of retaining a permanent failure. Current
 layout conflicts and publisher-rule changes take precedence over historical
 error messages. Symbolic-link cycles are reported as save-path conflicts without

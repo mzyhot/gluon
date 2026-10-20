@@ -82,7 +82,12 @@ with (pathlib.Path(os.environ['WINEPREFIX']).parent / '.gluon-session.lock').ope
         held = True
 with (root / 'wine-events').open('a') as stream:
     stream.write(json.dumps({'role': pathlib.Path(sys.argv[0]).name, 'args': sys.argv[1:],
-                             'lease_held': held, 'lease_inherited': inherited}) + '\\n')
+                             'lease_held': held, 'lease_inherited': inherited,
+                             'appid': os.environ.get('SteamAppId'), 'host': os.environ.get('GLUON_HOST_PID'),
+                             'overlay': os.environ.get('GLUON_OVERLAY_INSERT')}) + '\\n')
+if sys.argv[1:2] == ['winepath']:
+    print(sys.argv[-1])
+sys.exit(int(os.environ.get('LEASE_WINE_STATUS', '0')))
 '''
         for name in ('wine', 'wineserver'):
             command = runtime / name
@@ -110,8 +115,8 @@ with (root / 'wine-events').open('a') as stream:
                 self.process.terminate()
             self.process.communicate(timeout=3)
 
-    def start(self):
-        self.process = subprocess.Popen([str(self.launcher), 'waitforexitandrun', str(self.game)],
+    def start(self, verb='waitforexitandrun', operand=None):
+        self.process = subprocess.Popen([str(self.launcher), verb, str(self.game) if operand is None else operand],
                                         env=self.environment, cwd=self.root,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
@@ -167,6 +172,62 @@ with (root / 'wine-events').open('a') as stream:
         self.assertEqual(self.process.returncode, 0,
                          (output, (self.home / 'logs/launch-123.log').read_text()))
         self.assertTrue((self.root / 'late-checked').exists())
+
+
+    def test_install_helper_uses_cloud_lease_without_game_identity_or_warming(self):
+        marker = self.home / 'runtime/current/licenses/gluon-wine-patches/APPLIED.txt'
+        marker.parent.mkdir(parents=True)
+        marker.write_text('wine-session-idle\n')
+        self.start('runinprefix')
+        output = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 0, output)
+        events = [json.loads(line) for line in (self.root / 'wine-events').read_text().splitlines()]
+        self.assertEqual(len(events), 1, events)
+        self.assertEqual(events[0]['role'], 'wine')
+        self.assertTrue(events[0]['lease_held'])
+        self.assertFalse(events[0]['lease_inherited'])
+        self.assertIsNone(events[0]['appid'])
+        self.assertIsNone(events[0]['host'])
+        self.assertIsNone(events[0]['overlay'])
+        self.assertFalse((self.home / 'state/warm-sessions').exists())
+
+    def test_path_conversion_is_leased_and_preserves_only_converted_path_stdout(self):
+        target = 'C:\\windows\\path with spaces'
+        self.start('getnativepath', target)
+        output = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 0, output)
+        self.assertEqual(output[0], (target + '\n').encode())
+        events = [json.loads(line) for line in (self.root / 'wine-events').read_text().splitlines()]
+        self.assertEqual(len(events), 1, events)
+        self.assertEqual(events[0]['args'], ['winepath', '-u', target])
+        self.assertTrue(events[0]['lease_held'])
+        self.assertFalse(events[0]['lease_inherited'])
+        self.assertIsNone(events[0]['appid'])
+        self.assertIsNone(events[0]['host'])
+
+    def test_path_converter_cannot_write_while_cloud_preparation_owns_prefix(self):
+        import fcntl
+        with self.lease.open('a') as owner:
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            self.start('getnativepath', 'C:\\Windows')
+            self.early_check_finished()
+            log = self.home / 'logs/launch-123.log'
+            deadline = time.monotonic() + 4
+            while not log.exists() or 'waiting for exclusive prefix ownership' not in log.read_text():
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+            self.assertFalse((self.root / 'wine-events').exists())
+        output = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 0, output)
+        self.assertTrue((self.root / 'late-checked').exists())
+
+
+    def test_path_conversion_keeps_the_owned_runtime_exit_status(self):
+        self.environment['LEASE_WINE_STATUS'] = '42'
+        self.start('getnativepath', 'C:\\Windows')
+        output = self.process.communicate(timeout=5)
+        self.assertEqual(self.process.returncode, 42, output)
+        self.assertEqual(output[0], b'C:\\Windows\n')
 
 
 if __name__ == '__main__':

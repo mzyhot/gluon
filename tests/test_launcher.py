@@ -86,6 +86,10 @@ elif args[:2] == ['wineboot', '--init']:
     prefix = pathlib.Path(os.environ['WINEPREFIX'])
     prefix.mkdir(parents=True, exist_ok=True)
     (prefix / 'system.reg').write_text('fixture')
+elif args[:1] == ['winepath']:
+    if phase == 'path-helper':
+        block()
+    print(args[-1])
 elif args[1:] == ['/d', '/c', 'exit', '0'] and pathlib.Path(args[0]).name == 'cmd.exe':
     record('bootstrap', appid=os.environ.get('SteamAppId'), host=os.environ.get('GLUON_HOST_PID'))
 elif args[:1] == ['reg']:
@@ -358,6 +362,32 @@ class LauncherLifecycleTests(unittest.TestCase):
         self.assertEqual(self.process.returncode, 143, output)
         self.assertFalse(any(event["role"] == "wineserver" for event in self.events()), self.events())
         self.assertFalse(any(event["event"] == "game" for event in self.events()), self.events())
+
+
+    def test_cancelling_a_path_converter_never_stops_a_manual_prefix_game(self):
+        self.prepare("path-helper")
+        self.start("getcompatpath")
+        blocked = self.wait_for_blocked()
+        self.assertEqual(blocked["args"][:2], ["winepath", "-w"])
+        self.process.terminate()
+        output = self.process.communicate(timeout=3)
+        self.assertEqual(self.process.returncode, 143, output)
+        self.assertFalse(any(event["role"] == "wineserver" for event in self.events()), self.events())
+        self.assertFalse(any(event.get("inherited_lease") for event in self.events()), self.events())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(blocked["pid"], 0)
+
+    def test_cancelling_runinprefix_never_kills_the_selected_server(self):
+        self.prepare("game")
+        self.start("runinprefix")
+        blocked = self.wait_for_blocked()
+        self.process.terminate()
+        output = self.process.communicate(timeout=3)
+        self.assertEqual(self.process.returncode, 143, output)
+        self.assertFalse(any(event["role"] == "wineserver" for event in self.events()), self.events())
+        self.assertFalse(any(event.get("inherited_lease") for event in self.events()), self.events())
+        with self.assertRaises(ProcessLookupError):
+            os.kill(blocked["pid"], 0)
 
 
 if __name__ == "__main__":
