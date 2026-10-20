@@ -30,7 +30,7 @@ class WarmSessionTests(unittest.TestCase):
             path = self.runtime / 'bin' / name
             path.write_text('fixture, never executed')
             path.chmod(0o755)
-        command = self.runtime / 'lib/wine/x86_64-windows/cmd.exe'
+        command = self.runtime / 'lib/wine/x86_64-windows/gluon-session-bootstrap.exe'
         command.parent.mkdir(parents=True)
         command.write_text('fixture, never executed')
         marker = self.runtime / 'licenses/gluon-wine-patches/APPLIED.txt'
@@ -41,6 +41,9 @@ class WarmSessionTests(unittest.TestCase):
         self.environment = mock.patch.dict(os.environ, {'WINEMSYNC': '1'})
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        policy = mock.patch.object(session, 'warm_policy_allows', return_value=True)
+        self.policy = policy.start()
+        self.addCleanup(policy.stop)
         self.bootstrap = mock.patch.object(session, '_bootstrap_services')
         self.bootstrap.start()
         self.addCleanup(self.bootstrap.stop)
@@ -55,7 +58,7 @@ class WarmSessionTests(unittest.TestCase):
         with mock.patch.object(session, '_run_helper', return_value=0) as run:
             session.prepare_warm(self.home, self.prefix, self.runtime)
         self.assertEqual([call.args[1] for call in run.call_args_list],
-                         ['-w', '--gluon-session=120', '--wait-idle'])
+                         ['-w', '--gluon-session=120', '--wait-idle', '--seal-session'])
         self.assertTrue(all(call.kwargs['prefix'] == self.prefix for call in run.call_args_list))
         self.assertTrue(run.call_args_list[1].kwargs['neutral'])
         path = session._state_path(self.home, self.prefix)
@@ -72,16 +75,38 @@ class WarmSessionTests(unittest.TestCase):
 
     def test_expired_server_uses_ordinary_wait_then_starts_new_warm_server(self):
         self.record()
-        with mock.patch.object(session, '_run_helper', side_effect=[3, 0, 0, 0]) as run:
+        with mock.patch.object(session, '_run_helper', side_effect=[3, 0, 0, 0, 0]) as run:
             session.prepare_warm(self.home, self.prefix, self.runtime)
         self.assertEqual([call.args[1] for call in run.call_args_list],
-                         ['--wait-idle', '-w', '--gluon-session=120', '--wait-idle'])
+                         ['--wait-idle', '-w', '--gluon-session=120', '--wait-idle', '--seal-session'])
 
     def test_explicit_cold_mode_atomically_drains_warm_server(self):
         self.record()
         with mock.patch.object(session, '_run_helper', return_value=0) as run:
             session.prepare_warm(self.home, self.prefix, self.runtime, enabled=False)
-        self.assertEqual([call.args[1] for call in run.call_args_list], ['--check-running', '--kill-idle', '-w'])
+        self.assertEqual([call.args[1] for call in run.call_args_list], ['--check-running', '--cold-session', '-w'])
+
+    def test_unknown_service_policy_automatically_uses_ordinary_wine(self):
+        self.policy.return_value = False
+        with mock.patch.object(session, '_run_helper', return_value=0) as run:
+            self.assertFalse(session.prepare_warm(self.home, self.prefix, self.runtime))
+        self.assertEqual([call.args[1] for call in run.call_args_list], ['-w'])
+        session._bootstrap_services.assert_not_called()
+        self.assertFalse(session._state_path(self.home, self.prefix).exists())
+
+    def test_policy_changed_during_bootstrap_finishes_all_services_before_game(self):
+        self.policy.side_effect = [True, False]
+        with mock.patch.object(session, '_run_helper', return_value=0) as run:
+            self.assertFalse(session.prepare_warm(self.home, self.prefix, self.runtime))
+        self.assertEqual([call.args[1] for call in run.call_args_list],
+                         ['-w', '--gluon-session=120', '--wait-idle', '--cold-session', '-w'])
+        self.assertFalse(session._state_path(self.home, self.prefix).exists())
+
+    def test_native_seal_revocation_is_a_cold_fallback_not_a_launch_failure(self):
+        with mock.patch.object(session, '_run_helper', side_effect=[0, 0, 0, 2, 0, 0]) as run:
+            self.assertFalse(session.prepare_warm(self.home, self.prefix, self.runtime))
+        self.assertEqual([call.args[1] for call in run.call_args_list][-2:], ['--cold-session', '-w'])
+        self.assertFalse(session._state_path(self.home, self.prefix).exists())
 
     def test_busy_idle_only_shutdown_never_escalates_to_kill(self):
         self.record()
@@ -124,16 +149,16 @@ class WarmSessionTests(unittest.TestCase):
         with mock.patch.object(session, '_run_helper', return_value=0) as run:
             session.prepare_warm(self.home, self.prefix, self.runtime)
         self.assertEqual([call.args[1] for call in run.call_args_list],
-                         ['--check-running', '--kill-idle', '-w', '--gluon-session=120', '--wait-idle'])
+                         ['--check-running', '--kill-idle', '-w', '--gluon-session=120', '--wait-idle', '--seal-session'])
 
     def test_expired_old_runtime_may_be_replaced_only_after_server_absence(self):
         self.record()
         old_runtime = self.runtime.with_name("Old Runtime")
         self.runtime.rename(old_runtime)
-        with mock.patch.object(session, '_run_helper', side_effect=[3, 0, 0]) as run:
+        with mock.patch.object(session, '_run_helper', side_effect=[3, 0, 0, 0]) as run:
             session.prepare_warm(self.home, self.prefix, old_runtime)
         self.assertEqual([call.args[1] for call in run.call_args_list],
-                         ['--check-running', '--gluon-session=120', '--wait-idle'])
+                         ['--check-running', '--gluon-session=120', '--wait-idle', '--seal-session'])
 
     def test_live_unverifiable_old_runtime_remains_rejected(self):
         self.record()
@@ -215,11 +240,11 @@ class WarmSessionTests(unittest.TestCase):
 
     def test_interrupted_bootstrap_is_retried_before_ready_phase(self):
         path = self.record(phase="starting")
-        with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 0]) as run:
+        with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 0, 0]) as run:
             session.prepare_warm(self.home, self.prefix, self.runtime)
         session._bootstrap_services.assert_called_once()
         self.assertEqual([call.args[1] for call in run.call_args_list],
-                         ['--wait-idle', '--gluon-session=120', '--wait-idle'])
+                         ['--wait-idle', '--gluon-session=120', '--wait-idle', '--seal-session'])
         self.assertEqual(session._read_state(path)['phase'], 'ready')
 
     def test_legacy_unphased_record_does_not_skip_neutral_bootstrap(self):
@@ -227,7 +252,7 @@ class WarmSessionTests(unittest.TestCase):
         previous = json.loads(path.read_text())
         previous.pop('phase')
         path.write_text(json.dumps(previous))
-        with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 0]):
+        with mock.patch.object(session, '_run_helper', side_effect=[0, 2, 0, 0]):
             session.prepare_warm(self.home, self.prefix, self.runtime)
         session._bootstrap_services.assert_called_once()
         self.assertEqual(session._read_state(path)['phase'], 'ready')
@@ -276,9 +301,9 @@ class WarmSessionTests(unittest.TestCase):
             popen.return_value.wait.return_value = 0
             session._bootstrap_services(self.runtime, self.prefix)
         arguments, options = popen.call_args
-        self.assertEqual(arguments[0], [str(self.runtime / "bin/wine"), str(self.runtime / "lib/wine/x86_64-windows/cmd.exe"), "/d", "/c", "exit", "0"])
+        self.assertEqual(arguments[0], [str(self.runtime / "bin/wine"), str(self.runtime / "lib/wine/x86_64-windows/gluon-session-bootstrap.exe"), ])
         self.assertTrue(options["close_fds"])
-        self.assertTrue(options["env"]["WINEDLLOVERRIDES"].endswith("cmd.exe=b"))
+        self.assertTrue(options["env"]["WINEDLLOVERRIDES"].endswith("gluon-session-bootstrap.exe=b"))
         self.assertEqual(options["env"]["WINEPREFIX"], str(self.prefix))
         self.assertEqual(options["env"]["WINELOADER"], str(self.runtime / "bin/wine"))
         self.assertFalse(any(key.startswith(("Steam", "STEAM_", "GLUON_", "DYLD_")) for key in options["env"]))

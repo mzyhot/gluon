@@ -88,6 +88,14 @@ layout conflicts and publisher-rule changes take precedence over historical
 error messages. Symbolic-link cycles are reported as save-path conflicts without
 moving files.
 
+Game completion and retained core-service lifetime have separate native events.
+The normal `SteamGameId` bridge waits for all game descendants, then exits before
+the launch lease can be released. An unverified service start or a new image in
+a retained service revokes warm mode and keeps the completion barrier held until
+the complete Wine server stops. Cloud preparation never treats an arbitrary
+Windows service as safely idle. Incomplete metadata and unavailable process
+observation produce actionable retry messages without changing save paths.
+
 ## Validation limits
 
 CI runs the production native guard against disposable libraries, including API

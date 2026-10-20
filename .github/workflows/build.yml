@@ -131,11 +131,11 @@ jobs:
           tar -xzf build/recheck-input/completed-runtime-input.tar.gz
           shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
             packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
-            tools/d3d9_probe.c > build/expected-probe-sources.sha256
+            tools/d3d9_probe.c packaging/probes/session-lifecycle.c > build/expected-probe-sources.sha256
           cmp build/probe-sources.sha256 build/expected-probe-sources.sha256
           expected_patch="$(packaging/apply-wine-patches.sh --hash)"
           test "$(cat build/gluon-wine/.gluon-wine-patches)" = "$expected_patch"
-          expected_key="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh patches/steam-helper-resource-ownership.patch; do
+          expected_key="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh session-bootstrap.c build-warm-policy.py ../gluon/service_policy.py patches/steam-helper-resource-ownership.patch; do
             printf '%s %s\n' "$helper" "$(shasum -a 256 "packaging/$helper" | cut -d' ' -f1)"
           done | shasum -a 256 | cut -d' ' -f1)"
           test "$(cat build/gluon-wine/.gluon-runtime-build-key)" = "$expected_key"
@@ -165,6 +165,9 @@ jobs:
             "build/llvm-mingw/bin/$arch-w64-mingw32-clang" -O2 -Wall -Wextra -Werror \
               packaging/probes/runtime-dependencies.c -lsecur32 \
               -o "build/graphics-probes/dependencies-$arch.exe"
+            "build/llvm-mingw/bin/$arch-w64-mingw32-clang" -O2 -Wall -Wextra -Werror \
+              packaging/probes/session-lifecycle.c -ladvapi32 \
+              -o "build/graphics-probes/session-lifecycle-$arch.exe"
           done
 
       - name: Preserve completed runtime and compiled probes
@@ -172,7 +175,7 @@ jobs:
         run: |
           shasum -a 256 packaging/check-opengl.c packaging/check-wgl.c \
             packaging/probes/vulkan.c packaging/probes/runtime-dependencies.c \
-            tools/d3d9_probe.c > build/probe-sources.sha256
+            tools/d3d9_probe.c packaging/probes/session-lifecycle.c > build/probe-sources.sha256
           COPYFILE_DISABLE=1 tar -czf build/completed-runtime-input.tar.gz \
             build/gluon-wine build/graphics-probes build/probe-sources.sha256
           (cd build && shasum -a 256 completed-runtime-input.tar.gz > completed-runtime-input.tar.gz.sha256)
@@ -192,6 +195,11 @@ jobs:
       - name: Check complete runtime on GitHub macOS
         timeout-minutes: 8
         run: python3 packaging/run-cloud-probes.py build/gluon-wine build/graphics-probes
+
+      - name: Generate stock service policy from an isolated prefix
+        timeout-minutes: 4
+        run: |
+          python3 packaging/build-warm-policy.py --runtime build/gluon-wine --prefix build/graphics-probes/warm-policy-prefix
 
       - name: Check compiled warm-session lifecycle
         timeout-minutes: 5

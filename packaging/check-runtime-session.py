@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Validate compiled Wine warm-session ownership in disposable CI prefixes.
 
-Uses only Wine's cmd.exe and reg.exe. A detached child outlives its launcher;
+Uses public Wine helpers and a source-owned lifecycle fixture. A detached child outlives its launcher;
 idle waits must cover that child and registry persistence, while idle-only drain
 must refuse it. No Steam, game, account, personal prefix or GPU is involved.
 """
@@ -120,6 +120,68 @@ def check(runtime, output):
                 run([server, '--wait-idle'], expected=3)
                 run([server, '--kill-idle'], expected=3)
                 rows.append({'arch': arch, 'case': 'absent-server-is-unsupported', 'passed': True})
+
+                # Real SteamGameId follows the helper's system-process branch.
+                # No SDK/client/account is used: bridge modules are disabled in
+                # this fixture only. The helper must cover detached game children
+                # yet finish promptly while stock services remain alive.
+                fixture = output / ('session-lifecycle-' + ('i686' if arch == 'i386' else arch) + '.exe')
+                helper = runtime / 'lib/wine' / (arch + '-windows/steam.exe')
+                bootstrap = runtime / 'lib/wine/x86_64-windows/gluon-session-bootstrap.exe'
+                run([server, '--gluon-session=120'])
+                run([wine, str(bootstrap)])
+                run([server, '--wait-idle'])
+                run([server, '--seal-session'])
+                ready, release = work / (arch + '-bridge-ready'), work / (arch + '-bridge-release')
+                steam_directory = prefix / 'drive_c/Program Files (x86)/Steam'
+                steam_directory.mkdir(parents=True, exist_ok=True)
+                environment.update(SteamGameId='480', SteamAppId='480',
+                                   STEAM_COMPAT_CLIENT_INSTALL_PATH=str(work / 'empty-steam'),
+                                   WINEDLLOVERRIDES='winemenubuilder.exe=d;mscoree,mshtml,lsteamclient,vrclient,vrclient_x64=')
+                bridge = spawn([wine, str(helper), str(fixture), '--detach', windows(ready), windows(release)])
+                wait_file(ready)
+                idle = spawn([server, '--wait-idle'])
+                time.sleep(0.15)
+                if bridge.poll() is not None or idle.poll() is not None:
+                    raise RuntimeError('Steam helper or idle barrier ended before its detached game child')
+                run([server, '--kill-idle'], expected=2)
+                released_at = time.monotonic()
+                release.touch()
+                if bridge.wait(timeout=12) != 0 or idle.wait(timeout=12) != 0:
+                    raise RuntimeError('Steam helper did not finish after all game descendants')
+                wait_file(Path(str(ready) + '.done'))
+                run([server, '--check-running'])
+                rows.append({'arch': arch, 'case': 'normal-steam-id-bridge-reaped-before-idle',
+                             'completion_seconds': round(time.monotonic() - released_at, 4), 'passed': True})
+                run([server, '--kill-idle'])
+                run([server, '-w'], timeout=10)
+                for name in list(environment):
+                    if name.startswith(('Steam', 'STEAM_')):
+                        environment.pop(name)
+                environment['WINEDLLOVERRIDES'] = 'winemenubuilder.exe=d;mscoree,mshtml='
+
+                # A real Windows service uses StartServiceCtrlDispatcher and
+                # becomes a Wine system process. It must revoke warm mode before
+                # executing, and the game completion barrier must stay held.
+                run([server, '--gluon-session=120'])
+                run([wine, str(bootstrap)])
+                run([server, '--wait-idle'])
+                run([server, '--seal-session'])
+                ready, release = work / (arch + '-service-ready'), work / (arch + '-service-release')
+                run([wine, str(fixture), '--start-service', windows(ready), windows(release)])
+                wait_file(ready)
+                idle = spawn([server, '--wait-idle'])
+                time.sleep(0.15)
+                if idle.poll() is not None:
+                    raise RuntimeError('Custom service was treated as an idle stock service')
+                run([server, '--kill-idle'], expected=2)
+                release.touch()
+                wait_file(Path(str(ready) + '.done'))
+                if idle.wait(timeout=15) != 0:
+                    raise RuntimeError('Custom service cold completion failed')
+                run([server, '-w'], timeout=15)
+                run([server, '--check-running'], expected=3)
+                rows.append({'arch': arch, 'case': 'custom-service-forces-full-cold-completion', 'passed': True})
             finally:
                 with __import__('contextlib').suppress(Exception):
                     subprocess.run([server, '-k'], env=environment, stdout=log, stderr=log, timeout=7)

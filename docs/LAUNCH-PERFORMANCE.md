@@ -70,6 +70,14 @@ or unavailable WebGL readback is recorded before using a verified CPU canvas
 fallback. All measured samples must use the same canvas mode. Fallback timings
 do not measure game GPU rendering.
 
+Retained-process checks identify Wine service loaders by file identity. macOS
+Wine can execute a temporary per-program hardlink outside the runtime directory;
+its filename alone does not establish or rule out runtime ownership. The checks
+still require the exact fixture prefix, normal runtime loader override, detached
+parent, and absence of Steam or game-bundle identity. Failed checks retain bounded
+candidate counts and sanitized ownership fields so a filtered process is distinct
+from an absent service; raw process environments are never retained.
+
 Native checks include Clang static analysis, Apple's live `leaks` inspection of
 an isolated Cocoa host, and a separate Cloud-guard `leaks --atExit` run that
 repeatedly replaces its catalogue. ASan/UBSan run separately from Apple's malloc

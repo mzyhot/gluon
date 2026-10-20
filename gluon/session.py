@@ -15,6 +15,11 @@ import subprocess
 import sys
 import time
 
+def warm_policy_allows(runtime, prefix, *, environment=None):
+    # Lease-only operations also work with installations predating this module.
+    from .service_policy import warm_policy_allows as allows
+    return allows(runtime, prefix, environment=environment)
+
 
 def _reset_child_signals():
     # This CLI is single-threaded. The launcher deliberately ignores repeated
@@ -265,22 +270,21 @@ def _system_environment(runtime, prefix):
     # Retained Wine server/services outlive a game. Neither may carry Steam's
     # game ownership, a Game.app loader path, or native overlay insertion.
     environment = {key: value for key, value in os.environ.items()
-                   if not key.startswith(("Steam", "STEAM_", "GLUON_", "DYLD_"))}
+                   if not key.startswith(("Steam", "STEAM_", "GLUON_", "DYLD_"))
+                   and key not in ("WINEDLLPATH", "WINEBUILDDIR", "WINEPATH", "WINEDLLOVERRIDES")}
     environment.update(WINEPREFIX=str(prefix), WINELOADER=str(Path(runtime) / "bin/wine"))
+    environment['WINEDLLOVERRIDES'] = 'winemenubuilder.exe=d;mscoree,mshtml=;gluon-session-bootstrap.exe=b'
     return environment
 
 
 def _bootstrap_services(runtime, prefix, timeout=30.0):
     environment = _system_environment(runtime, prefix)
-    # Never resolve cmd.exe through a game's working directory or prefix PATH.
-    # Select the packaged builtin even if the game installed a native override.
-    command = Path(runtime) / "lib/wine/x86_64-windows/cmd.exe"
+    # The owned GUI bootstrap has no command parser, autorun or visible UI.
+    command = Path(runtime) / "lib/wine/x86_64-windows/gluon-session-bootstrap.exe"
     if not command.is_file():
         raise SessionError("runtime lacks its builtin Wine bootstrap command")
-    overrides = environment.get("WINEDLLOVERRIDES", "")
-    environment["WINEDLLOVERRIDES"] = (overrides + ";" if overrides else "") + "cmd.exe=b"
     try:
-        child = subprocess.Popen([str(Path(runtime) / "bin/wine"), str(command), "/d", "/c", "exit", "0"],
+        child = subprocess.Popen([str(Path(runtime) / "bin/wine"), str(command)],
                                  env=environment, preexec_fn=_reset_child_signals, close_fds=True)
     except OSError as error:
         raise SessionError("cannot bootstrap Wine services") from error
@@ -295,6 +299,7 @@ def _bootstrap_services(runtime, prefix, timeout=30.0):
 def prepare_warm(home, prefix, runtime, *, enabled=True):
     """Run under the shell-held prefix lease; return with compatible idle state."""
     identity = _identity(prefix, runtime)
+    enabled = enabled and warm_policy_allows(runtime, prefix, environment=_system_environment(runtime, prefix))
     state_path = _state_path(home, prefix)
     state = _read_state(state_path)
     if state is not None and state["identity"]["prefix"] != identity["prefix"]:
@@ -312,7 +317,11 @@ def prepare_warm(home, prefix, runtime, *, enabled=True):
             if old != _identity(old["prefix"], old["runtime"]["path"], msync=old["msync"]):
                 raise SessionError("previous warm-session runtime changed")
             old_server = Path(old["runtime"]["path"]) / "bin/wineserver"
-            if not _drain(old_server, prefix):
+            if state["identity"] == identity and not enabled:
+                if (_run_helper(str(old_server), '--cold-session', 5.0, prefix=prefix) not in (0, 3)
+                        or _run_helper(str(old_server), '-w', 15.0, prefix=prefix) != 0):
+                    raise SessionError('previous Wine services did not finish')
+            elif not _drain(old_server, prefix):
                 raise SessionError("previous Wine session is busy")
     else:
         result = _run_helper(server, "--wait-idle", WARM_SECONDS + 15, prefix=prefix)
@@ -326,9 +335,10 @@ def prepare_warm(home, prefix, runtime, *, enabled=True):
             # Avoid redundant server spawns, second idle checks and state I/O.
             # If it expires before the game starts, the final --wait-idle
             # falls back to a full ordinary server wait.
-            return
+            return True
     if not enabled:
-        return
+        state_path.unlink(missing_ok=True)
+        return False
     # Publish recovery authority before creating a daemon. A crash or failed
     # bootstrap must never leave an anonymous warm server imposing a 120s wait.
     _write_state(state_path, identity, phase="starting")
@@ -342,7 +352,23 @@ def prepare_warm(home, prefix, runtime, *, enabled=True):
         _bootstrap_services(identity["runtime"]["path"], prefix)
         if _run_helper(server, "--wait-idle", 5.0, prefix=prefix) != 0:
             raise SessionError("Wine warm-session capability was not confirmed")
+        if not warm_policy_allows(runtime, prefix, environment=_system_environment(runtime, prefix)):
+            if _run_helper(server, '--cold-session', 5.0, prefix=prefix) not in (0, 3):
+                raise SessionError('cannot retire unverified Wine services')
+            if _run_helper(server, '-w', 15.0, prefix=prefix) != 0:
+                raise SessionError('unverified Wine services did not finish')
+            state_path.unlink(missing_ok=True)
+            return False
+        if _run_helper(server, '--seal-session', 5.0, prefix=prefix) != 0:
+            # A late service start or image load may have revoked eligibility.
+            if _run_helper(server, '--cold-session', 5.0, prefix=prefix) not in (0, 3):
+                raise SessionError('cannot retire changed Wine services')
+            if _run_helper(server, '-w', 15.0, prefix=prefix) != 0:
+                raise SessionError('changed Wine services did not finish')
+            state_path.unlink(missing_ok=True)
+            return False
         _write_state(state_path, identity, phase="ready")
+        return True
     except Exception:
         # We may clean up a newly created idle server. A pre-existing server
         # belongs to its previous session; our failure never tears that down.
@@ -392,8 +418,8 @@ def main(argv=None) -> int:
         if args.prepare_warm:
             if not all((args.home, args.prefix, args.runtime)):
                 parser.error("--prepare-warm requires --home, --prefix and --runtime")
-            prepare_warm(args.home, args.prefix, args.runtime, enabled=not args.cold)
-            return 0
+            warm = prepare_warm(args.home, args.prefix, args.runtime, enabled=not args.cold)
+            return 0 if warm else 10  # Internal launcher protocol: valid ordinary cold fallback.
         if not args.wineserver:
             parser.error("--wineserver is required for Stop")
         return 0 if stop_prefix(args.wineserver) else 1

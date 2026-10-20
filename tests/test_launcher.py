@@ -90,7 +90,7 @@ elif args[:1] == ['winepath']:
     if phase == 'path-helper':
         block()
     print(args[-1])
-elif args[1:] == ['/d', '/c', 'exit', '0'] and pathlib.Path(args[0]).name == 'cmd.exe':
+elif len(args) == 1 and pathlib.Path(args[0]).name == 'gluon-session-bootstrap.exe':
     record('bootstrap', appid=os.environ.get('SteamAppId'), host=os.environ.get('GLUON_HOST_PID'))
 elif args[:1] == ['reg']:
     if phase == 'registry':
@@ -141,7 +141,7 @@ class LauncherLifecycleTests(unittest.TestCase):
             path.write_text("#!%s\n%s" % (sys.executable, STUB))
             path.chmod(0o755)
         if warm:
-            command = self.runtime / "lib/wine/x86_64-windows/cmd.exe"
+            command = self.runtime / "lib/wine/x86_64-windows/gluon-session-bootstrap.exe"
             command.parent.mkdir(parents=True, exist_ok=True)
             command.write_text("fixture, never executed")
             marker = self.runtime / "licenses/gluon-wine-patches/APPLIED.txt"
@@ -172,6 +172,7 @@ class LauncherLifecycleTests(unittest.TestCase):
         package.mkdir(parents=True, exist_ok=True)
         (package / "__init__.py").write_text("")
         (package / "session.py").write_text((source.parents[1] / "gluon/session.py").read_text())
+        (package / "service_policy.py").write_text("def warm_policy_allows(*args, **kwargs): return True\n")
         launcher = self.root / "launcher"
         # Preserve launcher behavior while recording notifications without using macOS UI.
         launcher_source = source.read_text()

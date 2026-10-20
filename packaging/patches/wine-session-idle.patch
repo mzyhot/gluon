@@ -18,7 +18,7 @@
      fprintf(fh, "   -v,    --version         display version information and exit\n");
      fprintf(fh, "   -w,    --wait            wait until the current wineserver terminates\n");
      fprintf(fh, "\n");
-@@ -95,6 +99,25 @@
+@@ -95,6 +99,29 @@
          else
              master_socket_timeout = TIMEOUT_INFINITE;
          break;
@@ -41,10 +41,14 @@
 +        exit( request_gluon_idle_shutdown() );
 +    case 259:  /* --check-running */
 +        exit( check_server_running() );
++    case 260:  /* --seal-session */
++        exit( request_gluon_session_seal() );
++    case 261:  /* --cold-session */
++        exit( request_gluon_session_cold() );
      case 'v':
          fprintf( stderr, "%s\n", PACKAGE_STRING );
          exit(0);
-@@ -119,6 +142,10 @@
+@@ -119,6 +146,12 @@
      {"help",        0, 'h'},
      {"kill",        2, 'k'},
      {"persistent",  2, 'p'},
@@ -52,10 +56,12 @@
 +    {"wait-idle",     0, 257},
 +    {"kill-idle",     0, 258},
 +    {"check-running", 0, 259},
++    {"seal-session",  0, 260},
++    {"cold-session",  0, 261},
      {"version",     0, 'v'},
      {"wait",        0, 'w'},
      { NULL }
-@@ -269,6 +296,7 @@
+@@ -269,6 +302,7 @@
      init_directories( load_intl_file() );
      init_threading();
      init_registry();
@@ -65,12 +71,16 @@
  }
 --- a/server/request.h
 +++ b/server/request.h
-@@ -59,6 +59,13 @@
+@@ -59,6 +59,17 @@
  extern void close_master_socket( timeout_t timeout );
  extern void shutdown_master_socket(void);
  extern int wait_for_lock(void);
 +extern int wait_for_gluon_idle(void);
 +extern int request_gluon_idle_shutdown(void);
++extern int request_gluon_session_seal(void);
++extern int seal_gluon_session(void);
++extern int cold_gluon_session(void);
++extern int request_gluon_session_cold(void);
 +extern int check_server_running(void);
 +extern void set_gluon_user_active( int active );
 +extern int gluon_session_mode;
@@ -102,7 +112,7 @@
  }
  
  /* create a directory and check its permissions */
-@@ -712,6 +717,171 @@
+@@ -712,6 +717,187 @@
      close(fd);
  
      return r;
@@ -185,8 +195,9 @@
 +
 +    if (!(event & POLLIN)) return;
 +    if (recvfrom( get_unix_fd( fd ), &command, 1, 0, (struct sockaddr *)&address, &size ) != 1) return;
-+    if (command != 'K') return;
-+    result = '0' + shutdown_gluon_idle_session();
++    if (command != 'K' && command != 'S' && command != 'C') return;
++    result = '0' + (command == 'K' ? shutdown_gluon_idle_session() :
++                    command == 'S' ? seal_gluon_session() : cold_gluon_session());
 +    sendto( get_unix_fd( fd ), &result, 1, 0, (struct sockaddr *)&address, size );
 +}
 +
@@ -224,11 +235,11 @@
 +
 +/* Return 0 only when the server accepted idle-only teardown; 2 is busy, 3 is
 + * unsupported/absent. Callers still use bounded -w to confirm actual shutdown. */
-+int request_gluon_idle_shutdown(void)
++static int request_gluon_session_control( char command )
 +{
 +    struct sockaddr_un address;
 +    struct pollfd pollfd;
-+    char directory[] = ".gluon-idle-client-XXXXXX", command = 'K', result = '1';
++    char directory[] = ".gluon-idle-client-XXXXXX", result = '1';
 +    pid_t owner;
 +    int lock_fd, fd = -1, status = 1;
 +
@@ -258,6 +269,21 @@
 +    return status;
 +}
 +
++int request_gluon_idle_shutdown(void)
++{
++    return request_gluon_session_control( 'K' );
++}
++
++int request_gluon_session_seal(void)
++{
++    return request_gluon_session_control( 'S' );
++}
++
++int request_gluon_session_cold(void)
++{
++    return request_gluon_session_control( 'C' );
++}
++
 +void set_gluon_user_active( int active )
 +{
 +    struct flock fl;
@@ -274,7 +300,7 @@
  }
  
  /* kill the wine server holding the lock */
-@@ -788,6 +958,17 @@
+@@ -788,6 +974,17 @@
          }
          unlink( server_socket_name ); /* we got the lock, we can safely remove the socket */
          got_lock = 1;
@@ -292,7 +318,7 @@
          /* in that case we reuse fd without closing it, this ensures
           * that we hold the lock until the process exits */
      }
-@@ -808,6 +989,7 @@
+@@ -808,6 +1005,7 @@
          }
          /* it seems we can't use locks on this fs, so we will use the socket existence as lock */
          close( fd );
@@ -300,7 +326,7 @@
      }
  
      if ((fd = socket( AF_UNIX, SOCK_STREAM, 0 )) == -1) fatal_error( "socket: %s\n", strerror( errno ));
-@@ -836,6 +1018,7 @@
+@@ -836,6 +1034,7 @@
          fatal_error( "out of memory\n" );
      set_fd_events( master_socket->fd, POLLIN );
      make_object_permanent( &master_socket->obj );
@@ -310,10 +336,81 @@
  /* open the master server socket and start waiting for new clients */
 --- a/server/process.c
 +++ b/server/process.c
-@@ -761,16 +761,39 @@
+@@ -69,6 +69,8 @@
+ 
+ static struct list process_list = LIST_INIT(process_list);
+ static int running_processes, user_processes;
++static int gluon_bridge_processes, gluon_session_sealed, gluon_session_disabled;
++static struct event *gluon_bridge_event; /* game cleanup, separate from service shutdown */
+ static struct event *shutdown_event;           /* signaled when shutdown starts */
+ static struct timeout_user *shutdown_timeout;  /* timeout for server shutdown */
+ static int shutdown_stage;  /* current stage in the shutdown process */
+@@ -739,6 +741,7 @@
+     case 1:  /* signal system processes to exit */
+         if (debug_level) fprintf( stderr, "wineserver: shutting down\n" );
+         if (shutdown_event) set_event( shutdown_event );
++        if (gluon_bridge_event) set_event( gluon_bridge_event );
+         shutdown_timeout = add_timeout_user( 2 * -TICKS_PER_SEC, server_shutdown_timeout, NULL );
+         close_master_socket( 4 * -TICKS_PER_SEC );
+         break;
+@@ -761,16 +764,95 @@
      close_master_socket( 2 * -TICKS_PER_SEC );  /* for SIGKILL timeouts */
  }
  
++/* Once an unverified service can execute, ordinary shutdown is authoritative.
++ * Keep the native idle barrier held until the entire server exits. */
++static void disable_gluon_session( int force )
++{
++    if (!gluon_session_mode || (!force && !gluon_session_sealed) || gluon_session_disabled) return;
++    gluon_session_disabled = 1;
++    set_gluon_user_active( 1 );
++    master_socket_timeout = 3 * -TICKS_PER_SEC;
++    if (shutdown_timeout)
++    {
++        remove_timeout_user( shutdown_timeout );
++        shutdown_timeout = NULL;
++    }
++    if (!user_processes && !shutdown_stage)
++        shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
++}
++
++/* A stock retained service may lazily load a newly installed DLL without
++ * another service start. Any post-seal image load loses warm eligibility;
++ * neither a basename nor a forgeable Wine-builtin PE marker grants trust. */
++void gluon_system_image_mapped( struct process *process )
++{
++    if (process->is_system && !process->is_gluon_bridge) disable_gluon_session( 0 );
++}
++
++/* Called only after the final Unix process and server-side cleanup. */
++static void publish_gluon_user_idle(void)
++{
++    if (gluon_session_mode) flush_registry();
++    if (!gluon_session_disabled)
++    {
++        if (gluon_bridge_event) set_event( gluon_bridge_event );
++        /* Steam's bridge must itself be reaped before Cloud/host completion. */
++        if (!gluon_bridge_processes) set_gluon_user_active( 0 );
++    }
++    if ((!gluon_bridge_processes || gluon_session_disabled) && !shutdown_stage &&
++        !shutdown_timeout && master_socket_timeout != TIMEOUT_INFINITE)
++        shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
++}
++
++int cold_gluon_session(void)
++{
++    if (!gluon_session_mode) return 2;
++    disable_gluon_session( 1 );
++    return 0;
++}
++
++int seal_gluon_session(void)
++{
++    if (!gluon_session_mode || gluon_session_disabled || user_processes || gluon_bridge_processes || shutdown_stage) return 2;
++    gluon_session_sealed = 1;
++    return 0;
++}
++
 +/* A server started before a failed game command must still expire on time. */
 +void init_gluon_session_timeout(void)
 +{
@@ -325,36 +422,39 @@
 + * Never terminate user processes based on a client's earlier idle observation. */
 +int shutdown_gluon_idle_session(void)
 +{
-+    if (!gluon_session_mode || user_processes || shutdown_stage) return 2;
-+    shutdown_master_socket();
++    if (!gluon_session_mode || gluon_session_disabled || user_processes || gluon_bridge_processes || shutdown_stage) return 2;
++    if (gluon_session_disabled || !gluon_session_sealed)
++    {
++        disable_gluon_session( 1 );
++        /* Custom services get the same graceful shutdown as ordinary Wine,
++         * never the warm-core forced teardown shortcut. */
++        if (shutdown_timeout) remove_timeout_user( shutdown_timeout );
++        shutdown_timeout = NULL;
++        server_shutdown_timeout( NULL );
++    }
++    else shutdown_master_socket();
 +    return 0;
 +}
 +
  /* final cleanup once we are sure a process is really dead */
  static void process_died( struct process *process )
  {
-+    int last_user;
++    int last_user, last_bridge;
 +
      if (debug_level) fprintf( stderr, "%04x: *process killed*\n", process->id );
 -    if (!process->is_system)
 -    {
 -        if (!--user_processes && !shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
+-            shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
+-    }
 +    last_user = !process->is_system && !--user_processes;
-+    release_object( process );
-+    if (last_user)
-+    {
-+        /* Publish idle only after the final Unix process and server-side
-+         * object/handle cleanup, with its registry writes on disk. */
-+        if (gluon_session_mode) flush_registry();
-+        set_gluon_user_active( 0 );
-+        if (!shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
-             shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
-     }
--    release_object( process );
++    last_bridge = process->is_gluon_bridge && !--gluon_bridge_processes;
+     release_object( process );
++    if (last_user || (last_bridge && !user_processes)) publish_gluon_user_idle();
      if (!--running_processes && shutdown_stage) close_master_socket( 0 );
  }
  
-@@ -813,6 +836,14 @@
+@@ -813,6 +895,14 @@
  {
      struct process *process;
  
@@ -369,7 +469,15 @@
      if (!(process = alloc_object( &process_ops )))
      {
          close( fd );
-@@ -1172,10 +1203,14 @@
+@@ -835,6 +925,7 @@
+     process->disable_boost   = 0;
+     process->suspend         = 0;
+     process->is_system       = 0;
++    process->is_gluon_bridge = 0;
+     process->debug_children  = 1;
+     process->is_terminating  = 0;
+     process->set_foreground  = 0;
+@@ -1172,10 +1263,15 @@
          running_processes++;
          if (!process->is_system)
          {
@@ -379,6 +487,7 @@
 -                remove_timeout_user( shutdown_timeout );
 -                shutdown_timeout = NULL;
 +                set_gluon_user_active( 1 );
++                if (gluon_bridge_event) reset_event( gluon_bridge_event );
 +                if (shutdown_timeout)
 +                {
 +                    remove_timeout_user( shutdown_timeout );
@@ -387,19 +496,232 @@
              }
          }
      }
-@@ -2001,8 +2036,13 @@
+@@ -1981,28 +2077,70 @@
+ {
+     struct process *process;
+     struct thread *thread;
+-
+-    if (!shutdown_event)
+-    {
+-        if (!(shutdown_event = create_event( NULL, NULL, OBJ_PERMANENT, 1, 0, NULL ))) return;
+-        release_object( shutdown_event );
+-    }
+-
++    struct event *event;
++    unsigned int role = 0;
++
++    /* Optional fixed-width extension leaves the legacy request ABI intact. */
++    if (get_req_data_size())
++    {
++        if (get_req_data_size() != sizeof(role)) { set_error( STATUS_INVALID_PARAMETER ); return; }
++        memcpy( &role, get_req_data(), sizeof(role) );
++    }
++    if (role == GLUON_SYSTEM_ROLE_SERVICE_START)
++    {
++        /* Runs before every service start, including a new DLL in an existing
++         * svchost and a new driver in an existing winedevice process. */
++        disable_gluon_session( 0 );
++        return;
++    }
++    if (role && role != GLUON_SYSTEM_ROLE_BRIDGE) { set_error( STATUS_INVALID_PARAMETER ); return; }
++    if (role == GLUON_SYSTEM_ROLE_BRIDGE &&
++        (!gluon_session_mode || !gluon_session_sealed || gluon_session_disabled))
++    {
++        set_error( STATUS_NOT_SUPPORTED );
++        return;
++    }
++    if (!role) disable_gluon_session( 0 ); /* Unverified late system registrations are cold. */
+     if (!(process = get_process_from_handle( req->handle, PROCESS_SET_INFORMATION ))) return;
+-
+-    if (!(reply->event = alloc_handle( current->process, shutdown_event, SYNCHRONIZE, 0 )))
+-    {
++    if (role == GLUON_SYSTEM_ROLE_BRIDGE && process->is_system && !process->is_gluon_bridge)
++    {
++        set_error( STATUS_INVALID_PARAMETER );
+         release_object( process );
+         return;
+     }
+-
++    if (role == GLUON_SYSTEM_ROLE_BRIDGE)
++    {
++        if (!gluon_bridge_event)
++        {
++            if (!(gluon_bridge_event = create_event( NULL, NULL, OBJ_PERMANENT, 1, 0, NULL )))
++            { release_object( process ); return; }
++            release_object( gluon_bridge_event );
++        }
++        event = gluon_bridge_event;
++    }
++    else
++    {
++        if (!shutdown_event)
++        {
++            if (!(shutdown_event = create_event( NULL, NULL, OBJ_PERMANENT, 1, 0, NULL )))
++            { release_object( process ); return; }
++            release_object( shutdown_event );
++        }
++        event = shutdown_event;
++    }
++    if (!(reply->event = alloc_handle( current->process, event, SYNCHRONIZE, 0 )))
++    { release_object( process ); return; }
+     if (!process->is_system)
+     {
          LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
              release_thread_desktop( thread, 0 );
          process->is_system = 1;
 -        if (!--user_processes && !shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
 -            shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
-+        if (!--user_processes)
++        if (role == GLUON_SYSTEM_ROLE_BRIDGE)
 +        {
-+            if (gluon_session_mode) flush_registry();
-+            set_gluon_user_active( 0 );
-+            if (!shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
-+                shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
++            process->is_gluon_bridge = 1;
++            gluon_bridge_processes++;
 +        }
++        if (!--user_processes) publish_gluon_user_idle();
      }
      release_object( process );
  }
+--- a/server/process.h
++++ b/server/process.h
+@@ -61,6 +61,7 @@
+     int                  disable_boost;   /* disable priority boost */
+     int                  suspend;         /* global process suspend count */
+     unsigned int         is_system:1;     /* is it a system process? */
++    unsigned int         is_gluon_bridge:1; /* tracked Steam bridge, excluded from game count */
+     unsigned int         debug_children:1;/* also debug all child processes */
+     unsigned int         is_terminating:1;/* is process terminating? */
+     unsigned int         set_foreground:1;/* has process called set_foreground_window */
+@@ -120,6 +121,7 @@
+ extern void detach_debugged_processes( struct debug_obj *debug_obj, int exit_code );
+ extern void enum_processes( int (*cb)(struct process*, void*), void *user);
+ extern void set_process_base_priority( struct process *process, int base_priority );
++extern void gluon_system_image_mapped( struct process *process );
+ 
+ /* console functions */
+ extern struct thread *console_get_renderer( struct console *console );
+--- a/include/winternl.h
++++ b/include/winternl.h
+@@ -2015,6 +2015,8 @@
+ #ifdef __WINESRC__
+     ProcessWineMakeProcessSystem = 1000,
+     ProcessWineGrantAdminToken = 1002,
++    ProcessWineMakeGluonBridge = 1003,
++    ProcessWineGluonServiceStart = 1004,
+ #endif
+ } PROCESSINFOCLASS;
+ 
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -2333,6 +2333,21 @@
+ #endif
+     }
+ 
++    case ProcessWineGluonServiceStart:
++    {
++        unsigned int role = GLUON_SYSTEM_ROLE_SERVICE_START;
++        if (size) return STATUS_INFO_LENGTH_MISMATCH;
++        SERVER_START_REQ( make_process_system )
++        {
++            req->handle = wine_server_obj_handle( handle );
++            wine_server_add_data( req, &role, sizeof(role) );
++            ret = wine_server_call( req );
++        }
++        SERVER_END_REQ;
++        return ret;
++    }
++
++    case ProcessWineMakeGluonBridge:
+     case ProcessWineMakeProcessSystem:
+         if (size != sizeof(HANDLE *)) return STATUS_INFO_LENGTH_MISMATCH;
+ 
+@@ -2351,7 +2366,9 @@
+ 
+         SERVER_START_REQ( make_process_system )
+         {
++            unsigned int role = GLUON_SYSTEM_ROLE_BRIDGE;
+             req->handle = wine_server_obj_handle( handle );
++            if (class == ProcessWineMakeGluonBridge) wine_server_add_data( req, &role, sizeof(role) );
+             if (!(ret = wine_server_call( req )))
+                 *(HANDLE *)info = wine_server_ptr_handle( reply->event );
+         }
+--- a/dlls/wow64/process.c
++++ b/dlls/wow64/process.c
+@@ -1030,6 +1030,11 @@
+     case ProcessManageWritesToExecutableMemory: /* MANAGE_WRITES_TO_EXECUTABLE_MEMORY */
+         return STATUS_INVALID_INFO_CLASS;
+ 
++    case ProcessWineGluonServiceStart:
++        if (len) return STATUS_INFO_LENGTH_MISMATCH;
++        return NtSetInformationProcess( handle, class, NULL, 0 );
++
++    case ProcessWineMakeGluonBridge:     /* HANDLE* */
+     case ProcessWineMakeProcessSystem:   /* HANDLE* */
+         if (len == sizeof(ULONG))
+         {
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -3813,9 +3813,13 @@
+ @END
+ 
+ 
++#define GLUON_SYSTEM_ROLE_BRIDGE 1
++#define GLUON_SYSTEM_ROLE_SERVICE_START 2
++
+ /* Make the current process a system process */
+ @REQ(make_process_system)
+     obj_handle_t handle;          /* handle to the process */
++    VARARG(gluon_role,bytes);     /* optional Gluon role, unsigned int */
+ @REPLY
+     obj_handle_t event;           /* event signaled when all user processes have exited */
+ @END
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -5398,6 +5398,9 @@
+ };
+ 
+ 
++
++#define GLUON_SYSTEM_ROLE_BRIDGE 1
++#define GLUON_SYSTEM_ROLE_SERVICE_START 2
+ 
+ struct make_process_system_request
+ {
+--- a/server/request_trace.h
++++ b/server/request_trace.h
+@@ -3027,6 +3027,7 @@
+ static void dump_make_process_system_request( const struct make_process_system_request *req )
+ {
+     fprintf( stderr, " handle=%04x", req->handle );
++    dump_varargs_bytes( ", gluon_role=", cur_size );
+ }
+ 
+ static void dump_make_process_system_reply( const struct make_process_system_reply *req )
+--- a/programs/services/services.c
++++ b/programs/services/services.c
+@@ -1161,6 +1161,9 @@
+     BOOL shared_process;
+     DWORD err;
+ 
++    /* Notify before ALL service execution paths, including shared hosts and
++     * drivers. A sealed Gluon warm session must fall back before custom code. */
++    NtSetInformationProcess( GetCurrentProcess(), ProcessWineGluonServiceStart, NULL, 0 );
+     err = service_start_process(service, &process, &shared_process);
+     if (err == ERROR_SUCCESS)
+     {
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1680,6 +1680,7 @@
+         goto done;
+     }
+ 
++    gluon_system_image_mapped( current->process );
+     if ((view = mem_alloc( sizeof(*view) )))
+     {
+         view->base      = req->base;
+@@ -1727,6 +1728,7 @@
+         return;
+     }
+ 
++    gluon_system_image_mapped( current->process );
+     if ((view = mem_alloc( sizeof(struct memory_view) + namelen )))
+     {
+         memset( view, 0, sizeof(*view) );

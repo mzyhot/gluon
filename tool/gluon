@@ -591,8 +591,13 @@ else
         PYTHONPATH="$session_lib" PYTHONDONTWRITEBYTECODE=1 \
             run_wait /usr/bin/arch -arm64 /usr/bin/python3 -m gluon.session \
                 --prepare-warm --home "$GLUON_HOME" --prefix "$WINEPREFIX" \
-                --runtime "$runtime" "${cold_session[@]}" \
-            || fail "cannot prepare a compatible Wine session (see $WINE_LOG)"
+                --runtime "$runtime" "${cold_session[@]}"
+        session_status=$?
+        case "$session_status" in
+            0) ;;
+            10) warm_session=""; log "  using ordinary Wine shutdown for this prefix" ;;
+            *) fail "cannot prepare a compatible Wine session (see $WINE_LOG)" ;;
+        esac
         [ -z "$warm_session" ] || log "  Wine services stay warm for up to 120 idle seconds"
     fi
     if [ -n "$steam_bridge" ]; then
@@ -602,7 +607,7 @@ else
             src="$runtime/lib/wine/${pair%%:*}"
             dst="$WINEPREFIX/drive_c/windows/${pair##*:}"
             [ -d "$dst" ] || continue
-            for f in steam.exe lsteamclient.dll; do
+            for f in lsteamclient.dll; do
                 [ -f "$src/$f" ] && [ ! -f "$dst/$f" ] && cp "$src/$f" "$dst/$f"
             done
         done
@@ -623,7 +628,9 @@ else
             : > "$compat/.gluon-steam-bridge"
             log "  steam bridge: registry entries written"
         fi
-        game_command=('c:\windows\system32\steam.exe' "$exe" "$@")
+        # Always use the helper from this exact runtime. An old prefix copy
+        # cannot implement the current bridge lifecycle and is left intact.
+        game_command=("$runtime/lib/wine/x86_64-windows/steam.exe" "$exe" "$@")
     else
         game_command=("$exe" "$@")
     fi

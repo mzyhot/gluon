@@ -76,6 +76,15 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/server/request.h \
     sources/wine/server/request.c \
     sources/wine/server/process.c \
+    sources/wine/server/process.h \
+    sources/wine/server/mapping.c \
+    sources/wine/server/protocol.def \
+    sources/wine/server/request_trace.h \
+    sources/wine/include/winternl.h \
+    sources/wine/include/wine/server_protocol.h \
+    sources/wine/dlls/ntdll/unix/process.c \
+    sources/wine/dlls/wow64/process.c \
+    sources/wine/programs/services/services.c \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
     sources/dxvk/src/d3d9/d3d9_include.h \

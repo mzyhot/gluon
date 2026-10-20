@@ -75,7 +75,7 @@ python3 "$ROOT/packaging/check-wine-font-ownership.py" "$SRC/wine" --source-only
 python3 "$ROOT/packaging/check-wine-resolver-ownership.py" "$SRC/wine" --source-only --self-test
 python3 "$ROOT/packaging/check-wine-session.py" "$SRC/wine" --source-only --self-test
 WINE_PATCH_SHA="$("$ROOT/packaging/apply-wine-patches.sh" --hash)"
-RUNTIME_BUILD_KEY="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh patches/steam-helper-resource-ownership.patch; do
+RUNTIME_BUILD_KEY="$(for helper in build-runtime.sh build-tls.sh build-media.sh build-addons.sh relocate-media.py extract-addon-notices.py build-steam-helper.sh session-bootstrap.c build-warm-policy.py ../gluon/service_policy.py patches/steam-helper-resource-ownership.patch; do
     printf '%s %s\n' "$helper" "$(shasum -a 256 "$ROOT/packaging/$helper" | cut -d' ' -f1)"
 done | shasum -a 256 | cut -d' ' -f1)"
 if [ -x "$OUT/bin/wine" ] && { [ ! -f "$OUT/.gluon-wine-patches" ] || [ "$(cat "$OUT/.gluon-wine-patches")" != "$WINE_PATCH_SHA" ]; }; then

@@ -15,6 +15,7 @@ STEAM_HELPER_C_SHA="1092e80ab6a3e0a5e3dc1bd15e94afd5e5d3ddc5a4124c205c94441cd4d1
 STEAM_HELPER_MAKE_SHA="68db082a9be8c943ee5873d6bb4d94af1318c1f108a435b09aa84560276cc2e9"
 GLUON_HELPER_SOURCE="$WORK/steam-helper-source"
 GLUON_HELPER_MODULE="programs/gluon-steam-helper"
+GLUON_BOOTSTRAP_MODULE="programs/gluon-session-bootstrap"
 
 fetch() {
     local file="$1" expected="$2" path="$WORK/downloads/steam-helper-$1"
@@ -47,33 +48,46 @@ fi
 [ -d "$WINE_SRC/include" ] || { echo 'Wine source headers are required.' >&2; exit 1; }
 mkdir -p "$WINE_SRC/$GLUON_HELPER_MODULE"
 cp "$GLUON_HELPER_SOURCE/steam.c" "$GLUON_HELPER_SOURCE/Makefile.in" "$WINE_SRC/$GLUON_HELPER_MODULE/"
-python3 - "$WINE_OBJ/Makefile" "$GLUON_HELPER_MODULE" <<'PY'
+mkdir -p "$WINE_SRC/$GLUON_BOOTSTRAP_MODULE"
+cp "$ROOT/packaging/session-bootstrap.c" "$WINE_SRC/$GLUON_BOOTSTRAP_MODULE/bootstrap.c"
+cat > "$WINE_SRC/$GLUON_BOOTSTRAP_MODULE/Makefile.in" <<'EOF'
+MODULE = gluon-session-bootstrap.exe
+IMPORTS = user32
+EXTRADLLFLAGS = -mwindows
+SOURCES = bootstrap.c
+EOF
+python3 - "$WINE_OBJ/Makefile" "$GLUON_HELPER_MODULE" "$GLUON_BOOTSTRAP_MODULE" <<'PY'
 from pathlib import Path
 import re
 import sys
-path, module = Path(sys.argv[1]), sys.argv[2]
+path, modules = Path(sys.argv[1]), sys.argv[2:]
 source = path.read_text()
 match = re.search(r'^SUBDIRS\s*=\s*((?:[^\n]*\\\n)*[^\n]*)', source, re.MULTILINE)
 if not match:
     raise SystemExit('Wine Makefile has no expected SUBDIRS assignment')
-if module not in match.group(1).replace('\\\n', ' ').split():
-    source = source[:match.start(1)] + module + ' ' + source[match.start(1):]
+missing = [module for module in modules if module not in match.group(1).replace('\\\n', ' ').split()]
+if missing:
+    source = source[:match.start(1)] + ' '.join(missing) + ' ' + source[match.start(1):]
     path.write_text(source)
 PY
 (cd "$WINE_OBJ" && ./tools/makedep)
 make -C "$WINE_OBJ" -j"$JOBS" \
     "$GLUON_HELPER_MODULE/i386-windows/steam.exe" \
-    "$GLUON_HELPER_MODULE/x86_64-windows/steam.exe"
+    "$GLUON_HELPER_MODULE/x86_64-windows/steam.exe" \
+    "$GLUON_BOOTSTRAP_MODULE/x86_64-windows/gluon-session-bootstrap.exe"
 
 for arch in i386 x86_64; do
     binary="$WINE_OBJ/$GLUON_HELPER_MODULE/$arch-windows/steam.exe"
     [ -f "$binary" ] || { echo "Missing rebuilt $arch steam.exe" >&2; exit 1; }
     install -m 644 "$binary" "$OUT/lib/wine/$arch-windows/steam.exe"
 done
+install -m 644 "$WINE_OBJ/$GLUON_BOOTSTRAP_MODULE/x86_64-windows/gluon-session-bootstrap.exe" \
+    "$OUT/lib/wine/x86_64-windows/gluon-session-bootstrap.exe"
 
 mkdir -p "$OUT/licenses/steam-helper"
 cp "$GLUON_HELPER_SOURCE/steam.c" "$GLUON_HELPER_SOURCE/Makefile.in" "$OUT/licenses/steam-helper/"
 cp "$ROOT/packaging/patches/steam-helper-resource-ownership.patch" "$OUT/licenses/steam-helper/"
+cp "$ROOT/packaging/session-bootstrap.c" "$OUT/licenses/steam-helper/"
 cat > "$OUT/licenses/steam-helper/SOURCES.txt" <<EOF
 Proton steam.exe launcher helper, rebuilt by Gluon from public source:
 https://github.com/albvalort/Proton/tree/$STEAM_HELPER_REV/steam_helper

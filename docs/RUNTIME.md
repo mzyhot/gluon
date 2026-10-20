@@ -31,13 +31,24 @@ retained because a game launcher can exit while its child game keeps running.
 These changes do not establish a measured launch-time improvement: real window
 readiness, natural-exit latency, Stop and Big Picture remain manual acceptance tests.
 
-Packaged Wine runtimes with the warm-session protocol retain system services for
-up to 120 idle seconds after a normal game exit. Repeat launches in that interval
-reuse the same prefix server. Completion waits for all Wine user processes,
-including detached game children, and flushes their registry writes before
-releasing Steam's tracked host. System-service lifetime is separate from game
-lifetime. Services are bootstrapped without the game's Steam identifiers, native
-overlay or app-bundle loader. Stop still requests a complete prefix shutdown.
+Packaged Wine runtimes can retain verified stock services for up to 120 idle
+seconds after a normal game exit. Compatible repeats reuse the same prefix server.
+Completion covers detached game children, registry persistence and the Steam
+bridge's final Unix-process cleanup before releasing Steam's tracked host.
+The bridge receives a game-completion event separate from core-service shutdown.
+Services are bootstrapped without Steam identifiers, native overlay, game DLL
+overrides or an app-bundle loader. Stop requests complete prefix shutdown.
+
+A policy generated from a pristine CI prefix is tied to the exact runtime. It
+checks service, shared-host, startup and injection configuration and stock Windows
+PE files before and after neutral bootstrap, then seals the server. Native DLL
+overrides in the prefix, changed system binaries, startup items, missing evidence
+or a verification budget overrun select ordinary Wine shutdown automatically.
+Verified file hashes are cached against inode, size and modification/change times;
+each Play has a 0.5-second/128-MiB verification budget. First launches may use
+ordinary shutdown while that cache fills. A later service start, legacy system
+registration or image mapping in a retained core service revokes retention before
+execution. Cloud then waits for complete ordinary server shutdown.
 
 An exclusive prefix lease prevents overlapping launches from taking ownership of
 the same prefix. Stop while waiting for another launch cancels only the waiting

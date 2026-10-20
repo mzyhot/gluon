@@ -28,7 +28,7 @@ import urllib.request
 import uuid
 import zipfile
 
-from warm_process_evidence import inspect_retained_services
+from warm_process_evidence import RetainedServiceError, inspect_retained_services
 
 
 VERSION = '44.4.1'
@@ -342,6 +342,17 @@ def main() -> None:
             compat.mkdir(parents=True)
             prefix = compat / 'pfx-wine'
             shutil.copytree(template, prefix, symlinks=True)
+            if warm:
+                # Policy hashing is bounded per Play and may initially choose
+                # cold while its verified inode cache fills. This setup primes
+                # only the disposable fixture, outside all measured launches.
+                from gluon.service_policy import warm_policy_allows
+                from gluon.session import _system_environment
+                for _ in range(16):
+                    if warm_policy_allows(runtime, prefix, environment=_system_environment(runtime, prefix)):
+                        break
+                else:
+                    raise RuntimeError('Public Electron fixture prefix failed stock service attestation')
             (steam / 'appcache').mkdir()
             (steam / 'appcache/appinfo.vdf').write_bytes(cache_bytes({'ufs': {'quota': 0}}))
             (steam / 'steamapps/appmanifest_123.acf').write_text(
@@ -443,7 +454,13 @@ def main() -> None:
                             raise RuntimeError('Cold fixture did not stop its native Wine server')
                         if warm:
                             command(context, '--check-running')
-                            retained_ownership = inspect_retained_services(prefix, runtime, bundle, active.pid)
+                            try:
+                                retained_ownership = inspect_retained_services(prefix, runtime, bundle, active.pid)
+                            except RetainedServiceError as error:
+                                # Already-sanitized roles/counts/booleans only;
+                                # never copy raw process environment to artifacts.
+                                result['retained_ownership_failure'] = error.evidence
+                                raise
                         context['server'] = retained
                     active = None
                 frame = json.loads((record / 'renderer-frame.json').read_text())

@@ -145,7 +145,23 @@
  }
  
  #ifndef DIRECTORY_QUERY
-@@ -917,6 +940,7 @@
+@@ -911,12 +934,23 @@
+     return !!pid;
+ }
+ 
++/* New Gluon Wine returns game-idle separately from global service shutdown.
++ * Ordinary/older Wine keeps the established full-session wait contract. */
++static void make_game_process_system( HANDLE *wait_handle )
++{
++    if (NtSetInformationProcess( GetCurrentProcess(), 1003 /* ProcessWineMakeGluonBridge */,
++                                wait_handle, sizeof(*wait_handle) ))
++        NtSetInformationProcess( GetCurrentProcess(), 1000 /* ProcessWineMakeProcessSystem */,
++                                 wait_handle, sizeof(*wait_handle) );
++}
++
+ int main(int argc, char *argv[])
+ {
+     HANDLE wait_handle = INVALID_HANDLE_VALUE;
      HANDLE event2 = INVALID_HANDLE_VALUE;
      HANDLE event = INVALID_HANDLE_VALUE;
      HANDLE child = INVALID_HANDLE_VALUE;
@@ -153,7 +169,7 @@
      BOOL game_process = FALSE;
      const char *sgi;
      DWORD rc = 0;
-@@ -939,7 +963,8 @@
+@@ -939,7 +973,8 @@
          /* Create desktop window in main thread to prevent race with background thread. */
          GetDesktopWindow();
  
@@ -163,7 +179,7 @@
  
          set_active_process_pid();
          set_gamingrepair_succeeded(sgi);
-@@ -994,8 +1019,8 @@
+@@ -994,13 +1029,12 @@
              wait_handle = child;
          }
  
@@ -174,3 +190,9 @@
      }
  
      if (game_process)
+-        NtSetInformationProcess( GetCurrentProcess(), 1000 /* ProcessWineMakeProcessSystem */,
+-                                 &wait_handle, sizeof(HANDLE *) );
++        make_game_process_system( &wait_handle );
+ 
+     if(wait_handle != INVALID_HANDLE_VALUE)
+     {
