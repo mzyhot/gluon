@@ -33,6 +33,7 @@ class NativeCloudTests(unittest.TestCase):
         context.start(); self.addCleanup(context.stop)
         context = patch.object(steamplay.Installation, 'idle')
         self.idle = context.start(); self.addCleanup(context.stop)
+        self.real_wine_idle = cloud._wine_idle
         context = patch.object(cloud, '_wine_idle')
         self.wine_idle = context.start(); self.addCleanup(context.stop)
 
@@ -88,6 +89,39 @@ class NativeCloudTests(unittest.TestCase):
         self.rules({'savefiles': {'0': {'root': 'gameinstall', 'path': 'Save'}},
                     'rootoverrides': {'0': {'root': 'gameinstall', 'useinstead': 'WinAppDataRoaming'}}})
         self.assertTrue(cloud.needs_prefix('123'))
+
+    def test_incomplete_lazy_entry_reports_retry_without_touching_saves(self):
+        self.legacy()
+        self.rules({'savefiles': {'0': {'root': 'WinMyDocuments', 'path': 'Game'}}})
+        metadata = cloud.appinfo.AppInfoFile(steam.APPINFO)
+        # Preserve the outer cache and truncate inside the lazily decoded blob.
+        metadata.entries[0].blob = b'\x01appinfo\x00unfinished'
+        metadata.save()
+        before = steamplay._tree(self.compat)
+        with self.assertRaisesRegex(cloud.CloudError, 'metadata is incomplete'):
+            self.prepare()
+        self.assertEqual(steamplay._tree(self.compat), before)
+        self.assertIn('let Steam finish updating and retry', cloud.status('123')[0])
+
+    def test_bad_lazy_string_reference_is_a_cloud_error(self):
+        from types import SimpleNamespace
+        entry = type('IncompleteEntry', (), {
+            'kv': property(lambda self: (_ for _ in ()).throw(IndexError('string table')))})()
+        fake = SimpleNamespace(get=lambda appid: entry)
+        with patch.object(cloud, '_metadata_cache', fake), \
+                patch.object(cloud, '_metadata_stamp', (steam.APPINFO, cloud._stamp(Path(steam.APPINFO)))):
+            with self.assertRaisesRegex(cloud.CloudError, 'metadata is incomplete'):
+                cloud.needs_prefix('123')
+
+    def test_wine_observation_failure_is_transient_and_does_not_prepare(self):
+        self.legacy()
+        before = steamplay._tree(self.compat)
+        # Use the real guard while only the process observation is unavailable.
+        self.wine_idle.side_effect = self.real_wine_idle
+        with patch.object(cloud.subprocess, 'run', side_effect=subprocess.TimeoutExpired('pgrep', 5)):
+            with self.assertRaisesRegex(cloud.WineBusy, 'Cannot verify'):
+                cloud.prepare('123', automatic=True)
+        self.assertEqual(steamplay._tree(self.compat), before)
 
     def test_known_legacy_gluon_prefix_is_retired_whole_without_merging_saves(self):
         old, profile = self.legacy()

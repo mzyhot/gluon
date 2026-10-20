@@ -77,11 +77,19 @@ def _app_data(appid):
             _metadata_cache = appinfo.AppInfoFile(str(path))
         except FileNotFoundError:
             _metadata_cache = None
-        except (ValueError, struct.error) as error:
+        except (ValueError, struct.error, IndexError) as error:
             raise CloudError('Steam Cloud metadata is incomplete; let Steam finish updating and retry') from error
         _metadata_stamp = stamp
-    entry = _metadata_cache.get(int(appid)) if _metadata_cache else None
-    data = entry.kv.get('appinfo') if entry else None
+    try:
+        entry = _metadata_cache.get(int(appid)) if _metadata_cache else None
+        # Entry blobs are decoded lazily. A partially written cache can have a
+        # valid outer table but an incomplete value or string-table reference.
+        decoded = entry.kv if entry else {}
+        if not isinstance(decoded, dict):
+            raise ValueError('Invalid Steam application entry')
+        data = decoded.get('appinfo')
+    except (ValueError, struct.error, IndexError) as error:
+        raise CloudError('Steam Cloud metadata is incomplete; let Steam finish updating and retry') from error
     if data is not None and not isinstance(data, dict):
         raise CloudError('Invalid Steam application metadata')
     return data
@@ -382,10 +390,13 @@ def _wine_idle():
     # A bounded warm server is not an active game. Retire only Gluon's
     # attested idle servers, then keep the existing global activity barrier.
     # A busy, foreign or unverified server still prevents prefix changes.
-    result = subprocess.run(['pgrep', '-x', 'wineserver'], capture_output=True, timeout=5)
-    if result.returncode == 0:
-        session.drain_warm_sessions(steam.GLUON_HOME)
+    try:
         result = subprocess.run(['pgrep', '-x', 'wineserver'], capture_output=True, timeout=5)
+        if result.returncode == 0:
+            session.drain_warm_sessions(steam.GLUON_HOME)
+            result = subprocess.run(['pgrep', '-x', 'wineserver'], capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise WineBusy('Cannot verify that Wine has stopped; prefix preparation will retry after it exits') from error
     if result.returncode != 1:
         raise WineBusy('Wine is active; prefix preparation will retry after it exits')
 
