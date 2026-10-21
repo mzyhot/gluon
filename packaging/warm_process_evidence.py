@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import struct
 import time
 
 
@@ -20,7 +21,6 @@ import time
 # Windows program's name, sometimes without its .exe suffix. Names select
 # candidates only; exact loader inode and fixture-prefix checks grant authority.
 SERVICE = re.compile(r'(?:^|[\\/\s"])(wineserver|(?:services|winedevice|plugplay|svchost|rpcss|explorer|conhost)(?:\.exe)?)(?=$|[\s"])', re.I)
-IDENTITY = re.compile(r'(?:^|\s)((?:Steam|STEAM_)[A-Za-z0-9_]*|GLUON_HOST_PID|GLUON_GAME_CWD)=')
 
 
 class RetainedServiceError(RuntimeError):
@@ -28,6 +28,52 @@ class RetainedServiceError(RuntimeError):
     def __init__(self, message, evidence):
         super().__init__(message)
         self.evidence = evidence
+
+
+def parse_process_environment(data):
+    """Decode Darwin KERN_PROCARGS2 without flattening argv/environment values."""
+    if len(data) < 5 or len(data) > 1024 * 1024 or not data.endswith(b'\0'):
+        raise RuntimeError('Invalid CI process argument buffer')
+    argc = struct.unpack_from('=i', data)[0]
+    if not 1 <= argc <= 65536:
+        raise RuntimeError('Invalid CI process argument count')
+    position = data.find(b'\0', 4)
+    if position < 0:
+        raise RuntimeError('Incomplete CI executable path')
+    while position < len(data) and data[position] == 0:
+        position += 1
+    for _ in range(argc):
+        position = data.find(b'\0', position)
+        if position < 0:
+            raise RuntimeError('Incomplete CI argument vector')
+        position += 1
+    result = {}
+    for entry in data[position:].split(b'\0'):
+        if not entry:
+            continue
+        key, equal, value = entry.partition(b'=')
+        if not equal:
+            raise RuntimeError('Incomplete CI environment record')
+        key, value = os.fsdecode(key), os.fsdecode(value)
+        if key in result and result[key] != value:
+            raise RuntimeError('Ambiguous CI environment record')
+        result[key] = value
+    return result
+
+
+def _process_environment(pid):
+    # ps renders a title and environment into one ambiguous string; Wine changes
+    # its process title. Read the kernel's NUL-delimited argument block instead.
+    libc = ctypes.CDLL('/usr/lib/libSystem.B.dylib', use_errno=True)
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+    buffer = ctypes.create_string_buffer(1024 * 1024)
+    size = ctypes.c_size_t(len(buffer))
+    libc.sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint,
+                           ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    libc.sysctl.restype = ctypes.c_int
+    if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0):
+        raise RuntimeError('Could not obtain CI process environment')
+    return parse_process_environment(buffer.raw[:size.value])
 
 
 def _output(arguments, limit, deadline):
@@ -124,23 +170,31 @@ def inspect_retained_services(prefix, runtime, bundle, tracked_host_pid):
     if len(candidates) > 32:
         fail('Unexpected number of retained CI Wine service candidates')
 
-    # Darwin ps does not delimit environment values with NUL. Match the entire
-    # known fixture path, including any spaces, followed by the next KEY=value.
-    exact_prefix = re.compile(r'(?:^|\s)WINEPREFIX=' + re.escape(str(prefix)) + r'(?=\s[A-Za-z_][A-Za-z0-9_]*=|$)')
-    loader_paths = {str(runtime / 'bin/wine'), str((runtime / 'bin/wine').resolve())}
-    normal_loader = re.compile(r'(?:^|\s)WINELOADER=(?:' + '|'.join(re.escape(path) for path in sorted(loader_paths)) +
-                               r')(?=\s[A-Za-z_][A-Za-z0-9_]*=|$)')
+    # Accept only an inode-identical prefix and a known compiled runtime loader.
+    loader_paths = {str(path) for image in loader_images for path in (image, image.resolve())}
+    diagnostics['rejected_prefix_candidates'] = []
     services = []
     for pid, role, before in candidates:
         try:
-            environment = _output(['/bin/ps', 'eww', '-p', str(pid), '-o', 'command='], 1024 * 1024, deadline).strip()
+            environment = _process_environment(pid)
         except RuntimeError:
             if executable(pid) is None:  # An ordinary service exited meanwhile.
                 diagnostics['exited_during_inspection'] += 1
                 continue
             raise
-        if exact_prefix.search(environment) is None:
+        candidate_prefix = environment.get('WINEPREFIX', '')
+        try:
+            prefix_matches = Path(candidate_prefix).is_absolute() and os.path.samefile(candidate_prefix, prefix)
+        except OSError:
+            prefix_matches = False
+        if not prefix_matches:
             diagnostics['prefix_mismatches'] += 1
+            diagnostics['rejected_prefix_candidates'].append({
+                'pid': pid, 'role': role, 'has_prefix_key': 'WINEPREFIX' in environment,
+                'has_configdir_key': 'WINECONFIGDIR' in environment,
+                'prefix_is_absolute': Path(candidate_prefix).is_absolute(),
+                'prefix_mentions_fixture': str(prefix) in candidate_prefix,
+                'has_loader_key': 'WINELOADER' in environment})
             continue
         after = executable(pid)
         if after is None:
@@ -155,9 +209,9 @@ def inspect_retained_services(prefix, runtime, bundle, tracked_host_pid):
         if not parent.isdigit():
             raise RuntimeError('Retained CI Wine service has no reliable parent metadata')
         ppid = int(parent)
-        has_identity = IDENTITY.search(environment) is not None
-        has_game_loader = _inside(after, bundle) or str(bundle) in environment
-        loader_matches = normal_loader.search(environment) is not None
+        has_identity = any(key.startswith(('Steam', 'STEAM_')) or key in ('GLUON_HOST_PID', 'GLUON_GAME_CWD') for key in environment)
+        has_game_loader = _inside(after, bundle) or any(str(bundle) in value for value in environment.values())
+        loader_matches = environment.get('WINELOADER') in loader_paths
         expected = [server_image] if role == 'wineserver' else loader_images
         image_matches = same_image(after, expected)
         row = {'pid': pid, 'ppid': ppid, 'role': role, 'prefix_matches': True,
