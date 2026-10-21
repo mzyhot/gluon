@@ -128,7 +128,17 @@ def check(runtime, output):
                 fixture = output / ('session-lifecycle-' + ('i686' if arch == 'i386' else arch) + '.exe')
                 helper = runtime / 'lib/wine' / (arch + '-windows/steam.exe')
                 bootstrap = runtime / 'lib/wine/x86_64-windows/gluon-session-bootstrap.exe'
-                run([server, '--gluon-session=120'])
+                log.write('\n=== Normal SteamGameId bridge: %s ===\n' % arch); log.flush()
+                if arch == 'i386':
+                    spawn([server, '-f', '-d', '--gluon-session=120'])
+                    deadline = time.monotonic() + 5
+                    while subprocess.run([server, '--check-running'], env=environment,
+                                         stdout=log, stderr=log, timeout=5).returncode != 0:
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError('Diagnostic server did not acquire its lifetime lock')
+                        time.sleep(0.02)
+                else:
+                    run([server, '--gluon-session=120'])
                 run([wine, str(bootstrap)])
                 run([server, '--wait-idle'])
                 run([server, '--seal-session'])
@@ -147,8 +157,19 @@ def check(runtime, output):
                 run([server, '--kill-idle'], expected=2)
                 released_at = time.monotonic()
                 release.touch()
-                if bridge.wait(timeout=12) != 0 or idle.wait(timeout=12) != 0:
-                    raise RuntimeError('Steam helper did not finish after all game descendants')
+                try:
+                    if bridge.wait(timeout=12) != 0 or idle.wait(timeout=12) != 0:
+                        raise RuntimeError('Steam helper did not finish after all game descendants')
+                except subprocess.TimeoutExpired:
+                    log.write('\nBRIDGE TIMEOUT arch=%s child_done=%s idle_status=%s\n' %
+                              (arch, Path(str(ready) + '.done').exists(), idle.poll())); log.flush()
+                    with __import__('contextlib').suppress(Exception):
+                        subprocess.run([wine, 'winedbg', '--command', 'info process'],
+                                       env=dict(environment, WINEDEBUG='fixme-all'), stdout=log, stderr=log, timeout=10)
+                    with __import__('contextlib').suppress(Exception):
+                        subprocess.run(['/usr/bin/sample', str(bridge.pid), '1'],
+                                       stdout=log, stderr=log, timeout=5)
+                    raise
                 wait_file(Path(str(ready) + '.done'))
                 run([server, '--check-running'])
                 rows.append({'arch': arch, 'case': 'normal-steam-id-bridge-reaped-before-idle',
@@ -183,6 +204,7 @@ def check(runtime, output):
                 run([server, '--check-running'], expected=3)
                 rows.append({'arch': arch, 'case': 'custom-service-forces-full-cold-completion', 'passed': True})
             finally:
+                (output / 'runtime-session-progress.json').write_text(json.dumps(rows, indent=2) + '\n')
                 with __import__('contextlib').suppress(Exception):
                     subprocess.run([server, '-k'], env=environment, stdout=log, stderr=log, timeout=7)
                     subprocess.run([server, '-w'], env=environment, stdout=log, stderr=log, timeout=7)

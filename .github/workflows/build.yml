@@ -89,6 +89,7 @@ jobs:
           case "$GLUON_ORIGINAL_RUN_ID" in ''|*[!0-9]*) echo "Expected a numeric Build run ID" >&2; exit 1 ;; esac
           mkdir -p build/recheck-input
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GLUON_ORIGINAL_RUN_ID" > build/original-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GLUON_ORIGINAL_RUN_ID/jobs" > build/original-jobs.json
           python3 - <<'PY'
           import json
           import os
@@ -99,8 +100,29 @@ jobs:
                   or run.get("repository", {}).get("full_name") != repository
                   or run.get("head_repository", {}).get("full_name") != repository
                   or run.get("event") not in ("workflow_dispatch", "push")
-                  or run.get("conclusion") != "success"):
-              raise SystemExit("Expected a successful owned-repository Build run.")
+                  or run.get("conclusion") not in ("success", "failure")):
+              raise SystemExit("Expected a completed owned-repository Build run.")
+          jobs = json.loads(Path("build/original-jobs.json").read_text()).get("jobs", [])
+          if len(jobs) != 1 or jobs[0].get("name") != "build":
+              raise SystemExit("Expected one attested runtime build job.")
+          steps = {step.get("name"): step.get("conclusion") for step in jobs[0].get("steps", [])}
+          required = ("Build runtime", "Compile OpenGL probes",
+                      "Preserve completed runtime and compiled probes",
+                      "Upload completed runtime for bounded rechecks")
+          if any(steps.get(name) != "success" for name in required):
+              raise SystemExit("Runtime compilation and its input archive must have succeeded.")
+          validation = {"Check complete runtime on GitHub macOS",
+                        "Generate stock service policy from an isolated prefix",
+                        "Check compiled warm-session lifecycle",
+                        "Check compiled Chromium child overlay routing",
+                        "Compare repeat launch overhead with v0.4.1-fixed",
+                        "Compare public Electron native-window startup with v0.4.2", "Package"}
+          failures = {name for name, result in steps.items() if result == "failure"}
+          if not failures <= validation:
+              raise SystemExit("Only a subsequent validation/package failure permits runtime reuse.")
+          # A failed validation is not a passing runtime. All gates below rerun;
+          # the archive checksum, extraction checks and exact compiled-input
+          # fingerprints remain mandatory before executing a reused binary.
           print("Reusing compiled runtime from Build run", run["id"], "at", run["head_sha"])
           PY
           gh run download "$GLUON_ORIGINAL_RUN_ID" --repo "$GITHUB_REPOSITORY" \
