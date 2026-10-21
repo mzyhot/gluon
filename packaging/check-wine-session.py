@@ -34,10 +34,12 @@ def extract(root):
         raise ValueError('process cleanup must precede idle publication')
     if not publish.index('flush_registry();') < publish.index('set_event( gluon_bridge_event );') < publish.index('set_gluon_user_active( 0 );'):
         raise ValueError('registry must flush before bridge and user-idle notification')
-    bridge = function(process, 'DECL_HANDLER') if False else process
-    for required in ('GLUON_SYSTEM_ROLE_BRIDGE', 'GLUON_SYSTEM_ROLE_SERVICE_START', 'gluon_bridge_processes++', 'gluon_session_sealed', 'STATUS_NOT_SUPPORTED'):
-        if required not in bridge:
+    for required in ('GLUON_SYSTEM_ROLE_BRIDGE', 'GLUON_SYSTEM_ROLE_SERVICE_START', 'GLUON_SYSTEM_ROLE_TRANSPORT', 'gluon_bridge_processes++', 'gluon_session_sealed', 'STATUS_NOT_SUPPORTED'):
+        if required not in process:
             raise ValueError('missing bridge/service boundary: ' + required)
+    start = (root / 'programs/start/start.c').read_text()
+    if not start.index('AssignProcessToJobObject(hJob, opts.sei.hProcess);') < start.index('ProcessWineMakeGluonTransport') < start.index('WaitForSingleObject(opts.sei.hProcess, INFINITE);'):
+        raise ValueError('the exec/wait transport must be tracked before waiting for its child')
     create = function(process, 'create_process')
     if not create.index('if (shutdown_stage)') < create.index('alloc_object( &process_ops )'):
         raise ValueError('idle shutdown must refuse pending first-client creation')
@@ -144,7 +146,10 @@ int main(void)
     assert(!cold_gluon_session() && gluon_session_disabled);
     reset(); user_processes = 0; gluon_session_sealed = 0;
     assert(!shutdown_gluon_idle_session() && gluon_session_disabled && graceful_calls == 1 && !shutdown_calls);
-    puts("Wine warm-session lifecycle: 24 cases passed");
+    reset(); gluon_session_mode = 0; gluon_bridge_event = NULL; gluon_bridge_processes = 1; running_processes = 2;
+    process_died(&game); assert(!strcmp(events, "RT") && shutdown_timeout);
+    process_died(&bridge); assert(!strcmp(events, "RTRU") && !gluon_bridge_processes);
+    puts("Wine warm-session lifecycle: 25 cases passed");
     return 0;
 }
 '''

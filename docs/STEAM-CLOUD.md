@@ -97,6 +97,9 @@ a retained service revokes warm mode and keeps the completion barrier held until
 the complete Wine server stops. Cloud preparation never treats an arbitrary
 Windows service as safely idle. Incomplete metadata and unavailable process
 observation produce actionable retry messages without changing save paths.
+Wine's `start.exe` exec/wait transport is tracked separately too: a 32-bit helper
+cannot wait for the wrapper that is waiting for it. Both transport and bridge
+Unix processes must be reaped before the completion barrier opens.
 
 ## Validation limits
 

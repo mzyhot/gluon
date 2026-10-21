@@ -129,16 +129,7 @@ def check(runtime, output):
                 helper = runtime / 'lib/wine' / (arch + '-windows/steam.exe')
                 bootstrap = runtime / 'lib/wine/x86_64-windows/gluon-session-bootstrap.exe'
                 log.write('\n=== Normal SteamGameId bridge: %s ===\n' % arch); log.flush()
-                if arch == 'i386':
-                    spawn([server, '-f', '-d', '--gluon-session=120'])
-                    deadline = time.monotonic() + 5
-                    while subprocess.run([server, '--check-running'], env=environment,
-                                         stdout=log, stderr=log, timeout=5).returncode != 0:
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError('Diagnostic server did not acquire its lifetime lock')
-                        time.sleep(0.02)
-                else:
-                    run([server, '--gluon-session=120'])
+                run([server, '--gluon-session=120'])
                 run([wine, str(bootstrap)])
                 run([server, '--wait-idle'])
                 run([server, '--seal-session'])

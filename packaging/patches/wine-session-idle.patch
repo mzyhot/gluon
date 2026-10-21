@@ -392,7 +392,7 @@
 +        /* Steam's bridge must itself be reaped before Cloud/host completion. */
 +        if (!gluon_bridge_processes) set_gluon_user_active( 0 );
 +    }
-+    if ((!gluon_bridge_processes || gluon_session_disabled) && !shutdown_stage &&
++    if ((!gluon_session_mode || !gluon_bridge_processes || gluon_session_disabled) && !shutdown_stage &&
 +        !shutdown_timeout && master_socket_timeout != TIMEOUT_INFINITE)
 +        shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
 +}
@@ -523,7 +523,7 @@
 +        disable_gluon_session( 0 );
 +        return;
 +    }
-+    if (role && role != GLUON_SYSTEM_ROLE_BRIDGE) { set_error( STATUS_INVALID_PARAMETER ); return; }
++    if (role && role != GLUON_SYSTEM_ROLE_BRIDGE && role != GLUON_SYSTEM_ROLE_TRANSPORT) { set_error( STATUS_INVALID_PARAMETER ); return; }
 +    if (role == GLUON_SYSTEM_ROLE_BRIDGE &&
 +        (!gluon_session_mode || !gluon_session_sealed || gluon_session_disabled))
 +    {
@@ -535,14 +535,14 @@
 -
 -    if (!(reply->event = alloc_handle( current->process, shutdown_event, SYNCHRONIZE, 0 )))
 -    {
-+    if (role == GLUON_SYSTEM_ROLE_BRIDGE && process->is_system && !process->is_gluon_bridge)
++    if (role && process->is_system && !process->is_gluon_bridge)
 +    {
 +        set_error( STATUS_INVALID_PARAMETER );
          release_object( process );
          return;
      }
 -
-+    if (role == GLUON_SYSTEM_ROLE_BRIDGE)
++    if (role && gluon_session_mode)
 +    {
 +        if (!gluon_bridge_event)
 +        {
@@ -571,7 +571,7 @@
          process->is_system = 1;
 -        if (!--user_processes && !shutdown_stage && master_socket_timeout != TIMEOUT_INFINITE)
 -            shutdown_timeout = add_timeout_user( master_socket_timeout, server_shutdown_timeout, NULL );
-+        if (role == GLUON_SYSTEM_ROLE_BRIDGE)
++        if (role)
 +        {
 +            process->is_gluon_bridge = 1;
 +            gluon_bridge_processes++;
@@ -586,7 +586,7 @@
      int                  disable_boost;   /* disable priority boost */
      int                  suspend;         /* global process suspend count */
      unsigned int         is_system:1;     /* is it a system process? */
-+    unsigned int         is_gluon_bridge:1; /* tracked Steam bridge, excluded from game count */
++    unsigned int         is_gluon_bridge:1; /* bridge or launch transport, excluded from game count */
      unsigned int         debug_children:1;/* also debug all child processes */
      unsigned int         is_terminating:1;/* is process terminating? */
      unsigned int         set_foreground:1;/* has process called set_foreground_window */
@@ -600,18 +600,19 @@
  extern struct thread *console_get_renderer( struct console *console );
 --- a/include/winternl.h
 +++ b/include/winternl.h
-@@ -2015,6 +2015,8 @@
+@@ -2015,6 +2015,9 @@
  #ifdef __WINESRC__
      ProcessWineMakeProcessSystem = 1000,
      ProcessWineGrantAdminToken = 1002,
 +    ProcessWineMakeGluonBridge = 1003,
 +    ProcessWineGluonServiceStart = 1004,
++    ProcessWineMakeGluonTransport = 1005,
  #endif
  } PROCESSINFOCLASS;
  
 --- a/dlls/ntdll/unix/process.c
 +++ b/dlls/ntdll/unix/process.c
-@@ -2333,6 +2333,21 @@
+@@ -2333,6 +2333,22 @@
  #endif
      }
  
@@ -629,23 +630,25 @@
 +        return ret;
 +    }
 +
++    case ProcessWineMakeGluonTransport:
 +    case ProcessWineMakeGluonBridge:
      case ProcessWineMakeProcessSystem:
          if (size != sizeof(HANDLE *)) return STATUS_INFO_LENGTH_MISMATCH;
  
-@@ -2351,7 +2366,9 @@
+@@ -2351,7 +2366,10 @@
  
          SERVER_START_REQ( make_process_system )
          {
-+            unsigned int role = GLUON_SYSTEM_ROLE_BRIDGE;
++            unsigned int role = class == ProcessWineMakeGluonTransport ?
++                                GLUON_SYSTEM_ROLE_TRANSPORT : GLUON_SYSTEM_ROLE_BRIDGE;
              req->handle = wine_server_obj_handle( handle );
-+            if (class == ProcessWineMakeGluonBridge) wine_server_add_data( req, &role, sizeof(role) );
++            if (class != ProcessWineMakeProcessSystem) wine_server_add_data( req, &role, sizeof(role) );
              if (!(ret = wine_server_call( req )))
                  *(HANDLE *)info = wine_server_ptr_handle( reply->event );
          }
 --- a/dlls/wow64/process.c
 +++ b/dlls/wow64/process.c
-@@ -1030,6 +1030,11 @@
+@@ -1030,6 +1030,12 @@
      case ProcessManageWritesToExecutableMemory: /* MANAGE_WRITES_TO_EXECUTABLE_MEMORY */
          return STATUS_INVALID_INFO_CLASS;
  
@@ -653,18 +656,20 @@
 +        if (len) return STATUS_INFO_LENGTH_MISMATCH;
 +        return NtSetInformationProcess( handle, class, NULL, 0 );
 +
++    case ProcessWineMakeGluonTransport:  /* HANDLE* */
 +    case ProcessWineMakeGluonBridge:     /* HANDLE* */
      case ProcessWineMakeProcessSystem:   /* HANDLE* */
          if (len == sizeof(ULONG))
          {
 --- a/server/protocol.def
 +++ b/server/protocol.def
-@@ -3813,9 +3813,13 @@
+@@ -3813,9 +3813,14 @@
  @END
  
  
 +#define GLUON_SYSTEM_ROLE_BRIDGE 1
 +#define GLUON_SYSTEM_ROLE_SERVICE_START 2
++#define GLUON_SYSTEM_ROLE_TRANSPORT 3
 +
  /* Make the current process a system process */
  @REQ(make_process_system)
@@ -675,13 +680,14 @@
  @END
 --- a/include/wine/server_protocol.h
 +++ b/include/wine/server_protocol.h
-@@ -5398,6 +5398,9 @@
+@@ -5398,6 +5398,10 @@
  };
  
  
 +
 +#define GLUON_SYSTEM_ROLE_BRIDGE 1
 +#define GLUON_SYSTEM_ROLE_SERVICE_START 2
++#define GLUON_SYSTEM_ROLE_TRANSPORT 3
  
  struct make_process_system_request
  {
@@ -725,3 +731,35 @@
      if ((view = mem_alloc( sizeof(struct memory_view) + namelen )))
      {
          memset( view, 0, sizeof(*view) );
+--- a/programs/start/start.c
++++ b/programs/start/start.c
+@@ -23,6 +23,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <windows.h>
++#include <winternl.h>
+ #include <shlobj.h>
+ #include <shellapi.h>
+ 
+@@ -641,6 +642,7 @@
+ done:
+ 	if (opts.sei.fMask & SEE_MASK_NOCLOSEPROCESS) {
+ 		DWORD exitcode;
++                HANDLE gluon_event = NULL;
+ 		HANDLE hJob;
+ 		JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+ 
+@@ -659,6 +661,13 @@
+ 		SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info));
+ 		AssignProcessToJobObject(hJob, opts.sei.hProcess);
+ 
++                /* /exec is also Wine's cross-architecture launch transport.
++                 * Count its final Unix cleanup without making Steam's bridge
++                 * wait for the very wrapper that is waiting for that bridge. */
++                if (!NtSetInformationProcess( GetCurrentProcess(), ProcessWineMakeGluonTransport,
++                                               &gluon_event, sizeof(gluon_event) ))
++                    CloseHandle( gluon_event );
++
+ 		WaitForSingleObject(opts.sei.hProcess, INFINITE);
+ 		GetExitCodeProcess(opts.sei.hProcess, &exitcode);
+ 		ExitProcess(exitcode);

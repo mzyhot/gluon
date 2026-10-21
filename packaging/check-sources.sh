@@ -85,6 +85,7 @@ tar -xzf "$GLUON_SOURCE_ARCHIVE" -C "$GLUON_SOURCE_TEMP" --strip-components 1 \
     sources/wine/dlls/ntdll/unix/process.c \
     sources/wine/dlls/wow64/process.c \
     sources/wine/programs/services/services.c \
+    sources/wine/programs/start/start.c \
     sources/wine/include/wine/vulkan.h \
     sources/dxvk/src/util/config/config.cpp \
     sources/dxvk/src/d3d9/d3d9_include.h \
